@@ -22,9 +22,7 @@ trace = data["complete_trace"]
 
 iterations = [t.i for t in trace]
 loss = [t.L for t in trace]
-
-σ_matrix = hcat([t.σ for t in trace]...)'
-num_layers = size(σ_matrix, 2)
+σ_vals = [t.σ for t in trace]
 
 p1 = plot(
     iterations, loss,
@@ -32,8 +30,9 @@ p1 = plot(
     xlabel = "Iteration",
     ylabel = "Loss",
     color = :red,
-    legend = :topleft,
-    label = "Training Loss"
+    legend = :right,
+    label = "Training Loss",
+    yticks = 0:0.2:2.2,
 )
 
 if haskey(data, "accuracy_trace")
@@ -42,37 +41,35 @@ if haskey(data, "accuracy_trace")
         acc_iters = [t[1] for t in acc_trace]
         acc_vals = [t[2] <= 1.0 ? t[2] * 100.0 : t[2] for t in acc_trace]
 
+        plot!(
+            p1, [NaN], [NaN],
+            color = :green,
+            label = "Test Accuracy",
+        )
+
         p1_acc = twinx(p1)
         plot!(
             p1_acc, acc_iters, acc_vals,
             color = :green,
-            linewidth = 2.0,
             ylabel = "Test Accuracy (%)",
-            legend = :topleft,
-            label = "Test Accuracy",
-            ylims = (0, 100)
+            legend = false,
+            ylims = (0, 100),
+            yticks = 0:10:100,
         )
     end
 end
 
-layer_labels = ["Conv 1 (Spatial)", "Conv 2 (Spatial)", "Dense 1 (Global)", "Dense 2 (Classification)"]
-
-if num_layers != 4
-    layer_labels = ["Layer $i" for i in 1:num_layers]
-end
-
 p2 = plot(
-    iterations, σ_matrix,
-    title = "Layer-wise Strategy Parameter Dynamics",
+    iterations, σ_vals,
+    title = "Strategy Parameter Dynamics",
     xlabel = "Iteration",
-    ylabel = L"\sigma_l",
-    labels = reshape(layer_labels, 1, :),
-    legend = :topright,
-    linewidth = 1.5,
-    alpha = 0.8
+    ylabel = L"\sigma",
+    color = :blue,
+    legend = false,
+    top_margin = 20Plots.mm,
 )
 
-fig = plot(p1, p2, layout = (2, 1), size = (1200, 900), margin = 5Plots.mm)
+fig = plot(p1, p2, layout = (2, 1), size = (1000, 1000), margin = 5Plots.mm)
 
 display(fig)
 

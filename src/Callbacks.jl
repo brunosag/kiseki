@@ -2,7 +2,6 @@ module Callbacks
 
 using Printf
 using ComponentArrays
-using Statistics
 using ..Evaluation: accuracy
 using ..Checkpoints: save_checkpoint
 
@@ -37,32 +36,22 @@ function (cb::CheckpointCallback)(trace_record)
 
     meta = trace_record.metadata
 
-    if meta.interval_changed
-        @printf("[Scheduler] Batch interval updated to: %d\n", meta.batch_interval)
-    end
-
-    if meta.batch_changed
+    if trace_record.iteration == 1 && global_i > 1
         @printf("[DataLoader] Sampled new data batch.\n")
     end
 
-    σ_str = join([@sprintf("%.5f", s) for s in meta.σ], ", ")
-
-    @printf("i = %d \t L(𝛉) = %.6f \t Δt = %.2fs \t 𝛔 = [%s]\n", global_i, meta.L, elapsed, σ_str)
+    @printf("i = %d \t L(𝛉) = %.6f \t Δt = %.2fs \t σ = %.5f\n", global_i, meta.L, elapsed, meta.σ)
 
     push!(
         cb.complete_trace, (
             i = global_i,
             L = Float32(meta.L),
-            σ_var = Float32(var(meta.σ)),
-            σ_mean = Float32(mean(meta.σ)),
-            batch_interval = meta.batch_interval,
-            σ = copy(meta.σ),
+            σ = Float32(meta.σ),
         )
     )
 
     if trace_record.iteration == cb.checkpoint_Δi
         θ_current = ComponentArray(meta.θ_ema, cb.axes)
-        recent_traces = @view cb.complete_trace[max(1, end - cb.checkpoint_Δi + 1):end]
 
         raw_acc = accuracy(cb.model, θ_current, cb.st, cb.test_dataloader)
         test_acc = raw_acc > 1.0 ? raw_acc / 100.0 : raw_acc
