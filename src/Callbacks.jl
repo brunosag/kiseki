@@ -7,7 +7,9 @@ using ..Checkpoints: save_checkpoint
 
 export CheckpointCallback
 
+
 mutable struct CheckpointCallback{M, S, DL, T} <: Function
+    I::Int
     checkpoint_Δi::Int
     i_timer::Float64
     complete_trace::Vector{T}
@@ -19,21 +21,27 @@ mutable struct CheckpointCallback{M, S, DL, T} <: Function
     best_test_acc::Float64
     prev_checkpoint::Ref{String}
     save_dir::String
+    prefix::String
+    verbose::Bool
 end
 
+
 function (cb::CheckpointCallback)(
-        global_i::Int, θ::Vector{Float32}, θ_ema::Vector{Float32}, L::Float32, σ::Float32
+        global_i::Int, θ::Vector{Float32}, L::Float32, σ::Float32
     )
+
     current_time = time()
     elapsed = current_time - cb.i_timer
     cb.i_timer = current_time
 
-    @printf("i = %d \t L(𝛉) = %.6f \t Δt = %.2fs \t σ = %.5f\n", global_i, L, elapsed, σ)
-
     push!(cb.complete_trace, (i = global_i, L = L, σ = σ))
 
+    if cb.verbose
+        @printf("i = %d \t L(𝛉) = %.6f \t Δt = %.2fs \t σ = %.5f\n", global_i, L, elapsed, σ)
+    end
+
     if global_i % cb.checkpoint_Δi == 0
-        θ_current = ComponentArray(θ_ema, cb.axes)
+        θ_current = ComponentArray(θ, cb.axes)
 
         raw_acc = accuracy(cb.model, θ_current, cb.st, cb.test_dataloader)
         test_acc = raw_acc > 1.0 ? raw_acc / 100.0 : raw_acc
@@ -48,19 +56,19 @@ function (cb::CheckpointCallback)(
                 "L" => L,
                 "θ" => θ,
                 "σ" => σ,
-                "θ_ema" => θ_ema,
                 "test_acc" => test_acc,
                 "complete_trace" => cb.complete_trace,
                 "accuracy_trace" => cb.accuracy_trace
             )
 
-            save_checkpoint(checkpoint_data, test_acc, global_i, cb.prev_checkpoint, cb.save_dir)
-            @printf("\n[Checkpoint Saved] i = %d \t L(𝛉) = %.6f \t Accuracy = %.2f%%\n\n", global_i, L, test_acc * 100.0)
+            save_checkpoint(checkpoint_data, test_acc, global_i, cb.prev_checkpoint, cb.save_dir, cb.prefix)
+            @printf("%s[Checkpoint Saved] i = %*d \t L(𝛉) = %.6f \t Accuracy = %.2f%%\n\n", cb.verbose ? "\n" : "", ndigits(cb.I), global_i, L, test_acc * 100.0)
         else
-            @printf("\n[Skipped Checkpoint] i = %d \t L(𝛉) = %.6f \t Accuracy = %.2f%% (Best: %.2f%%)\n\n", global_i, L, test_acc * 100.0, cb.best_test_acc * 100.0)
+            @printf("%s[Skipped Checkpoint] i = %*d \t L(𝛉) = %.6f \t Accuracy = %.2f%% (Best: %.2f%%)\n\n", cb.verbose ? "\n" : "", ndigits(cb.I), global_i, L, test_acc * 100.0, cb.best_test_acc * 100.0)
         end
     end
     return false
 end
+
 
 end

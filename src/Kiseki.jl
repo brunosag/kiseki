@@ -14,6 +14,6 @@ using .Checkpoints
 using .Callbacks
 using .Training
 
-export load_MNIST, accuracy, create_mnist_model, load_checkpoint, save_checkpoint, CheckpointCallback, EvolutionaryObjective, train_evolution, ESConfig
+export load_MNIST, accuracy, create_mnist_model, load_checkpoint, save_checkpoint, CheckpointCallback, train_evolution, ESConfig, train_gradient, GradientConfig
 
 end

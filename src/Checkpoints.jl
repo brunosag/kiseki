@@ -6,6 +6,7 @@ using Dates
 
 export load_checkpoint, save_checkpoint
 
+
 function load_checkpoint(resume_file::String)
     if isfile(resume_file)
         @printf("Resuming from checkpoint: %s\n", resume_file)
@@ -16,13 +17,14 @@ function load_checkpoint(resume_file::String)
     return nothing
 end
 
+
 function save_checkpoint(
         data::Dict, test_acc::Float64, global_iter::Int,
-        prev_checkpoint::Ref{String}, dir::String
+        prev_checkpoint::Ref{String}, dir::String, prefix::String
     )
     time_str = Dates.format(Dates.now(), "yyyy-mm-ddTHHMMSS")
 
-    base_name = @sprintf("ES_A%04d_I%d_%s.jld2", round(Int, test_acc * 10000.0), global_iter, time_str)
+    base_name = @sprintf("%s_%04dA_%dI_%s.jld2", prefix, round(Int, test_acc * 10000.0), global_iter, time_str)
     filename = joinpath(abspath(dir), base_name)
     temp_filename = filename * ".tmp"
 
@@ -43,5 +45,6 @@ function save_checkpoint(
 
     return filename
 end
+
 
 end
