@@ -1,6 +1,6 @@
 module Callbacks
 
-using Printf, ComponentArrays
+using Printf, ComponentArrays, Statistics
 using Lux: cpu_device
 using ..Evaluation: accuracy
 using ..Checkpoints: save_checkpoint
@@ -22,7 +22,6 @@ mutable struct CheckpointCallback{M, S, DL, T} <: Function
     prev_checkpoint::Ref{String}
     save_dir::String
     prefix::String
-    verbose::Bool
 end
 
 
@@ -36,8 +35,6 @@ function (cb::CheckpointCallback)(
 
     push!(cb.complete_trace, (i = global_i, L = L, σ = σ))
 
-    base_log = @sprintf("i = %-*d      L(𝛉) = %-*.6f      Δt = %.3fs      σ = %.5f", ndigits(cb.I), global_i, 8, L, elapsed, σ)
-
     if global_i % cb.checkpoint_Δi == 0
         cpu_dev_fn = cpu_device()
         θ_cpu = Vector{Float32}(cpu_dev_fn(θ_dev))
@@ -47,6 +44,16 @@ function (cb::CheckpointCallback)(
         test_acc = raw_acc > 1.0 ? raw_acc / 100.0 : raw_acc
 
         push!(cb.accuracy_trace, (global_i, test_acc))
+
+        interval_start = max(1, length(cb.complete_trace) - cb.checkpoint_Δi + 1)
+        interval_losses = [t.L for t in @view cb.complete_trace[interval_start:end]]
+        loss_mean = mean(interval_losses)
+        loss_std = length(interval_losses) > 1 ? std(interval_losses) : 0.0f0
+
+        base_log = @sprintf(
+            "i = %-*d      L = %-*.4f      mean(L) = %-*.4f      std(L) = %-*.4f      Δt = %.3fs      σ = %.4f",
+            ndigits(cb.I), global_i, 8, L, 8, loss_mean, 8, loss_std, elapsed, σ
+        )
 
         if test_acc > cb.best_test_acc
             cb.best_test_acc = test_acc
@@ -72,15 +79,7 @@ function (cb::CheckpointCallback)(
             acc_str = @sprintf("Accuracy = %.2f%% (Best: %.2f%%)", test_acc * 100.0, cb.best_test_acc * 100.0)
         end
 
-        if cb.verbose
-            println(base_log, "  [", acc_str, "]")
-        else
-            println(base_log, "      ", acc_str)
-        end
-    else
-        if cb.verbose
-            println(base_log)
-        end
+        println(base_log, "      ", acc_str)
     end
 
     return false
