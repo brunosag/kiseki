@@ -1,6 +1,6 @@
 module Training
 
-using Lux, Random, Printf, ComponentArrays, Statistics, Optimisers, Zygote
+using Lux, Random, Printf, ComponentArrays, Statistics, Optimisers, Zygote, LuxCUDA
 using ..Data: load_MNIST
 using ..Evaluation: accuracy
 using ..Checkpoints: load_checkpoint
@@ -91,6 +91,10 @@ function train_gradient(
     global_i = i₀
     data_iter = Iterators.Stateful(Iterators.cycle(train_dataloader))
 
+    if i₀ > 0
+        println("Fast-forwarding dataloader to iteration $i₀...")
+    end
+
     for _ in 1:i₀
         popfirst!(data_iter)
     end
@@ -113,7 +117,8 @@ end
 
 
 function train_evolution(
-        model; I = 500000, batchsize = 256, checkpoint_Δi = 10,
+        model;
+        I = 500000, batchsize = 1024, checkpoint_Δi = 10,
         resume_file = nothing, lossfn = CrossEntropyLoss(; logits = Val(true)),
         es_config = ESConfig(), save_dir = pwd(), rng = Random.default_rng()
     )
@@ -152,6 +157,8 @@ function train_evolution(
     ϵ_θ = dev(Matrix{Float32}(undef, N, λ))
 
     sort_idx_cpu = collect(1:λ)
+    best_idx_cpu_buffer = zeros(Int, μ)
+    best_idx = dev(collect(1:μ))
     s_dev = dev(s)
 
     if i₀ == 0
@@ -160,6 +167,10 @@ function train_evolution(
     end
 
     data_iter = Iterators.Stateful(Iterators.cycle(train_dataloader))
+
+    if i₀ > 0
+        println("Fast-forwarding dataloader and PRNG state to iteration $i₀...")
+    end
 
     for _ in 1:i₀
         popfirst!(data_iter)
@@ -187,19 +198,23 @@ function train_evolution(
         end
 
         partialsortperm!(sort_idx_cpu, fitness_offspring, 1:μ)
-        best_idx_cpu = @view sort_idx_cpu[1:μ]
-        best_idx = dev(best_idx_cpu)
+        copyto!(best_idx_cpu_buffer, @view sort_idx_cpu[1:μ])
+        copyto!(best_idx, best_idx_cpu_buffer)
 
-        pop_parents .= pop_offspring[:, best_idx]
-        str_parents .= str_offspring[best_idx]
-        fitness_parents .= fitness_offspring[best_idx_cpu]
+        pop_parents .= @view pop_offspring[:, best_idx]
+        str_parents .= @view str_offspring[best_idx]
+        fitness_parents .= fitness_offspring[best_idx_cpu_buffer]
 
         es_state = (pop_parents = pop_parents, str_parents = str_parents, fitness_parents = fitness_parents)
         cb_state(i, @view(pop_parents[:, 1]), fitness_parents[1], cpu_dev(str_parents[1:1])[1], es_state)
+
+        if i % 100 == 0
+            GC.gc(false)
+            LuxCUDA.CUDA.reclaim()
+        end
     end
 
     return cb_state.complete_trace
 end
-
 
 end
