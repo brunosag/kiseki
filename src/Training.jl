@@ -12,13 +12,14 @@ export train_gradient, GradientConfig, train_evolution, ESConfig
 Base.@kwdef struct ESConfig
     μ::Int = 30
     λ::Int = 150
-    β::Float32 = 0.9f0
+    β::Float32 = 0.9
+    weight_decay::Float32 = 1.0f-4
 end
 
 Base.@kwdef struct GradientConfig
-    α::Float32 = 3.0f-4
-    epochs::Int = 10
-    batchsize::Int = 128
+    η::Float32 = 0.001
+    β::Tuple{Float32, Float32} = (0.9, 0.999)
+    weight_decay::Float32 = 1.0f-4
 end
 
 
@@ -56,17 +57,15 @@ end
 
 
 function train_gradient(
-        model; config = GradientConfig(), checkpoint_Δi = 100,
-        resume_file = nothing, lossfn = CrossEntropyLoss(; logits = Val(true)),
-        save_dir = pwd(), rng = Random.default_rng()
+        model; epochs = 1000, batchsize = 128, config = GradientConfig(),
+        checkpoint_Δi = 100, resume_file = nothing, rng = Random.default_rng(),
+        lossfn = CrossEntropyLoss(; logits = Val(true)), save_dir = pwd()
     )
 
-    train_dataloader_temp, _ = load_MNIST(rng; batchsize = config.batchsize)
-    total_iterations = config.epochs * length(train_dataloader_temp)
+    train_dataloader_temp, _ = load_MNIST(rng; batchsize)
+    total_iterations = epochs * length(train_dataloader_temp)
 
-    train_dataloader, θ_flat, s, checkpoint_data, i₀, cb_state = initialize_training_state(
-        model, resume_file, save_dir, total_iterations, checkpoint_Δi, config.batchsize, rng, "Adam"
-    )
+    train_dataloader, θ_flat, s, checkpoint_data, i₀, cb_state = initialize_training_state(model, resume_file, save_dir, total_iterations, checkpoint_Δi, batchsize, rng, "AdamW")
 
     dev = Lux.gpu_device()
     cpu_dev = Lux.cpu_device()
@@ -76,7 +75,7 @@ function train_gradient(
         cb_state.axes
     )
 
-    optimizer = Optimisers.Adam(config.α)
+    optimizer = Optimisers.AdamW(config.η, config.β, config.weight_decay)
     ts = dev(Lux.Training.TrainState(model, θ_structured, s, optimizer))
 
     if !isnothing(checkpoint_data) && haskey(checkpoint_data, "opt_state")
@@ -127,7 +126,7 @@ function train_evolution(
     cpu_dev = Lux.cpu_device()
 
     N = length(θ_flat)
-    λ, μ, β = es_config.λ, es_config.μ, es_config.β
+    λ, μ, β, weight_decay = es_config.λ, es_config.μ, es_config.β, es_config.weight_decay
     τ = Float32(1.0 / sqrt(N))
 
     w_cpu = Float32.(log(μ + 0.5) .- log.(1:μ))
@@ -203,7 +202,11 @@ function train_evolution(
         for j in 1:λ
             θ_ind = ComponentArray(@view(pop_offspring[:, j]), cb_state.axes)
             ŷ, _ = model(X_dev, θ_ind, s_dev)
-            fitness_offspring[j] = cpu_dev(lossfn(ŷ, y_dev))[1]
+
+            base_loss = cpu_dev(lossfn(ŷ, y_dev))[1]
+            l2_penalty = weight_decay * cpu_dev(sum(abs2, θ_ind))
+
+            fitness_offspring[j] = base_loss + l2_penalty
         end
 
         partialsortperm!(sort_idx_cpu, fitness_offspring, 1:μ)
