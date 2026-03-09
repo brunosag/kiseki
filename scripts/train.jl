@@ -1,65 +1,40 @@
 Base.exit_on_sigint(false)
 using Pkg; Pkg.activate(joinpath(@__DIR__, ".."))
-
-ENV["CUDNN_DETERMINISTIC"] = "1"
-ENV["CUBLAS_WORKSPACE_CONFIG"] = ":4096:8"
-
-using Kiseki, Random, ArgParse, LuxCUDA
-
+using Kiseki, ArgParse
 
 function parse_commandline()
     s = ArgParseSettings()
 
     @add_arg_table s begin
-        "mode"
-        help = "Specify the optimizer: 'evolution' or 'gradient'"
-        required = true
-        range_tester = (x -> x in ["evolution", "gradient"])
-        "resume"
-        help = "Path to a .jld2 checkpoint file to resume training"
+        "--batchsize", "-b"
+        arg_type = Int
         required = false
+        default = 10
+
+        "--seed", "-s"
+        arg_type = Int
+        required = false
+        default = 42
+
+        "--generations", "-g"
+        arg_type = Int
+        required = false
+        default = 500000
     end
 
     return parse_args(s)
 end
 
-
 function main()
     parsed_args = parse_commandline()
-    mode = parsed_args["mode"]
-    resume_target = parsed_args["resume"]
+    batchsize = parsed_args["batchsize"]
+    seed = parsed_args["seed"]
+    generations = parsed_args["generations"]
 
-    seed = 42
-    rng = Xoshiro(seed)
-    Random.seed!(seed)
+    train_LEEA(; seed, batchsize, generations)
 
-    if isdefined(LuxCUDA, :CUDA)
-        LuxCUDA.CUDA.seed!(seed)
-    end
-
-    checkpoint_dir = abspath(joinpath(@__DIR__, "..", "checkpoints"))
-    mkpath(checkpoint_dir)
-
-    model = create_mnist_model()
-
-    if mode == "evolution"
-        return train_evolution(
-            model;
-            rng = rng,
-            resume_file = resume_target,
-            save_dir = checkpoint_dir,
-        )
-    elseif mode == "gradient"
-        return train_gradient(
-            model;
-            config = GradientConfig(),
-            rng = rng,
-            resume_file = resume_target,
-            save_dir = checkpoint_dir,
-        )
-    end
+    return
 end
-
 
 function start()
     try
@@ -73,6 +48,5 @@ function start()
     end
     return
 end
-
 
 start()

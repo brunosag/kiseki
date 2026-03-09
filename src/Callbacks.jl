@@ -7,7 +7,6 @@ using ..Checkpoints: save_checkpoint
 
 export CheckpointCallback
 
-
 mutable struct CheckpointCallback{M, S, DL, T} <: Function
     I::Int
     checkpoint_Δi::Int
@@ -22,8 +21,8 @@ mutable struct CheckpointCallback{M, S, DL, T} <: Function
     prev_checkpoint::Ref{String}
     save_dir::String
     prefix::String
+    target_acc::Float64
 end
-
 
 function (cb::CheckpointCallback)(
         global_i::Int, θ_dev, L::Float32, σ::Float32, opt_state_dev = nothing
@@ -80,10 +79,13 @@ function (cb::CheckpointCallback)(
         end
 
         println(base_log, "      ", acc_str)
+
+        if test_acc >= cb.target_acc
+            return true
+        end
     end
 
     return false
 end
-
 
 end

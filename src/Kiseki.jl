@@ -3,17 +3,13 @@ module Kiseki
 include("Data.jl")
 include("Evaluation.jl")
 include("Models.jl")
-include("Checkpoints.jl")
-include("Callbacks.jl")
-include("Training.jl")
+include("LEEA.jl")
 
 using .Data
 using .Evaluation
 using .Models
-using .Checkpoints
-using .Callbacks
-using .Training
+using .LEEA
 
-export load_MNIST, accuracy, create_mnist_model, load_checkpoint, save_checkpoint, CheckpointCallback, train_evolution, ESConfig, train_gradient, GradientConfig
+export load_MNIST, accuracy, CNN_2C2D_MNIST, train_LEEA
 
 end

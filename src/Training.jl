@@ -24,7 +24,7 @@ end
 
 
 function initialize_training_state(
-        model, resume_file, save_dir, I, checkpoint_Δi, batchsize, rng, prefix
+        model, resume_file, save_dir, I, checkpoint_Δi, batchsize, rng, prefix, target_acc
     )
 
     train_dataloader, test_dataloader = load_MNIST(rng; batchsize)
@@ -49,7 +49,7 @@ function initialize_training_state(
     cb_state = CheckpointCallback(
         I, checkpoint_Δi, time(), complete_trace, accuracy_trace,
         model, s, axes_flat, test_dataloader, best_test_acc,
-        prev_checkpoint, save_dir, prefix
+        prev_checkpoint, save_dir, prefix, target_acc
     )
 
     return train_dataloader, θ_flat, s, checkpoint_data, i₀, cb_state
@@ -58,14 +58,15 @@ end
 
 function train_gradient(
         model; epochs = 1000, batchsize = 128, config = GradientConfig(),
-        checkpoint_Δi = 100, resume_file = nothing, rng = Random.default_rng(),
-        lossfn = CrossEntropyLoss(; logits = Val(true)), save_dir = pwd()
+        checkpoint_Δi = 1, resume_file = nothing, rng = Random.default_rng(),
+        lossfn = CrossEntropyLoss(; logits = Val(true)), save_dir = pwd(),
+        target_acc::Float64 = 0.9872
     )
 
     train_dataloader_temp, _ = load_MNIST(rng; batchsize)
     total_iterations = epochs * length(train_dataloader_temp)
 
-    train_dataloader, θ_flat, s, checkpoint_data, i₀, cb_state = initialize_training_state(model, resume_file, save_dir, total_iterations, checkpoint_Δi, batchsize, rng, "AdamW")
+    train_dataloader, θ_flat, s, checkpoint_data, i₀, cb_state = initialize_training_state(model, resume_file, save_dir, total_iterations, checkpoint_Δi, batchsize, rng, "AdamW", target_acc)
 
     dev = Lux.gpu_device()
     cpu_dev = Lux.cpu_device()
@@ -105,7 +106,9 @@ function train_gradient(
             ad_backend, lossfn, (X_dev, y_dev), ts
         )
 
-        cb_state(global_i, ts.parameters, Float32(cpu_dev(loss)), 0.0f0, ts.optimizer_state)
+        if cb_state(global_i, ts.parameters, Float32(cpu_dev(loss)), 0.0f0, ts.optimizer_state)
+            break
+        end
     end
 
     return cb_state.complete_trace
@@ -115,11 +118,12 @@ end
 function train_evolution(
         model; I = 500000, batchsize = 1024, checkpoint_Δi = 10,
         resume_file = nothing, lossfn = CrossEntropyLoss(; logits = Val(true)),
-        es_config = ESConfig(), save_dir = pwd(), rng = Random.default_rng()
+        es_config = ESConfig(), save_dir = pwd(), rng = Random.default_rng(),
+        target_acc::Float64 = 1.0
     )
 
     train_dataloader, θ_flat, s, checkpoint_data, i₀, cb_state = initialize_training_state(
-        model, resume_file, save_dir, I, checkpoint_Δi, batchsize, rng, "ES"
+        model, resume_file, save_dir, I, checkpoint_Δi, batchsize, rng, "ES", target_acc
     )
 
     dev = Lux.gpu_device()
@@ -180,7 +184,9 @@ function train_evolution(
 
     if i₀ == 0
         es_state = (pop_parents = pop_parents, str_parents = str_parents, fitness_parents = fitness_parents, θ_avg = θ_avg, σ_avg = σ_avg)
-        cb_state(i₀, θ_avg, fitness_parents[1], σ_avg, es_state)
+        if cb_state(i₀, θ_avg, fitness_parents[1], σ_avg, es_state)
+            return cb_state.complete_trace
+        end
     end
 
     data_iter = Iterators.Stateful(Iterators.cycle(train_dataloader))
@@ -224,7 +230,9 @@ function train_evolution(
         σ_avg = β * σ_avg + (1.0f0 - β) * σ_avg_target
 
         es_state = (pop_parents = pop_parents, str_parents = str_parents, fitness_parents = fitness_parents, θ_avg = θ_avg, σ_avg = σ_avg)
-        cb_state(i, θ_avg, fitness_parents[1], σ_avg, es_state)
+        if cb_state(i, θ_avg, fitness_parents[1], σ_avg, es_state)
+            break
+        end
 
         if i % 1000 == 0
             GC.gc(true)
