@@ -1,10 +1,12 @@
 module LEEA
 
 import Lux
+using Printf
 using Random: Xoshiro, rand!
 using Polyester: @batch
 using StatsBase: Weights, sample, sample!
 using Base.Threads: nthreads, threadid
+using OneHotArrays: onecold
 using ..Data: load_MNIST
 using ..Models: CNN_2C2D_MNIST
 
@@ -86,6 +88,24 @@ function reproduce_sexual!(O, P, p₁, p₂, U, rngs, Nₛ, Nₐ)
     end
 end
 
+function evaluate_best(fₒ, P, st, model, dataloader, gen)
+    best_idx = argmax(fₒ)
+    θ = NamedTuple{(:params,)}((@view(P[:, best_idx]),))
+    correct, total = 0, 0
+
+    for (X, Y) in dataloader
+        Ŷ, _ = model(X, θ, st)
+
+        correct += sum(onecold(Array(Ŷ)) .== onecold(Y))
+        total += size(Y, 2)
+    end
+
+    acc = (correct / total) * 100.0
+    @printf "i = %i        Accuracy = %.2f\n" gen acc
+
+    return
+end
+
 function train_LEEA(; seed::Int, batchsize::Int, generations::Int)
     (; N, r, m, γₘ, p, s, d) = LEEAConfig()
 
@@ -93,7 +113,7 @@ function train_LEEA(; seed::Int, batchsize::Int, generations::Int)
     rng = Xoshiro(seed)
     rngs = [Xoshiro(seed + t) for t in 1:n_threads]
 
-    train_dataloader, _ = load_MNIST(; rng, batchsize, balanced = true)
+    train_dataloader, test_dataloader = load_MNIST(; rng, batchsize, balanced = true)
     model = CNN_2C2D_MNIST
 
     _, st = Lux.setup(rng, model)
@@ -118,6 +138,8 @@ function train_LEEA(; seed::Int, batchsize::Int, generations::Int)
         select_parents!(fₒ, pₐ, p₁, p₂, rng, N, p)
         reproduce_assexual!(O, P, pₐ, U₁, U₂, rngs, Nₐ, r, m)
         reproduce_sexual!(O, P, p₁, p₂, Uₛ, rngs, Nₛ, Nₐ)
+
+        evaluate_best(fₒ, P, st, model, test_dataloader, i)
 
         m *= γₘ
         P, O = O, P
