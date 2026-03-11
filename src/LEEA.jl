@@ -19,20 +19,32 @@ const logitcrossentropy = Lux.CrossEntropyLoss(; logits = Val(true))
     γₘ::Float32 = 0.99  # mutation power decay
     p::Float32 = 0.4    # selection proportion
     s::Float32 = 0.5    # sexual reproduction proportion
-    γᵢ::Float32 = 0.2   # fitness inheritance decay
+    d::Float32 = 0.2    # fitness inheritance decay
 end
 
-function evaluate_population!(f, model, P, X, Y, st, N)
+function evaluate_population!(fₚ, fₒ, model, P, X, Y, st, pₐ, p₁, p₂, N, Nₐ, d, gen)
+    d′ = 1.0f0 - d
+    half_d′ = 0.5f0 * d′
+    is_first_gen = gen == 1
+
     return @batch for j in 1:N
         θⱼ = NamedTuple{(:params,)}((@view(P[:, j]),))
         Ŷ, _ = model(X, θⱼ, st)
-        f[j] = 1.0f0 / (1.0f0 + logitcrossentropy(Ŷ, Y))
+        f = 1.0f0 / (1.0f0 + logitcrossentropy(Ŷ, Y))
+
+        if is_first_gen
+            fₒ[j] = f
+        elseif j <= Nₐ
+            fₒ[j] = fₚ[pₐ[j]] * d′ + f
+        else
+            fₒ[j] = (fₚ[p₁[j - Nₐ]] + fₚ[p₂[j - Nₐ]]) * half_d′ + f
+        end
     end
 end
 
-function select_parents!(f, pₐ, p₁, p₂, rng, N, p)
-    wheel = partialsortperm(f, 1:round(Int, p * N), rev = true)
-    weights = Weights(@view f[wheel])
+function select_parents!(fₒ, pₐ, p₁, p₂, rng, N, p)
+    wheel = partialsortperm(fₒ, 1:round(Int, p * N), rev = true)
+    weights = Weights(@view fₒ[wheel])
 
     sample!(rng, wheel, weights, pₐ)
     sample!(rng, wheel, weights, p₁)
@@ -75,7 +87,7 @@ function reproduce_sexual!(O, P, p₁, p₂, U, rngs, Nₛ, Nₐ)
 end
 
 function train_LEEA(; seed::Int, batchsize::Int, generations::Int)
-    (; N, r, m, γₘ, p, s, γᵢ) = LEEAConfig()
+    (; N, r, m, γₘ, p, s, d) = LEEAConfig()
 
     n_threads = nthreads()
     rng = Xoshiro(seed)
@@ -95,20 +107,21 @@ function train_LEEA(; seed::Int, batchsize::Int, generations::Int)
     Nₐ = N - Nₛ
 
     alloc(T, n) = Vector{T}(undef, n)
-    f = alloc(Float32, N)
+    fₚ, fₒ = alloc(Float32, N), alloc(Float32, N)
     pₐ, p₁, p₂ = alloc(Int, Nₐ), alloc(Int, Nₛ), alloc(Int, Nₛ)
     Uₛ, U₁, U₂ = ntuple(_ -> [alloc(Float32, θ_len) for _ in 1:n_threads], 3)
 
     for i in 1:generations
         X, Y = popfirst!(train_dataloader)
 
-        evaluate_population!(f, model, P, X, Y, st, N)
-        select_parents!(f, pₐ, p₁, p₂, rng, N, p)
+        evaluate_population!(fₚ, fₒ, model, P, X, Y, st, pₐ, p₁, p₂, N, Nₐ, d, i)
+        select_parents!(fₒ, pₐ, p₁, p₂, rng, N, p)
         reproduce_assexual!(O, P, pₐ, U₁, U₂, rngs, Nₐ, r, m)
         reproduce_sexual!(O, P, p₁, p₂, Uₛ, rngs, Nₛ, Nₐ)
 
         m *= γₘ
         P, O = O, P
+        fₚ, fₒ = fₒ, fₚ
     end
     return
 end
