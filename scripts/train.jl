@@ -1,6 +1,6 @@
 Base.exit_on_sigint(false)
 using Pkg; Pkg.activate(joinpath(@__DIR__, ".."))
-using Kiseki, ArgParse
+using Kiseki, ArgParse, LuxCUDA
 
 function parse_commandline()
     s = ArgParseSettings()
@@ -9,17 +9,17 @@ function parse_commandline()
         "--batchsize", "-b"
         arg_type = Int
         required = false
-        default = 1000
+        default = 500
 
         "--seed", "-s"
         arg_type = Int
         required = false
         default = 42
 
-        "--generations", "-g"
+        "--iterations", "-i"
         arg_type = Int
         required = false
-        default = 500000
+        default = 5
     end
 
     return parse_args(s)
@@ -27,11 +27,14 @@ end
 
 function main()
     parsed_args = parse_commandline()
-    batchsize = parsed_args["batchsize"]
-    seed = parsed_args["seed"]
-    generations = parsed_args["generations"]
 
-    train_LEEA(; seed, batchsize, generations)
+    exp = Experiment(
+        seed = parsed_args["seed"],
+        batchsize = parsed_args["batchsize"],
+        max_i = parsed_args["iterations"]
+    )
+
+    Kiseki.run(exp)
 
     return
 end

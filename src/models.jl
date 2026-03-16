@@ -1,4 +1,4 @@
-module Models
+module models
 
 using Lux: Chain, Conv, MaxPool, FlattenLayer, Dense, relu
 using WeightInitializers: kaiming_normal

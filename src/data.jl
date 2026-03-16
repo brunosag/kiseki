@@ -1,4 +1,4 @@
-module Data
+module data
 
 using MLDatasets: MNIST
 using MLUtils: DataLoader, getobs, batch
@@ -75,7 +75,7 @@ function collate(batch_data)
     return (Xᵢ, Yᵢ)
 end
 
-function load_MNIST(; rng::AbstractRNG, batchsize::Int, balanced::Bool = false)
+function load_MNIST(rng::AbstractRNG, batchsize::Int; balanced::Bool = true)
     train_data = MNIST(:train)
     test_data = MNIST(:test)
 

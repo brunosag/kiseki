@@ -1,15 +1,15 @@
 module Kiseki
 
-include("Data.jl")
-include("Evaluation.jl")
-include("Models.jl")
-include("LEEA.jl")
+include("data.jl")
+include("models.jl")
+include("optimizers.jl")
+include("experiment.jl")
 
-using .Data
-using .Evaluation
-using .Models
-using .LEEA
+using .data
+using .models
+using .optimizers
+using .experiment
 
-export load_MNIST, accuracy, CNN_2C2D_MNIST, train_LEEA
+export load_MNIST, CNN_2C2D_MNIST, AbstractOptimizer, AbstractOptimizerState, LEEA, LEEAState, init, step!, Experiment, ExperimentState
 
 end

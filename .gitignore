@@ -1,23 +1,16 @@
-# Julia compilation and environments
+# julia
 Manifest.toml
-*.jl.cov
-*.jl.mem
-*.ji
-*.so
-*.dylib
-*.dll
-deps/deps.jl
-deps/build.log
 
-# NixOS and direnv
+# nix
+shell.nix
 .direnv/
-.envrc.local
+.envrc
 
-# Emacs backups and auto-saves
+# emacs
 *~
 \#*\#
 .\#*
 
-# Serialized models and traces
+# checkpoints
 checkpoints/
 *.jls
