@@ -50,13 +50,21 @@ function init(opt::LEEA, model, rng, dev)
 end
 
 function evaluate_fitness!(opt::LEEA, ops::LEEAState, re, model, st, X, Y)
+    best_loss = Inf32
+
     for j in 1:opt.N
         θ = re(@view(ops.P[:, j]))
         Ŷ, _ = model(X, θ, st)
-        L = logitcrossentropy(Ŷ, Y)
-        ops.fₒ[j] = 1.0f0 / (1.0f0 + Float32(L))
+        L = Float32(logitcrossentropy(Ŷ, Y))
+
+        if L < best_loss
+            best_loss = L
+        end
+
+        ops.fₒ[j] = 1.0f0 / (1.0f0 + L)
     end
-    return
+
+    return best_loss
 end
 
 function inherit_fitness!(opt::LEEA, ops::LEEAState)
@@ -142,7 +150,8 @@ function update_patience!(opt::LEEA, ops::LEEAState)
 end
 
 function step!(opt::LEEA, ops::LEEAState, re, model, st, X, Y, rng)
-    evaluate_fitness!(opt::LEEA, ops::LEEAState, re, model, st, X, Y)
+    best_loss = evaluate_fitness!(opt::LEEA, ops::LEEAState, re, model, st, X, Y)
+
     inherit_fitness!(opt, ops)
     select_parents!(opt, ops, rng)
     reproduce_assexual!(opt, ops)
@@ -151,7 +160,8 @@ function step!(opt::LEEA, ops::LEEAState, re, model, st, X, Y, rng)
 
     ops.P, ops.O = ops.O, ops.P
     ops.fₚ, ops.fₒ = ops.fₒ, ops.fₚ
-    return
+
+    return best_loss
 end
 
 end

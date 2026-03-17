@@ -57,10 +57,10 @@ function run(exp::Experiment; est::Union{ExperimentState, Nothing} = nothing)
         t₀ = time()
         X, Y = popfirst!(est.train_dataloader) |> dev
 
-        step!(exp.opt, est.ops, re, model, st, X, Y, est.rng)
+        L = step!(exp.opt, est.ops, re, model, st, X, Y, est.rng)
 
         Δt = time() - t₀
-        @printf "i = %-*d    Δt = %.2fs\n" ndigits(exp.max_i) est.i Δt
+        @printf "i = %-*d    Δt = %.2fs    L = %.4f\n" ndigits(exp.max_i) est.i Δt L
 
         est.i += 1
     end
