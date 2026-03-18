@@ -6,6 +6,8 @@ const logitcrossentropy = Lux.CrossEntropyLoss(; logits = Val(true))
     max_i::Int = 500000
     target_acc::Float64 = 100.0
     opt::AbstractOptimizer = LEEA()
+    model::Lux.AbstractLuxLayer = CNN_2C2D_MNIST
+    device::AbstractDevice = Lux.cpu_device()
 end
 
 mutable struct ExperimentState
@@ -18,12 +20,14 @@ mutable struct ExperimentState
     i
 end
 
-function init(exp::Experiment, model, dev)
+function init(exp::Experiment)
     LuxCUDA.CUDA.seed!(exp.seed)
 
     rng = Xoshiro(exp.seed)
-    ops = init(exp.opt, model, rng, dev)
-    train_loader, val_set, test_loader = load_MNIST(rng, exp.batchsize, dev, val_size = 10_000)
+    ops = init(exp.opt, exp.model, exp.device, rng)
+    train_loader, val_set, test_loader = load_MNIST(
+        rng, exp.batchsize, exp.device, val_size = 10_000
+    )
     best_acc = 0.0
     i = 1
 
@@ -41,23 +45,25 @@ function evaluate(θ, model, st, val_set)
 end
 
 function run(exp::Experiment; est::Union{ExperimentState, Nothing} = nothing)
-    dev = Lux.gpu_device()
-    model = CNN_2C2D_MNIST
-    st = Lux.testmode(Lux.initialstates(TaskLocalRNG(), model))
-    re = destructure(Lux.initialparameters(TaskLocalRNG(), model))[2]
+    st = Lux.testmode(Lux.initialstates(TaskLocalRNG(), exp.model))
 
     if isnothing(est)
-        est = init(exp, model, dev)
+        est = init(exp)
     end
 
     while est.i <= exp.max_i && est.best_acc < exp.target_acc
         t₀ = time()
-        X, Y = popfirst!(est.train_loader) |> dev
+        X, Y = popfirst!(est.train_loader) |> exp.device
 
-        L, acc, etc = step!(exp.opt, est.ops, re, model, st, X, Y, est.rng, est.best_acc, est.val_set, evaluate)
+        L = step!(exp.opt, est.ops, exp.model, st, X, Y, est.rng)
+
+        θ = get_best_params(est.ops)
+        acc = evaluate(θ, exp.model, st, est.val_set)
+
+        update_scheduler!(exp.opt, est.ops, acc, est.best_acc)
 
         Δt = time() - t₀
-        base_log = @sprintf "i = %-*d      Δt = %.2fs      L = %.4f      %sAcc. = %-*.2f%%" ndigits(exp.max_i) est.i Δt L (!isnothing(etc) ? ("$etc      ") : "") 5 acc
+        base_log = @sprintf "i = %-*d      Δt = %.2fs      L = %.4f      Acc. = %-*.2f%%" ndigits(exp.max_i) est.i Δt L 5 acc
 
         if acc > est.best_acc
             println(base_log)

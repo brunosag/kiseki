@@ -10,6 +10,7 @@
 end
 
 mutable struct LEEAState{M <: AbstractMatrix{Float32}} <: AbstractOptimizerState
+    re::Restructure
     P::M
     O::M
     fₚ::Vector{Float32}
@@ -22,7 +23,9 @@ mutable struct LEEAState{M <: AbstractMatrix{Float32}} <: AbstractOptimizerState
     is_first_step::Bool
 end
 
-function init(opt::LEEA, model, rng, dev)
+function init(opt::LEEA, model, dev, rng)
+    _, re = destructure(Lux.initialparameters(TaskLocalRNG(), model))
+
     P = stack([destructure(Lux.initialparameters(rng, model))[1] for _ in 1:opt.N]) |> dev
     O = similar(P)
 
@@ -33,28 +36,25 @@ function init(opt::LEEA, model, rng, dev)
     fₚ, fₒ = alloc(Float32, opt.N), alloc(Float32, opt.N)
     pₐ, p₁, p₂ = alloc(Int, Nₐ), alloc(Int, Nₛ), alloc(Int, Nₛ)
 
-    return LEEAState(P, O, fₚ, fₒ, pₐ, p₁, p₂, opt.m₀, 0, true)
+    return LEEAState(re, P, O, fₚ, fₒ, pₐ, p₁, p₂, opt.m₀, 0, true)
 end
 
-function evaluate_fitness!(opt::LEEA, ops::LEEAState, re, model, st, X, Y)
-    best_loss, best_idx = Inf32, 0
+function evaluate_fitness!(opt::LEEA, ops::LEEAState, model, st, X, Y)
+    best_loss = Inf32
 
     for j in 1:opt.N
-        θ = re(@view(ops.P[:, j]))
+        θ = ops.re(@view ops.P[:, j])
         Ŷ, _ = model(X, θ, st)
         L = Float32(logitcrossentropy(Ŷ, Y))
 
         if L < best_loss
             best_loss = L
-            best_idx = j
         end
 
         ops.fₒ[j] = 1.0f0 / (1.0f0 + L)
     end
 
-    best_θ = re(@view(ops.P[:, best_idx]))
-
-    return best_loss, best_θ
+    return best_loss
 end
 
 function inherit_fitness!(opt::LEEA, ops::LEEAState)
@@ -92,7 +92,7 @@ function select_parents!(opt::LEEA, ops::LEEAState, rng)
     return
 end
 
-function reproduce_assexual!(opt::LEEA, ops::LEEAState)
+function reproduce_assexual!(opt::LEEA, ops::LEEAState, rng)
     θ_len = size(ops.P, 1)
     Nₐ = length(ops.pₐ)
 
@@ -101,14 +101,14 @@ function reproduce_assexual!(opt::LEEA, ops::LEEAState)
 
     u₁ = similar(ops.P, Float32, θ_len, Nₐ)
     u₂ = similar(ops.P, Float32, θ_len, Nₐ)
-    rand!(u₁)
-    rand!(u₂)
+    rand!(rng, u₁)
+    rand!(rng, u₂)
 
     @views ops.O[:, 1:Nₐ] .= ops.P[:, pₐ] .+ (u₁ .< opt.r) .* ops.m .* (2.0f0 .* u₂ .- 1.0f0)
     return
 end
 
-function reproduce_sexual!(ops::LEEAState)
+function reproduce_sexual!(ops::LEEAState, rng)
     θ_len = size(ops.P, 1)
     Nₐ = length(ops.pₐ)
     Nₛ = length(ops.p₁)
@@ -119,13 +119,31 @@ function reproduce_sexual!(ops::LEEAState)
     copyto!(p₂, ops.p₂)
 
     u = similar(ops.P, Float32, θ_len, Nₛ)
-    rand!(u)
+    rand!(rng, u)
 
     @views ops.O[:, (Nₐ + 1):end] .= ifelse.(u .< 0.5f0, ops.P[:, p₁], ops.P[:, p₂])
     return
 end
 
-function update_patience!(opt::LEEA, ops::LEEAState, acc, best_acc)
+function step!(opt::LEEA, ops::LEEAState, model, st, X, Y, rng)
+    best_loss = evaluate_fitness!(opt, ops, model, st, X, Y)
+    inherit_fitness!(opt, ops)
+    select_parents!(opt, ops, rng)
+    reproduce_assexual!(opt, ops, rng)
+    reproduce_sexual!(ops, rng)
+
+    ops.P, ops.O = ops.O, ops.P
+    ops.fₚ, ops.fₒ = ops.fₒ, ops.fₚ
+
+    return best_loss
+end
+
+function get_best_params(ops::LEEAState)
+    best_idx = argmax(ops.fₚ)
+    return ops.re(@view ops.P[:, best_idx])
+end
+
+function update_scheduler!(opt::LEEA, ops::LEEAState, acc, best_acc)
     if acc > best_acc
         ops.pat = 0
     else
@@ -137,24 +155,4 @@ function update_patience!(opt::LEEA, ops::LEEAState, acc, best_acc)
         ops.pat = 0
     end
     return
-end
-
-function step!(
-        opt::LEEA, ops::LEEAState, re, model, st, X, Y, rng, best_acc, val_set, evaluate
-    )
-    best_loss, best_θ = evaluate_fitness!(opt, ops, re, model, st, X, Y)
-
-    inherit_fitness!(opt, ops)
-    select_parents!(opt, ops, rng)
-    reproduce_assexual!(opt, ops)
-    reproduce_sexual!(ops)
-
-    acc = evaluate(best_θ, model, st, val_set)
-
-    update_patience!(opt, ops, acc, best_acc)
-
-    ops.P, ops.O = ops.O, ops.P
-    ops.fₚ, ops.fₒ = ops.fₒ, ops.fₚ
-
-    return best_loss, acc, @sprintf("m = %.4f", ops.m)
 end
