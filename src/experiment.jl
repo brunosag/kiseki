@@ -1,21 +1,23 @@
 const logitcrossentropy = Lux.CrossEntropyLoss(; logits = Val(true))
 
-@kwdef struct Experiment
+@kwdef struct Experiment{
+        O <: AbstractOptimizer, M <: Lux.AbstractLuxLayer, D <: AbstractDevice,
+    }
     seed::Int = 42
     batchsize::Int = 100
     max_i::Int = 100000
     target_acc::Float64 = 100.0
-    opt::AbstractOptimizer = LEEA()
-    model::Lux.AbstractLuxLayer = CNN_2C2D_MNIST
-    device::AbstractDevice = Lux.gpu_device()
+    opt::O = LEEA()
+    model::M = CNN_2C2D_MNIST
+    device::D = Lux.gpu_device()
 end
 
-mutable struct ExperimentState
-    rng
-    ops
-    last_checkpoint
-    best_acc
-    i
+mutable struct ExperimentState{R <: AbstractRNG, O <: AbstractOptimizerState}
+    rng::R
+    ops::O
+    last_checkpoint::Union{String, Nothing}
+    best_acc::Float64
+    i::Int
 end
 
 function init(exp::Experiment, model)

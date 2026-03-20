@@ -9,8 +9,8 @@
     pat_lim::Int = 50    # generations to wait before decaying m
 end
 
-mutable struct LEEAState{M <: AbstractMatrix{Float32}} <: AbstractOptimizerState
-    re::Restructure
+mutable struct LEEAState{M <: AbstractMatrix{Float32}, R} <: AbstractOptimizerState
+    re::R
     P::M
     fₚ::Vector{Float32}
     m::Float32
@@ -18,8 +18,8 @@ mutable struct LEEAState{M <: AbstractMatrix{Float32}} <: AbstractOptimizerState
     is_first_step::Bool
 end
 
-mutable struct LEEAWorkspace
-    O::AbstractMatrix{Float32}
+mutable struct LEEAWorkspace{M <: AbstractMatrix{Float32}}
+    O::M
     fₒ::Vector{Float32}
     pₐ::Vector{Int}
     p₁::Vector{Int}
@@ -111,8 +111,8 @@ function reproduce_assexual!(opt, ops, ws, rng)
 
     u₁ = similar(ops.P, Float32, θ_len, Nₐ)
     u₂ = similar(ops.P, Float32, θ_len, Nₐ)
-    rand!(rng, u₁)
-    rand!(rng, u₂)
+    rand!(u₁)
+    rand!(u₂)
 
     @views ws.O[:, 1:Nₐ] .= ops.P[:, pₐ] .+ (u₁ .< opt.r) .* ops.m .* (2.0f0 .* u₂ .- 1.0f0)
     return
@@ -129,7 +129,7 @@ function reproduce_sexual!(ops, ws, rng)
     copyto!(p₂, ws.p₂)
 
     u = similar(ops.P, Float32, θ_len, Nₛ)
-    rand!(rng, u)
+    rand!(u)
 
     @views ws.O[:, (Nₐ + 1):end] .= ifelse.(u .< 0.5f0, ops.P[:, p₁], ops.P[:, p₂])
     return

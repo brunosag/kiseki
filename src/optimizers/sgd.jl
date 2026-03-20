@@ -2,9 +2,9 @@
     η::Float32 = 0.01f0   # learning rate
 end
 
-mutable struct SGDState <: AbstractOptimizerState
-    θ
-    ts
+mutable struct SGDState{P, S} <: AbstractOptimizerState
+    θ::P
+    ts::S
 end
 
 function init(opt::SGD, model, dev, rng)
