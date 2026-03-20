@@ -6,7 +6,7 @@
     p::Float32 = 0.4     # selection proportion
     s::Float32 = 0.5     # sexual reproduction proportion
     d::Float32 = 0.2     # fitness inheritance decay
-    pat_lim::Int = 50    # generations to wait before decaying m
+    pat_lim::Int = 5    # generations to wait before decaying m
 end
 
 mutable struct LEEAState{M <: AbstractMatrix{Float32}, R} <: AbstractOptimizerState

@@ -31,6 +31,10 @@ function parse_commandline()
         arg_type = Int
         default = 100000
 
+        "--val-freq", "-v"
+        arg_type = Int
+        default = 1
+
         "--target-acc", "-t"
         help = "[0.0, 100.0]"
         arg_type = Float64

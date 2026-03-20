@@ -7,6 +7,7 @@ const logitcrossentropy = Lux.CrossEntropyLoss(; logits = Val(true))
     batchsize::Int = 100
     max_i::Int = 100000
     target_acc::Float64 = 100.0
+    val_freq::Int = 10
     opt::O = LEEA()
     model::M = CNN_2C2D_MNIST
     device::D = Lux.gpu_device()
@@ -81,22 +82,31 @@ function run(exp, est = nothing)
         X, Y = popfirst!(train_loader)
 
         L = step!(exp.opt, est.ops, ws, model, st, X, Y, est.rng)
-
-        θ = get_best_params(est.ops)
-        acc = evaluate(θ, model, st, val_set)
-
-        update_scheduler!(exp.opt, est.ops, acc, est.best_acc)
-
         Δt = time() - t₀
         opt_metrics = format_metrics(est.ops)
-        base_log = @sprintf("i = %-*d      Δt = %.2fs      L = %.4f%s      Acc. = %-*.2f%%", ndigits(exp.max_i), est.i, Δt, L, opt_metrics, 5, acc)
 
-        if acc > est.best_acc
-            println(base_log)
-            est.best_acc = acc
-            save_checkpoint!(est, exp)
+        base_log = @sprintf(
+            "i = %-*d      Δt = %.2fs      L = %.4f%s",
+            ndigits(exp.max_i), est.i, Δt, L, opt_metrics
+        )
+
+        if est.i % exp.val_freq == 0 || est.i == exp.max_i
+            θ = get_best_params(est.ops)
+            acc = evaluate(θ, model, st, val_set)
+
+            update_scheduler!(exp.opt, est.ops, acc, est.best_acc)
+
+            full_log = @sprintf("%s      Acc. = %-*.2f%%", base_log, 5, acc)
+
+            if acc > est.best_acc
+                println(full_log)
+                est.best_acc = acc
+                save_checkpoint!(est, exp)
+            else
+                @printf("%s [Best: %-*.2f%%]\n", full_log, 5, est.best_acc)
+            end
         else
-            @printf("%s [Best: %-*.2f%%]\n", base_log, 5, est.best_acc)
+            println(base_log)
         end
 
         est.i += 1
