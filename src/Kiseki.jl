@@ -3,6 +3,7 @@ module Kiseki
 import Lux, Zygote, SimpleChains, Dates
 import Base: run
 using LuxCUDA, Printf
+using Statistics: mean
 using MLDatasets: MNIST
 using ADTypes: AutoZygote
 using WeightInitializers: kaiming_normal
@@ -11,7 +12,7 @@ using OneHotArrays: onehotbatch, onecold
 using StatsBase: Weights, sample, sample!
 using Serialization: serialize, deserialize
 using Optimisers: destructure, Descent, Restructure
-using Lux: Chain, Conv, MaxPool, FlattenLayer, Dense, relu
+using Lux: Chain, Conv, MaxPool, FlattenLayer, Dense, relu, logsoftmax
 using Random: AbstractRNG, Xoshiro, TaskLocalRNG, rand!, shuffle, shuffle!
 using MLDataDevices: AbstractDevice, AbstractCPUDevice, AbstractGPUDevice
 

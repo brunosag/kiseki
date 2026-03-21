@@ -45,26 +45,31 @@ function init_workspace(opt::LEEA, ops)
     return LEEAWorkspace(O, fₒ)
 end
 
-@inline function evaluate_individual!(ops, ws, model, st, X, Y, j)
+@inline function predict_individual(ops, model, st, X, j)
     θ = ops.re(@view ops.P[:, j])
     Ŷ, _ = model(X, θ, st)
-    L = Float32(logitcrossentropy(Ŷ, Y))
-    ws.fₒ[j] = 1.0f0 / (1.0f0 + L)
-    return
+    return Ŷ
 end
 
-function evaluate_fitness!(opt, ops::LEEAState{<:Matrix}, ws, model, st, X, Y)
+function compute_fitness!(ws, Ŷ_pop, Y)
+    Y_reshaped = reshape(Y, size(Y, 1), size(Y, 2), 1)
+    L = dropdims(mean(-sum(Y_reshaped .* logsoftmax(Ŷ_pop; dims = 1); dims = 1); dims = 2); dims = (1, 2))
+
+    copyto!(ws.fₒ, 1.0f0 ./ (1.0f0 .+ Array(L)))
+    return (1.0f0 / maximum(ws.fₒ)) - 1.0f0
+end
+
+function evaluate_population!(opt, ops::LEEAState{<:Matrix}, ws, model, st, X, Y)
+    Ŷ_list = Vector{Matrix{Float32}}(undef, opt.N)
     Threads.@threads for j in 1:opt.N
-        evaluate_individual!(ops, ws, model, st, X, Y, j)
+        Ŷ_list[j] = predict_individual(ops, model, st, X, j)
     end
-    return (1.0f0 / maximum(ws.fₒ)) - 1.0f0
+    return compute_fitness!(ws, stack(Ŷ_list), Y)
 end
 
-function evaluate_fitness!(opt, ops::LEEAState, ws, model, st, X, Y)
-    for j in 1:opt.N
-        evaluate_individual!(ops, ws, model, st, X, Y, j)
-    end
-    return (1.0f0 / maximum(ws.fₒ)) - 1.0f0
+function evaluate_population!(opt, ops::LEEAState, ws, model, st, X, Y)
+    Ŷ_pop = stack([predict_individual(ops, model, st, X, j) for j in 1:opt.N])
+    return compute_fitness!(ws, Ŷ_pop, Y)
 end
 
 function inherit_fitness!(opt, ops, ws)
@@ -135,7 +140,7 @@ function reproduce_sexual!(ops, ws, rng)
 end
 
 function step!(opt::LEEA, ops, ws, model, st, X, Y, rng)
-    best_loss = evaluate_fitness!(opt, ops, ws, model, st, X, Y)
+    best_loss = evaluate_population!(opt, ops, ws, model, st, X, Y)
     inherit_fitness!(opt, ops, ws)
     select_parents!(opt, ops, ws, rng)
     reproduce_assexual!(opt, ops, ws, rng)
