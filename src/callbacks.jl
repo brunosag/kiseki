@@ -1,7 +1,17 @@
 abstract type AbstractCallback end
 
 on_step_end!(cb::AbstractCallback, exp, est, loss, Δt) = nothing
-on_val_end!(cb::AbstractCallback, exp, est, acc, is_best) = nothing
+on_val_end!(cb::AbstractCallback, exp, est, val_set, model, θ, st, acc, is_best) = nothing
+
+# ---------------- MetricsTracker ----------------
+
+@kwdef mutable struct MetricsTracker <: AbstractCallback
+    losses::Vector{Float32} = Float32[]
+    accuracies::Vector{Float64} = Float64[]
+end
+
+on_step_end!(cb::MetricsTracker, exp, est, loss, Δt) = push!(cb.losses, loss)
+on_val_end!(cb::MetricsTracker, exp, est, val_set, model, θ, st, acc, is_best) = push!(cb.accuracies, acc)
 
 # ---------------- ConsoleLogger ----------------
 
@@ -21,7 +31,7 @@ function on_step_end!(cb::ConsoleLogger, exp, est, loss, Δt)
     return
 end
 
-function on_val_end!(cb::ConsoleLogger, exp, est, acc, is_best)
+function on_val_end!(cb::ConsoleLogger, exp, est, val_set, model, θ, st, acc, is_best)
     acc_log = @sprintf("      Acc. = %-*.2f%%", 5, acc)
     is_best ? println(acc_log) : @printf("%s [Best: %-*.2f%%]\n", acc_log, 5, est.best_acc)
     return
@@ -31,7 +41,7 @@ end
 
 struct CheckpointSaver <: AbstractCallback end
 
-function on_val_end!(cb::CheckpointSaver, exp, est, acc, is_best)
+function on_val_end!(cb::CheckpointSaver, exp, est, val_set, model, θ, st, acc, is_best)
     if is_best
         save_checkpoint!(est, exp)
     end

@@ -61,13 +61,11 @@ function main()
         target_acc = args["target-acc"]
     )
 
-    callbacks = [ConsoleLogger(), CheckpointSaver()]
-
     if !isnothing(args["resume"])
         est = load_checkpoint(args["resume"])
-        run(exp, callbacks, est)
+        run(exp, est)
     else
-        run(exp, callbacks)
+        run(exp)
     end
 
     return

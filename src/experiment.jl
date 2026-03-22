@@ -11,27 +11,30 @@ const logitcrossentropy = Lux.CrossEntropyLoss(; logits = Val(true))
     device::D = Lux.gpu_device()
 end
 
-mutable struct ExperimentState{R <: AbstractRNG, O <: AbstractOptimizerState}
+mutable struct ExperimentState{R <: AbstractRNG, O <: AbstractOptimizerState, C <: AbstractVector{<:AbstractCallback}}
     rng::R
     ops::O
     last_checkpoint::Union{String, Nothing}
     best_acc::Float64
     i::Int
+    callbacks::C
 end
 
 function init(exp::Experiment, model)
     LuxCUDA.CUDA.seed!(exp.seed)
     rng = Xoshiro(exp.seed)
     ops = init(exp.opt, model, exp.device, rng)
-    return ExperimentState(rng, ops, nothing, 0.0, 1)
+    callbacks = [MetricsTracker(), ConsoleLogger(), CheckpointSaver()]
+    return ExperimentState(rng, ops, nothing, 0.0, 1, callbacks)
 end
 
 function evaluate(θ, model, st, val_set)
-    X, Y = val_set
+    X, y = val_set
     Ŷ, _ = model(X, θ, st)
 
-    correct = sum(onecold(Array(Ŷ), 0:9) .== Y)
-    total = length(Y)
+    ŷ = onecold(Array(Ŷ), 0:9)
+    correct = sum(ŷ .== y)
+    total = length(y)
 
     return (correct / total) * 100.0
 end
@@ -58,7 +61,7 @@ load_checkpoint(filepath) = deserialize(filepath)
 
 fastforward(loader, i) = foreach(_ -> popfirst!(loader), 1:i)
 
-function run(exp, callbacks = AbstractCallback[], est = nothing)
+function run(exp, est = nothing)
     model = adapt_model(CNN_2C2D_MNIST, exp.device)
     st = Lux.testmode(Lux.initialstates(TaskLocalRNG(), model))
     rng_data = Xoshiro(exp.seed)
@@ -82,7 +85,7 @@ function run(exp, callbacks = AbstractCallback[], est = nothing)
         loss = step!(exp.opt, est.ops, ws, model, st, X, Y, est.rng)
         Δt = time() - t₀
 
-        foreach(cb -> on_step_end!(cb, exp, est, loss, Δt), callbacks)
+        foreach(cb -> on_step_end!(cb, exp, est, loss, Δt), est.callbacks)
 
         if est.i % exp.val_freq == 0 || est.i == exp.max_i
             θ = get_best_params(est.ops)
@@ -95,7 +98,7 @@ function run(exp, callbacks = AbstractCallback[], est = nothing)
 
             update_scheduler!(exp.opt, est.ops, is_best)
 
-            foreach(cb -> on_val_end!(cb, exp, est, acc, is_best), callbacks)
+            foreach(cb -> on_val_end!(cb, exp, est, val_set, model, θ, st, acc, is_best), est.callbacks)
         end
 
         est.i += 1
