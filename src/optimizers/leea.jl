@@ -158,8 +158,8 @@ function get_best_params(ops::LEEAState)
     return ops.re(@view ops.P[:, best_idx])
 end
 
-function update_scheduler!(opt::LEEA, ops, acc, best_acc)
-    if acc > best_acc
+function update_scheduler!(opt::LEEA, ops, is_best)
+    if is_best
         ops.pat = 0
     else
         ops.pat += 1

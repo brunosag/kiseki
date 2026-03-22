@@ -1,8 +1,6 @@
 const logitcrossentropy = Lux.CrossEntropyLoss(; logits = Val(true))
 
-@kwdef struct Experiment{
-        O <: AbstractOptimizer, M <: Lux.AbstractLuxLayer, D <: AbstractDevice,
-    }
+@kwdef struct Experiment{O <: AbstractOptimizer, M <: Lux.AbstractLuxLayer, D <: AbstractDevice}
     seed::Int = 42
     batchsize::Int = 100
     max_i::Int = 100000
@@ -60,7 +58,7 @@ load_checkpoint(filepath) = deserialize(filepath)
 
 fastforward(loader, i) = foreach(_ -> popfirst!(loader), 1:i)
 
-function run(exp, est = nothing)
+function run(exp, callbacks = AbstractCallback[], est = nothing)
     model = adapt_model(CNN_2C2D_MNIST, exp.device)
     st = Lux.testmode(Lux.initialstates(TaskLocalRNG(), model))
     rng_data = Xoshiro(exp.seed)
@@ -81,32 +79,23 @@ function run(exp, est = nothing)
         t₀ = time()
         X, Y = popfirst!(train_loader)
 
-        L = step!(exp.opt, est.ops, ws, model, st, X, Y, est.rng)
+        loss = step!(exp.opt, est.ops, ws, model, st, X, Y, est.rng)
         Δt = time() - t₀
-        opt_metrics = format_metrics(est.ops)
 
-        base_log = @sprintf(
-            "i = %-*d      Δt = %.2fs      L = %.4f%s",
-            ndigits(exp.max_i), est.i, Δt, L, opt_metrics
-        )
+        foreach(cb -> on_step_end!(cb, exp, est, loss, Δt), callbacks)
 
         if est.i % exp.val_freq == 0 || est.i == exp.max_i
             θ = get_best_params(est.ops)
             acc = evaluate(θ, model, st, val_set)
 
-            update_scheduler!(exp.opt, est.ops, acc, est.best_acc)
-
-            full_log = @sprintf("%s      Acc. = %-*.2f%%", base_log, 5, acc)
-
-            if acc > est.best_acc
-                println(full_log)
+            is_best = acc > est.best_acc
+            if is_best
                 est.best_acc = acc
-                save_checkpoint!(est, exp)
-            else
-                @printf("%s [Best: %-*.2f%%]\n", full_log, 5, est.best_acc)
             end
-        else
-            println(base_log)
+
+            update_scheduler!(exp.opt, est.ops, is_best)
+
+            foreach(cb -> on_val_end!(cb, exp, est, acc, is_best), callbacks)
         end
 
         est.i += 1

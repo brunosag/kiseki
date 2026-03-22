@@ -1,4 +1,5 @@
 Base.exit_on_sigint(false)
+import Pkg; Pkg.activate(".")
 using Kiseki, ArgParse
 using Lux: gpu_device, cpu_device
 
@@ -33,7 +34,7 @@ function parse_commandline()
 
         "--val-freq", "-v"
         arg_type = Int
-        default = 1
+        default = 10
 
         "--target-acc", "-t"
         help = "[0.0, 100.0]"
@@ -56,14 +57,17 @@ function main()
         seed = args["seed"],
         batchsize = args["batchsize"],
         max_i = args["iterations"],
+        val_freq = args["val-freq"],
         target_acc = args["target-acc"]
     )
 
+    callbacks = [ConsoleLogger(), CheckpointSaver()]
+
     if !isnothing(args["resume"])
         est = load_checkpoint(args["resume"])
-        Kiseki.run(exp, est)
+        run(exp, callbacks, est)
     else
-        Kiseki.run(exp)
+        run(exp, callbacks)
     end
 
     return

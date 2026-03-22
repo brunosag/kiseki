@@ -16,10 +16,11 @@ using Lux: Chain, Conv, MaxPool, FlattenLayer, Dense, relu, logsoftmax
 using Random: AbstractRNG, Xoshiro, TaskLocalRNG, rand!, shuffle, shuffle!
 using MLDataDevices: AbstractDevice, AbstractCPUDevice, AbstractGPUDevice
 
-export Experiment, CNN_2C2D_MNIST, LEEA, SGD, run, load_checkpoint
+export Experiment, CNN_2C2D_MNIST, LEEA, SGD, run, load_checkpoint, ConsoleLogger, CheckpointSaver
 
 include("data.jl")
 include("models.jl")
+include("callbacks.jl")
 include("optimizers.jl")
 include("optimizers/leea.jl")
 include("optimizers/sgd.jl")
