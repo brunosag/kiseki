@@ -1,6 +1,6 @@
 module Kiseki
 
-import Lux, Zygote, SimpleChains, Dates
+import Lux, Zygote, SimpleChains, Dates, Optimisers
 import Base: run
 using LuxCUDA, Printf
 using Statistics: mean
@@ -12,9 +12,9 @@ using OneHotArrays: onehotbatch, onecold
 using StatsBase: Weights, sample, sample!
 using Serialization: serialize, deserialize
 using Optimisers: destructure, Descent, Restructure
-using Lux: Chain, Conv, MaxPool, FlattenLayer, Dense, relu, logsoftmax
 using Random: AbstractRNG, Xoshiro, TaskLocalRNG, rand!, shuffle, shuffle!
 using MLDataDevices: AbstractDevice, AbstractCPUDevice, AbstractGPUDevice
+using Lux: Chain, Conv, MaxPool, FlattenLayer, Dense, relu, logsoftmax, cpu_device, gpu_device
 
 export Experiment, CNN_2C2D_MNIST, LEEA, SGD, run, load_checkpoint, ConsoleLogger, CheckpointSaver
 
