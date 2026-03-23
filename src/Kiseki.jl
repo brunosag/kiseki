@@ -17,7 +17,7 @@ using MLDataDevices: AbstractDevice, AbstractCPUDevice, AbstractGPUDevice
 using Lux: Chain, Conv, MaxPool, FlattenLayer, Dense, relu, logsoftmax, cpu_device, gpu_device
 
 export Experiment, CNN_2C2D_MNIST, LEEA, SGD, run, load_checkpoint
-export MetricsTracker, ConsoleLogger, CheckpointSaver
+export Tracker, CheckpointSaver, ConsoleLogger
 
 include("data.jl")
 include("models.jl")

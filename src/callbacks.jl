@@ -3,15 +3,24 @@ abstract type AbstractCallback end
 on_step_end!(cb::AbstractCallback, exp, est, loss, Δt) = nothing
 on_val_end!(cb::AbstractCallback, exp, est, val_set, model, θ, st, acc, is_best) = nothing
 
-# ---------------- MetricsTracker ----------------
+# ---------------- Tracker ----------------
 
-@kwdef mutable struct MetricsTracker <: AbstractCallback
+@kwdef mutable struct Tracker <: AbstractCallback
     losses::Vector{Float32} = Float32[]
     accuracies::Vector{Float64} = Float64[]
+    best_params::Vector{Any} = Any[]
 end
 
-on_step_end!(cb::MetricsTracker, exp, est, loss, Δt) = push!(cb.losses, loss)
-on_val_end!(cb::MetricsTracker, exp, est, val_set, model, θ, st, acc, is_best) = push!(cb.accuracies, acc)
+function on_step_end!(cb::Tracker, exp, est, loss, Δt)
+    push!(cb.losses, loss)
+    if est.i % exp.save_freq == 0 || est.i == exp.max_i
+        θ = cpu_device()(get_best_params(est.ops))
+        push!(cb.best_params, θ)
+    end
+    return
+end
+
+on_val_end!(cb::Tracker, exp, est, val_set, model, θ, st, acc, is_best) = push!(cb.accuracies, acc)
 
 # ---------------- CheckpointSaver ----------------
 

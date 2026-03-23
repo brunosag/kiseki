@@ -25,7 +25,7 @@ function init(exp::Experiment, model)
     LuxCUDA.CUDA.seed!(exp.seed)
     rng = Xoshiro(exp.seed)
     ops = init(exp.opt, model, exp.device, rng)
-    callbacks = [MetricsTracker(), ConsoleLogger(), CheckpointSaver()]
+    callbacks = [Tracker(), ConsoleLogger(), CheckpointSaver()]
     return ExperimentState(rng, ops, nothing, 0.0, 1, callbacks)
 end
 
