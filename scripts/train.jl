@@ -20,7 +20,7 @@ function parse_commandline()
         range_tester = x -> lowercase(x) in ["gpu", "cpu"]
         default = "gpu"
 
-        "--seed", "-s"
+        "--seed", "-S"
         arg_type = Int
         default = 42
 
@@ -32,15 +32,19 @@ function parse_commandline()
         arg_type = Int
         default = 100000
 
-        "--val-freq", "-v"
-        arg_type = Int
-        default = 10
-
         "--target-acc", "-t"
         help = "[0.0, 100.0]"
         arg_type = Float64
         range_tester = x -> 0.0 <= x <= 100.0
         default = 100.0
+
+        "--val-freq", "-v"
+        arg_type = Int
+        default = 10
+
+        "--save-freq", "-s"
+        arg_type = Int
+        default = 50
     end
 
     return parse_args(s)
@@ -57,8 +61,9 @@ function main()
         seed = args["seed"],
         batchsize = args["batchsize"],
         max_i = args["iterations"],
+        target_acc = args["target-acc"],
         val_freq = args["val-freq"],
-        target_acc = args["target-acc"]
+        save_freq = args["save-freq"]
     )
 
     if !isnothing(args["resume"])

@@ -13,6 +13,17 @@ end
 on_step_end!(cb::MetricsTracker, exp, est, loss, Δt) = push!(cb.losses, loss)
 on_val_end!(cb::MetricsTracker, exp, est, val_set, model, θ, st, acc, is_best) = push!(cb.accuracies, acc)
 
+# ---------------- CheckpointSaver ----------------
+
+struct CheckpointSaver <: AbstractCallback end
+
+function on_step_end!(cb::CheckpointSaver, exp, est, loss, Δt)
+    if est.i % exp.save_freq == 0 || est.i == exp.max_i
+        save_checkpoint!(est, exp)
+    end
+    return
+end
+
 # ---------------- ConsoleLogger ----------------
 
 struct ConsoleLogger <: AbstractCallback end
@@ -34,16 +45,5 @@ end
 function on_val_end!(cb::ConsoleLogger, exp, est, val_set, model, θ, st, acc, is_best)
     acc_log = @sprintf("      Acc. = %-*.2f%%", 5, acc)
     is_best ? println(acc_log) : @printf("%s [Best: %-*.2f%%]\n", acc_log, 5, est.best_acc)
-    return
-end
-
-# ---------------- CheckpointSaver ----------------
-
-struct CheckpointSaver <: AbstractCallback end
-
-function on_val_end!(cb::CheckpointSaver, exp, est, val_set, model, θ, st, acc, is_best)
-    if is_best
-        save_checkpoint!(est, exp)
-    end
     return
 end
