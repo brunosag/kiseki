@@ -5,7 +5,7 @@ const logitcrossentropy = Lux.CrossEntropyLoss(; logits = Val(true))
     device::D = Lux.gpu_device()
     model::M = CNN_2C2D_MNIST
     seed::Int = 42
-    batchsize::Int = 100
+    batchsize::Int = 500
     max_i::Int = 100000
     target_acc::Float64 = 100.0
     val_freq::Int = 10
@@ -40,22 +40,38 @@ function evaluate(θ, model, st, val_set)
     return (correct / total) * 100.0
 end
 
+get_hyperparams(opt) = Dict(string(f) => getproperty(opt, f) for f in propertynames(opt))
+
 function save_checkpoint!(est, exp)
     opt_name = nameof(typeof(exp.opt))
     acc_int = est.best_acc * 100
     time_str = Dates.format(Dates.now(), "yyyy-mm-ddTHHMMSS")
 
-    base_name = @sprintf("%s_%ia_%ii_%s.jls", opt_name, acc_int, est.i, time_str)
+    base_name = @sprintf("%s_%ia_%ii_%s", opt_name, acc_int, est.i, time_str)
 
-    filepath = joinpath("checkpoints", base_name)
-    mkpath(dirname(filepath))
+    filepath_jls = joinpath("checkpoints", base_name * ".jls")
+    filepath_json = joinpath("checkpoints", base_name * ".json")
+    mkpath(dirname(filepath_jls))
 
     if !isnothing(est.last_checkpoint)
-        rm(est.last_checkpoint)
+        rm(est.last_checkpoint * ".jls", force = true)
+        rm(est.last_checkpoint * ".json", force = true)
     end
-    est.last_checkpoint = filepath
+    est.last_checkpoint = joinpath("checkpoints", base_name)
+    serialize(filepath_jls, est)
 
-    return serialize(filepath, est)
+    metadata = Dict(
+        "id" => base_name,
+        "optimizer" => opt_name,
+        "iteration" => est.i,
+        "best_accuracy" => est.best_acc,
+        "timestamp" => time_str,
+        "seed" => exp.seed,
+        "batchsize" => exp.batchsize,
+        "hyperparameters" => get_hyperparams(exp.opt),
+    )
+    write(filepath_json, JSON3.write(metadata))
+    return
 end
 
 load_checkpoint(filepath) = deserialize(filepath)
