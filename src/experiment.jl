@@ -37,7 +37,7 @@ function evaluate(θ, model, st, val_set)
     correct = sum(ŷ .== y)
     total = length(y)
 
-    return (correct / total) * 100.0
+    return round((correct / total) * 100.0, digits = 2)
 end
 
 get_hyperparams(opt) = Dict(string(f) => getproperty(opt, f) for f in propertynames(opt))
@@ -65,7 +65,7 @@ function save_checkpoint!(est, exp)
         "optimizer" => opt_name,
         "iteration" => est.i,
         "best_accuracy" => est.best_acc,
-        "timestamp" => time_str,
+        "timestamp" => Dates.format(Dates.now(), "yyyy-mm-ddTHH:MM:SS"),
         "seed" => exp.seed,
         "batchsize" => exp.batchsize,
         "hyperparameters" => get_hyperparams(exp.opt),

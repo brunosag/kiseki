@@ -1,6 +1,6 @@
 module Kiseki
 
-import Lux, Zygote, SimpleChains, Dates, Optimisers
+import Lux, Zygote, SimpleChains, Dates, Optimisers, JSON3
 import Base: run
 using LuxCUDA, Printf
 using Statistics: mean
