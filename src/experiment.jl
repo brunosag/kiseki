@@ -1,6 +1,6 @@
-const logitcrossentropy = Lux.CrossEntropyLoss(; logits = Val(true))
+const logitcrossentropy = Lux.CrossEntropyLoss(; logits=Val(true))
 
-@kwdef struct Experiment{O <: AbstractOptimizer, M <: Lux.AbstractLuxLayer, D <: AbstractDevice}
+@kwdef struct Experiment{O<:AbstractOptimizer,M<:Lux.AbstractLuxLayer,D<:AbstractDevice}
     opt::O = LEEA()
     device::D = Lux.gpu_device()
     model::M = CNN_2C2D_MNIST
@@ -12,21 +12,27 @@ const logitcrossentropy = Lux.CrossEntropyLoss(; logits = Val(true))
     save_freq::Int = 50
 end
 
-mutable struct ExperimentState{R <: AbstractRNG, O <: AbstractOptimizerState, C <: AbstractVector{<:AbstractCallback}}
+@kwdef mutable struct TrainingHistory
+    loss::Vector{Float32} = Float32[]
+    acc::Vector{NamedTuple{(:i, :value),Tuple{Int,Float64}}} = NamedTuple{(:i, :value),Tuple{Int,Float64}}[]
+end
+
+mutable struct ExperimentState{R<:AbstractRNG,O<:AbstractOptimizerState,C<:Tuple}
     rng::R
     ops::O
-    last_checkpoint::Union{String, Nothing}
+    last_checkpoint::Union{String,Nothing}
     best_acc::Float64
     i::Int
     callbacks::C
+    history::TrainingHistory
 end
 
-function init(exp::Experiment, model)
+function init(exp::Experiment, injected_callbacks=())
     LuxCUDA.CUDA.seed!(exp.seed)
     rng = Xoshiro(exp.seed)
-    ops = init(exp.opt, model, exp.device, rng)
-    callbacks = [Tracker(), ConsoleLogger(), CheckpointSaver()]
-    return ExperimentState(rng, ops, nothing, 0.0, 1, callbacks)
+    ops = init(exp.opt, exp.model, exp.device, rng)
+    callbacks = (Tracker(), ConsoleLogger(), CheckpointSaver(), injected_callbacks...)
+    return ExperimentState(rng, ops, nothing, 0.0, 1, callbacks, TrainingHistory())
 end
 
 function evaluate(θ, model, st, val_set)
@@ -37,7 +43,7 @@ function evaluate(θ, model, st, val_set)
     correct = sum(ŷ .== y)
     total = length(y)
 
-    return round((correct / total) * 100.0, digits = 2)
+    return round((correct / total) * 100.0, digits=2)
 end
 
 get_hyperparams(opt) = Dict(string(f) => getproperty(opt, f) for f in propertynames(opt))
@@ -54,8 +60,8 @@ function save_checkpoint!(est, exp)
     mkpath(dirname(filepath_jls))
 
     if !isnothing(est.last_checkpoint)
-        rm(est.last_checkpoint * ".jls", force = true)
-        rm(est.last_checkpoint * ".json", force = true)
+        rm(est.last_checkpoint * ".jls", force=true)
+        rm(est.last_checkpoint * ".json", force=true)
     end
     est.last_checkpoint = joinpath("checkpoints", base_name)
     serialize(filepath_jls, est)
@@ -74,21 +80,36 @@ function save_checkpoint!(est, exp)
     return
 end
 
-load_checkpoint(filepath) = deserialize(filepath)
+function load_checkpoint(filepath, injected_callbacks=())
+    est = deserialize(filepath)
+
+    if isempty(injected_callbacks)
+        return est
+    end
+
+    return ExperimentState(
+        est.rng,
+        est.ops,
+        est.last_checkpoint,
+        est.best_acc,
+        est.i,
+        (est.callbacks..., injected_callbacks...),
+        est.history
+    )
+end
 
 fastforward(loader, i) = foreach(_ -> popfirst!(loader), 1:i)
 
-function run(exp, est = nothing)
-    model = adapt_model(CNN_2C2D_MNIST, exp.device)
+function run!(exp::Experiment, est::ExperimentState; resume=false)
+    model = adapt_model(exp.model, exp.device)
     st = Lux.testmode(Lux.initialstates(TaskLocalRNG(), model))
+
     rng_data = Xoshiro(exp.seed)
     train_loader, val_set, _ = load_MNIST(
-        rng_data, exp.batchsize, exp.device, val_size = 10_000
+        rng_data, exp.batchsize, exp.device, val_size=10_000
     )
 
-    if isnothing(est)
-        est = init(exp, model)
-    else
+    if resume
         fastforward(train_loader, est.i)
         est.i += 1
     end

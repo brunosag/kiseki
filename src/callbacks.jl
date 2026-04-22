@@ -3,24 +3,34 @@ abstract type AbstractCallback end
 on_step_end!(cb::AbstractCallback, exp, est, loss, Δt) = nothing
 on_val_end!(cb::AbstractCallback, exp, est, val_set, model, θ, st, acc, is_best) = nothing
 
-# ---------------- Tracker ----------------
+# ---------------- WebSocketLogger ----------------
 
-@kwdef mutable struct Tracker <: AbstractCallback
-    losses::Vector{Float32} = Float32[]
-    accuracies::Vector{Float64} = Float64[]
-    best_params::Vector{Any} = Any[]
+struct WebSocketLogger <: AbstractCallback
+    clients::Set{HTTP.WebSockets.WebSocket}
 end
 
-function on_step_end!(cb::Tracker, exp, est, loss, Δt)
-    push!(cb.losses, loss)
-    if est.i % exp.save_freq == 0 || est.i == exp.max_i
-        θ = cpu_device()(get_best_params(est.ops))
-        push!(cb.best_params, θ)
+function on_step_end!(cb::WebSocketLogger, exp, est, loss, Δt)
+    msg = JSON3.write((type="step", payload=(i=est.i, Δt=Δt, loss=loss)))
+    for ws in cb.clients
+        WebSockets.send(ws, msg)
     end
     return
 end
 
-on_val_end!(cb::Tracker, exp, est, val_set, model, θ, st, acc, is_best) = push!(cb.accuracies, acc)
+function on_val_end!(cb::WebSocketLogger, exp, est, val_set, model, θ, st, acc, is_best)
+    msg = JSON3.write((type="validation", payload=(i=est.i, acc=acc)))
+    for ws in cb.clients
+        WebSockets.send(ws, msg)
+    end
+    return
+end
+
+# ---------------- Tracker ----------------
+
+@kwdef mutable struct Tracker <: AbstractCallback end
+
+on_step_end!(cb::Tracker, exp, est, loss, Δt) = push!(est.history.loss, loss)
+on_val_end!(cb::Tracker, exp, est, val_set, model, θ, st, acc, is_best) = push!(est.history.acc, (i=est.i, value=acc))
 
 # ---------------- CheckpointSaver ----------------
 

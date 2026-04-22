@@ -1,8 +1,8 @@
 module Kiseki
 
-import Lux, Zygote, SimpleChains, Dates, Optimisers, JSON3
+import Lux, Zygote, SimpleChains, Dates, Optimisers, JSON3, StructTypes
 import Base: run
-using LuxCUDA, Printf
+using LuxCUDA, Printf, HTTP
 using Statistics: mean
 using MLDatasets: MNIST
 using ADTypes: AutoZygote
@@ -16,8 +16,8 @@ using Random: AbstractRNG, Xoshiro, TaskLocalRNG, rand!, shuffle, shuffle!
 using MLDataDevices: AbstractDevice, AbstractCPUDevice, AbstractGPUDevice
 using Lux: Chain, Conv, MaxPool, FlattenLayer, Dense, relu, logsoftmax, cpu_device, gpu_device
 
-export Experiment, CNN_2C2D_MNIST, LEEA, SGD, run, load_checkpoint
-export Tracker, CheckpointSaver, ConsoleLogger
+export Experiment, ExperimentState, CNN_2C2D_MNIST, AbstractOptimizer, LEEA, SGD, run!, init, load_checkpoint
+export Tracker, CheckpointSaver, ConsoleLogger, WebSocketLogger
 
 include("data.jl")
 include("models.jl")

@@ -1,8 +1,9 @@
 @kwdef struct SGD <: AbstractOptimizer
     η::Float32 = 0.01f0   # learning rate
 end
+StructTypes.StructType(::Type{SGD}) = StructTypes.Struct()
 
-mutable struct SGDState{P, S} <: AbstractOptimizerState
+mutable struct SGDState{P,S} <: AbstractOptimizerState
     θ::P
     st::S
 end

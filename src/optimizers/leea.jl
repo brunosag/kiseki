@@ -1,27 +1,28 @@
 @kwdef struct LEEA <: AbstractOptimizer
     N::Int = 1000        # population size
-    r::Float32 = 0.04    # mutation rate
-    m₀::Float32 = 0.03   # initial mutation power
-    γ::Float32 = 0.99    # mutation power decay
-    p::Float32 = 0.4     # selection proportion
-    s::Float32 = 0.5     # sexual reproduction proportion
-    d::Float32 = 0.2     # fitness inheritance decay
-    pat_lim::Int = 5     # validations to wait before decaying m
+    pₘ::Float32 = 0.04   # mutation probability
+    η₀::Float32 = 0.03   # initial mutation step size
+    γ::Float32 = 0.99    # mutation decay factor
+    ρ::Float32 = 0.4     # retention fraction
+    ρₓ::Float32 = 0.5    # crossover fraction
+    λ::Float32 = 0.2     # fitness decay coefficient
+    τ_pat::Int = 5       # validation patience threshold
 end
+StructTypes.StructType(::Type{LEEA}) = StructTypes.Struct()
 
-mutable struct LEEAState{M <: AbstractMatrix{Float32}, R} <: AbstractOptimizerState
+mutable struct LEEAState{M<:AbstractMatrix{Float32},R} <: AbstractOptimizerState
     re::R
     P::M
     fₚ::Vector{Float32}
     pₐ::Vector{Int}
     p₁::Vector{Int}
     p₂::Vector{Int}
-    m::Float32
+    η::Float32
     pat::Int
     is_first_step::Bool
 end
 
-mutable struct LEEAWorkspace{M <: AbstractMatrix{Float32}}
+mutable struct LEEAWorkspace{M<:AbstractMatrix{Float32}}
     O::M
     fₒ::Vector{Float32}
 end
@@ -30,13 +31,13 @@ function init(opt::LEEA, model, dev, rng)
     _, re = destructure(Lux.initialparameters(TaskLocalRNG(), model))
     P = stack([destructure(Lux.initialparameters(rng, model))[1] for _ in 1:opt.N]) |> dev
 
-    Nₛ = round(Int, opt.s * opt.N)
+    Nₛ = round(Int, opt.ρₓ * opt.N)
     Nₐ = opt.N - Nₛ
 
     fₚ = Vector{Float32}(undef, opt.N)
     pₐ, p₁, p₂ = Vector{Int}(undef, Nₐ), Vector{Int}(undef, Nₛ), Vector{Int}(undef, Nₛ)
 
-    return LEEAState(re, P, fₚ, pₐ, p₁, p₂, opt.m₀, 0, true)
+    return LEEAState(re, P, fₚ, pₐ, p₁, p₂, opt.η₀, 0, true)
 end
 
 function init_workspace(opt::LEEA, ops)
@@ -53,7 +54,7 @@ end
 
 function compute_fitness!(ws, Ŷ_pop, Y)
     Y_reshaped = reshape(Y, size(Y, 1), size(Y, 2), 1)
-    L = dropdims(mean(-sum(Y_reshaped .* logsoftmax(Ŷ_pop; dims = 1); dims = 1); dims = 2); dims = (1, 2))
+    L = dropdims(mean(-sum(Y_reshaped .* logsoftmax(Ŷ_pop; dims=1); dims=1); dims=2); dims=(1, 2))
 
     copyto!(ws.fₒ, 1.0f0 ./ (1.0f0 .+ Array(L)))
     return (1.0f0 / maximum(ws.fₒ)) - 1.0f0
@@ -73,7 +74,7 @@ function evaluate_population!(opt, ops::LEEAState, ws, model, st, X, Y)
 end
 
 function inherit_fitness!(opt, ops, ws)
-    d′ = 1.0f0 - opt.d
+    d′ = 1.0f0 - opt.λ
     half_d′ = 0.5f0 * d′
     Nₐ = length(ops.pₐ)
 
@@ -83,14 +84,14 @@ function inherit_fitness!(opt, ops, ws)
         elseif j <= Nₐ
             ws.fₒ[j] += ops.fₚ[ops.pₐ[j]] * d′
         else
-            ws.fₒ[j] += (ops.fₚ[ops.p₁[j - Nₐ]] + ops.fₚ[ops.p₂[j - Nₐ]]) * half_d′
+            ws.fₒ[j] += (ops.fₚ[ops.p₁[j-Nₐ]] + ops.fₚ[ops.p₂[j-Nₐ]]) * half_d′
         end
     end
     return
 end
 
 function select_parents!(opt, ops, ws, rng)
-    wheel = partialsortperm(ws.fₒ, 1:round(Int, opt.p * opt.N), rev = true)
+    wheel = partialsortperm(ws.fₒ, 1:round(Int, opt.ρ * opt.N), rev=true)
     weights = Weights(@view ws.fₒ[wheel])
 
     sample!(rng, wheel, weights, ops.pₐ)
@@ -118,7 +119,7 @@ function reproduce_assexual!(opt, ops, ws, rng)
     rand!(u₁)
     rand!(u₂)
 
-    @views ws.O[:, 1:Nₐ] .= ops.P[:, pₐ] .+ (u₁ .< opt.r) .* ops.m .* (2.0f0 .* u₂ .- 1.0f0)
+    @views ws.O[:, 1:Nₐ] .= ops.P[:, pₐ] .+ (u₁ .< opt.pₘ) .* ops.η .* (2.0f0 .* u₂ .- 1.0f0)
     return
 end
 
@@ -135,7 +136,7 @@ function reproduce_sexual!(ops, ws, rng)
     u = similar(ops.P, Float32, θ_len, Nₛ)
     rand!(u)
 
-    @views ws.O[:, (Nₐ + 1):end] .= ifelse.(u .< 0.5f0, ops.P[:, p₁], ops.P[:, p₂])
+    @views ws.O[:, (Nₐ+1):end] .= ifelse.(u .< 0.5f0, ops.P[:, p₁], ops.P[:, p₂])
     return
 end
 
@@ -165,11 +166,11 @@ function update_scheduler!(opt::LEEA, ops, is_best)
         ops.pat += 1
     end
 
-    if ops.pat >= opt.pat_lim
-        ops.m *= opt.γ
+    if ops.pat >= opt.τ_pat
+        ops.η *= opt.γ
         ops.pat = 0
     end
     return
 end
 
-format_metrics(ops::LEEAState) = @sprintf("      m = %.4f", ops.m)
+format_metrics(ops::LEEAState) = @sprintf("      m = %.4f", ops.η)
