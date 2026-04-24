@@ -1,6 +1,9 @@
 # julia
 Manifest.toml
 
+# genie
+log/
+
 # nix
 shell.nix
 .direnv/

@@ -1,0 +1,133 @@
+<script src="https://cdn.tailwindcss.com"></script>
+
+<div class="p-6">
+	<div class="flex flex-col md:flex-row gap-6">
+		<div class="max-w-3xl md:max-w-md w-full border p-6 rounded-2xl">
+			<h3 class="text-xl mb-4 border-b pb-2">Configuration</h3>
+
+			<div class="flex flex-col gap-2 mt-4">
+				<div class="field-row">
+					<label class="field-label">Dataset</label>
+					<select v-model="dataset" class="field-select">
+						<option value="mnist">MNIST</option>
+						<option value="fashion">Fashion MNIST</option>
+						<option value="cifar10">CIFAR-10</option>
+					</select>
+				</div>
+
+				<div class="field-row">
+					<label class="field-label">Device</label>
+					<select v-model="device" class="field-select">
+						<option value="cpu">CPU</option>
+						<option value="gpu">GPU</option>
+					</select>
+				</div>
+
+				<div class="field-row">
+					<label class="field-label">Seed</label>
+					<input type="number" v-model.number="seed" class="field-input" />
+				</div>
+
+				<div class="field-row">
+					<label class="field-label">Batch size</label>
+					<input type="number" v-model.number="batchsize" class="field-input" />
+				</div>
+
+				<div class="field-row">
+					<label class="field-label">Iterations</label>
+					<input type="number" v-model.number="max_i" class="field-input" />
+				</div>
+
+				<div class="field-row">
+					<label class="field-label">Target accuracy</label>
+					<input type="number" step="0.01" v-model.number="target_acc" class="field-input" />
+				</div>
+
+				<div class="field-row">
+					<label class="field-label">Optimizer</label>
+					<select v-model="optimizer" class="field-select">
+						<option v-for="(schema, optName) in optimizers_schema" :key="optName" :value="optName">
+							{{ optName }}
+						</option>
+					</select>
+				</div>
+			</div>
+
+			<div class="mt-6 p-4 border rounded-xl">
+				<h4 class="mb-4 border-b pb-1">{{ optimizer }} parameters</h4>
+
+				<div class="grid grid-cols-[max-content_auto_1fr] items-center gap-y-2 gap-x-3">
+					<div v-for="param in optimizers_schema[optimizer]" :key="param.key" class="contents">
+						<span v-katex="param.label" class="text-lg"></span>
+						<input
+							:type="param.type"
+							:step="param.step"
+							v-model.number="opt_params[optimizer][param.key]"
+							class="w-24 py-1.5 px-2.5 border rounded-lg shadow-sm bg-white"
+						/>
+						<label class="text-zinc-500 text-sm font-normal">{{ param.desc }}</label>
+					</div>
+				</div>
+			</div>
+
+			<button
+				v-on:click="start_experiment=true"
+				v-bind:disabled="is_running"
+				class="mt-6 w-full py-2 px-4 bg-zinc-800 hover:bg-zinc-800/90 not-disabled:active:bg-zinc-800/80 not-disabled:active:scale-[0.99] text-white font-semibold disabled:bg-zinc-400 rounded-lg"
+			>
+				Start experiment
+			</button>
+		</div>
+
+		<div class="flex flex-col w-full border p-6 rounded-2xl h-fit">
+			<h3 class="text-xl mb-4 border-b pb-2">Metrics</h3>
+			<div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+				<div class="stat-card">
+					<p class="stat-label">Step</p>
+					<p class="stat-value">{{current_step}}</p>
+				</div>
+				<div class="stat-card">
+					<p class="stat-label">Loss</p>
+					<p class="stat-value">{{current_loss.toFixed(4)}}</p>
+				</div>
+				<div class="stat-card">
+					<p class="stat-label">Best accuracy</p>
+					<p class="stat-value">{{best_acc.toFixed(2)}}%</p>
+				</div>
+			</div>
+		</div>
+	</div>
+</div>
+
+<script>
+	const customStyles = document.createElement('style');
+	customStyles.type = 'text/tailwindcss';
+	customStyles.innerHTML = `
+		.field-row { @apply flex items-center justify-between; }
+		.field-label { @apply text-sm text-zinc-600; }
+		.field-input { @apply w-40 px-2.5 py-1.5 border rounded-lg shadow-sm bg-white; }
+		.field-select { @apply w-40 px-2.5 py-2 cursor-pointer border rounded-lg shadow-sm bg-white; }
+		
+		.stat-card { @apply p-4 rounded-xl border; }
+		.stat-label { @apply text-sm text-zinc-500; }
+		.stat-value { @apply text-2xl; }
+	`;
+	document.head.appendChild(customStyles);
+
+	document.addEventListener('DOMContentLoaded', () => {
+		document.querySelectorAll('link[rel="stylesheet"]').forEach((sheet) => {
+			if (!sheet.href.includes('katex.min.css')) {
+				sheet.remove();
+			}
+		});
+
+		const footer = document.querySelector('footer');
+		if (footer) {
+			footer.remove();
+		}
+
+		document.querySelectorAll('.container').forEach((element) => {
+			element.classList.remove('container');
+		});
+	});
+</script>
