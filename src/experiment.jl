@@ -30,7 +30,10 @@ end
 function init(exp::Experiment, injected_callbacks=())
     LuxCUDA.CUDA.seed!(exp.seed)
     rng = Xoshiro(exp.seed)
-    ops = init(exp.opt, exp.model, exp.device, rng)
+
+    model = adapt_model(exp.model, exp.device)
+    ops = init(exp.opt, model, exp.device, rng)
+
     callbacks = (Tracker(), ConsoleLogger(), CheckpointSaver(), injected_callbacks...)
     return ExperimentState(rng, ops, nothing, 0.0, 1, callbacks, TrainingHistory())
 end
