@@ -3,6 +3,7 @@ import Kiseki: on_step_end!, on_val_end!
 using Lux: gpu_device, cpu_device
 using GenieFramework
 using StippleLatex
+using PlotlyBase
 @genietools
 
 struct StippleCallback <: AbstractCallback
@@ -28,9 +29,43 @@ const OPTIMIZERS = Dict(
     ]
 )
 
+const STOP_SIGNAL = Threads.Atomic{Bool}(false)
+const EXPERIMENT_RUNNING = Threads.Atomic{Bool}(false)
+const ACTIVE_EST = Ref{Any}(nothing)
+
+function update_ui!(model, est)
+    model.current_step[] = est.i
+    model.best_acc[] = Float64(est.best_acc)
+    if !isempty(est.history.loss)
+        model.current_loss[] = Float64(est.history.loss[end])
+    end
+
+    loss_y = Float64.(est.history.loss)
+    loss_x = collect(1:length(loss_y))
+    acc_x = [a.i for a in est.history.acc]
+    acc_y = [Float64(a.value) for a in est.history.acc]
+
+    model.plot_data[] = [
+        scatter(
+            x=loss_x, y=loss_y,
+            name="Loss",
+            mode="lines",
+            yaxis="y1",
+            line=PlotlyBase.attr(color="#18181b", width=1.5) # zinc-900
+        ),
+        scatter(
+            x=acc_x, y=acc_y,
+            name="Accuracy",
+            mode="lines",
+            yaxis="y2",
+            line=PlotlyBase.attr(color="#a1a1aa", width=1.5) # zinc-400
+        )
+    ]
+end
+
 @app begin
     @in dataset = "mnist"
-    @in device = "gpu"
+    @in device = "cpu"
     @in seed = 42
     @in batchsize = 1000
     @in max_i = 100000
@@ -52,13 +87,80 @@ const OPTIMIZERS = Dict(
     @in start_experiment = false
     @in stop_experiment = false
 
-    stop_signal = Threads.Atomic{Bool}(false)
+    @out plot_data = PlotlyBase.AbstractTrace[]
+    @out plot_layout = PlotlyBase.Layout(
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=PlotlyBase.attr(family="system-ui, -apple-system, sans-serif", color="#52525b"), # zinc-600
+        margin=PlotlyBase.attr(l=50, r=50, t=10, b=40),
+        xaxis=PlotlyBase.attr(
+            title="Step",
+            gridcolor="#f4f4f5", # zinc-100
+            zerolinecolor="#f4f4f5",
+            tickcolor="#e4e4e7" # zinc-200
+        ),
+        yaxis=PlotlyBase.attr(
+            title="Loss",
+            side="left",
+            gridcolor="#f4f4f5",
+            zerolinecolor="#f4f4f5",
+            tickfont=PlotlyBase.attr(color="#18181b"), # zinc-900
+            titlefont=PlotlyBase.attr(color="#18181b")
+        ),
+        yaxis2=PlotlyBase.attr(
+            title="Accuracy (%)",
+            overlaying="y",
+            side="right",
+            showgrid=false,
+            tickfont=PlotlyBase.attr(color="#71717a"), # zinc-500
+            titlefont=PlotlyBase.attr(color="#71717a")
+        ),
+        legend=PlotlyBase.attr(
+            x=0.5,
+            y=1.05,
+            xanchor="center",
+            yanchor="bottom",
+            orientation="h",
+            bgcolor="rgba(255,255,255,0)"
+        ),
+        hovermode="x unified",
+        hoverlabel=PlotlyBase.attr(
+            bgcolor="#ffffff",
+            bordercolor="#e4e4e7",
+            font_color="#18181b",
+            font_family="system-ui, -apple-system, sans-serif"
+        )
+    )
+
+    @onchange isready begin
+        if isready
+            is_running = EXPERIMENT_RUNNING[]
+            if EXPERIMENT_RUNNING[] && ACTIVE_EST[] !== nothing
+                @async begin
+                    while EXPERIMENT_RUNNING[]
+                        est_current = ACTIVE_EST[]
+                        if est_current !== nothing
+                            update_ui!(__model__, est_current)
+                        end
+                        sleep(1.0)
+                    end
+                    is_running = false
+                    if ACTIVE_EST[] !== nothing
+                        update_ui!(__model__, ACTIVE_EST[])
+                    end
+                end
+            elseif ACTIVE_EST[] !== nothing
+                update_ui!(__model__, ACTIVE_EST[])
+            end
+        end
+    end
 
     @onchange stop_experiment begin
         if stop_experiment
-            is_running = false
-            stop_signal[] = true
+            EXPERIMENT_RUNNING[] = false
+            STOP_SIGNAL[] = true
             stop_experiment = false
+            is_running = false
         end
     end
 
@@ -66,8 +168,9 @@ const OPTIMIZERS = Dict(
         if start_experiment
             try
                 is_running = true
+                EXPERIMENT_RUNNING[] = true
                 start_experiment = false
-                stop_signal[] = false
+                STOP_SIGNAL[] = false
 
                 dev = device == "gpu" ? gpu_device() : cpu_device()
 
@@ -90,18 +193,13 @@ const OPTIMIZERS = Dict(
                 )
 
                 stipple_callback = StippleCallback((est) -> begin
-                    if stop_signal[]
+                    if STOP_SIGNAL[]
                         throw(InterruptException())
-                    end
-
-                    current_step = est.i
-                    best_acc = Float64(est.best_acc)
-                    if !isempty(est.history.loss)
-                        current_loss = Float64(est.history.loss[end])
                     end
                 end)
 
                 est = Kiseki.init(exp, (stipple_callback,))
+                ACTIVE_EST[] = est
 
                 errormonitor(
                     Threads.@spawn begin
@@ -115,12 +213,27 @@ const OPTIMIZERS = Dict(
                             end
                         finally
                             sleep(0.2)
-                            is_running = false
+                            EXPERIMENT_RUNNING[] = false
                         end
                     end
                 )
+
+                @async begin
+                    while EXPERIMENT_RUNNING[]
+                        est_current = ACTIVE_EST[]
+                        if est_current !== nothing
+                            update_ui!(__model__, est_current)
+                        end
+                        sleep(1.0)
+                    end
+                    is_running = false
+                    if ACTIVE_EST[] !== nothing
+                        update_ui!(__model__, ACTIVE_EST[])
+                    end
+                end
             catch e
                 is_running = false
+                EXPERIMENT_RUNNING[] = false
                 @error "Experiment setup failed" exception = (e, catch_backtrace())
             end
         end
@@ -128,20 +241,5 @@ const OPTIMIZERS = Dict(
 end
 
 @page("/", "src/ui.html")
-
-route("/checkpoints") do
-    checkpoints_dir = "checkpoints"
-    isdir(checkpoints_dir) || return Genie.Renderer.Json.json([])
-
-    files = readdir(checkpoints_dir)
-    json_files = filter(f -> endswith(f, ".json"), files)
-
-    checkpoints = map(json_files) do file
-        JSON3.read(read(joinpath(checkpoints_dir, file), String))
-    end
-    sort!(checkpoints, by=x -> x.timestamp, rev=true)
-
-    return Genie.Renderer.Json.json(checkpoints)
-end
 
 Server.up(async=false)

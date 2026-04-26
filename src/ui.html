@@ -95,6 +95,10 @@
 					<p class="stat-value">{{best_acc.toFixed(2)}}%</p>
 				</div>
 			</div>
+
+			<div class="mt-6 w-full">
+				<plotly :data="plot_data" :layout="plot_layout"></plotly>
+			</div>
 		</div>
 	</div>
 </div>
