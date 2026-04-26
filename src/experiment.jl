@@ -137,6 +137,9 @@ function run!(exp::Experiment, est::ExperimentState; resume=false)
             update_scheduler!(exp.opt, est.ops, is_best)
 
             foreach(cb -> on_val_end!(cb, exp, est, val_set, model, θ, st, acc, is_best), est.callbacks)
+
+            GC.gc(true)
+            LuxCUDA.CUDA.reclaim()
         end
 
         est.i += 1

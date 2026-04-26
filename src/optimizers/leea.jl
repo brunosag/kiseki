@@ -60,6 +60,7 @@ function compute_fitness!(ws, Ŷ_pop, Y)
     return (1.0f0 / maximum(ws.fₒ)) - 1.0f0
 end
 
+# CPU version
 function evaluate_population!(opt, ops::LEEAState{<:Matrix}, ws, model, st, X, Y)
     Ŷ_list = Vector{Matrix{Float32}}(undef, opt.N)
     Threads.@threads for j in 1:opt.N
@@ -68,8 +69,23 @@ function evaluate_population!(opt, ops::LEEAState{<:Matrix}, ws, model, st, X, Y
     return compute_fitness!(ws, stack(Ŷ_list), Y)
 end
 
+# GPU version
 function evaluate_population!(opt, ops::LEEAState, ws, model, st, X, Y)
-    Ŷ_pop = stack([predict_individual(ops, model, st, X, j) for j in 1:opt.N])
+    n_classes = size(Y, 1)
+    batchsize = size(Y, 2)
+    Ŷ_pop = similar(Y, Float32, n_classes, batchsize, opt.N)
+
+    for j in 1:opt.N
+        Ŷ = predict_individual(ops, model, st, X, j)
+        @views Ŷ_pop[:, :, j] .= Ŷ
+
+        if j % 20 == 0
+            GC.gc(false)
+            LuxCUDA.CUDA.reclaim()
+            yield()
+        end
+    end
+
     return compute_fitness!(ws, Ŷ_pop, Y)
 end
 

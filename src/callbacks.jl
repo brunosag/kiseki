@@ -3,28 +3,6 @@ abstract type AbstractCallback end
 on_step_end!(cb::AbstractCallback, exp, est, loss, Δt) = nothing
 on_val_end!(cb::AbstractCallback, exp, est, val_set, model, θ, st, acc, is_best) = nothing
 
-# ---------------- WebSocketLogger ----------------
-
-struct WebSocketLogger <: AbstractCallback
-    clients::Set{HTTP.WebSockets.WebSocket}
-end
-
-function on_step_end!(cb::WebSocketLogger, exp, est, loss, Δt)
-    msg = JSON3.write((type="step", payload=(i=est.i, Δt=Δt, loss=loss)))
-    for ws in cb.clients
-        WebSockets.send(ws, msg)
-    end
-    return
-end
-
-function on_val_end!(cb::WebSocketLogger, exp, est, val_set, model, θ, st, acc, is_best)
-    msg = JSON3.write((type="validation", payload=(i=est.i, acc=acc)))
-    for ws in cb.clients
-        WebSockets.send(ws, msg)
-    end
-    return
-end
-
 # ---------------- Tracker ----------------
 
 @kwdef mutable struct Tracker <: AbstractCallback end

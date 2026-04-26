@@ -71,11 +71,11 @@
 			</div>
 
 			<button
-				v-on:click="start_experiment=true"
-				v-bind:disabled="is_running"
-				class="mt-6 w-full py-2 px-4 bg-zinc-800 hover:bg-zinc-800/90 not-disabled:active:bg-zinc-800/80 not-disabled:active:scale-[0.99] text-white font-semibold disabled:bg-zinc-400 rounded-lg"
+				v-on:click="is_running ? stop_experiment=true : start_experiment=true"
+				v-bind:class="is_running ? 'bg-red-600 hover:bg-red-700' : 'bg-zinc-800 hover:bg-zinc-900'"
+				class="mt-6 w-full py-2 px-4 active:scale-[0.99] text-white font-semibold rounded-lg transition-colors"
 			>
-				Start experiment
+				{{ is_running ? 'Stop experiment' : 'Start experiment' }}
 			</button>
 		</div>
 

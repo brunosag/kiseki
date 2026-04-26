@@ -50,12 +50,24 @@ const OPTIMIZERS = Dict(
 
     @out is_running = false
     @in start_experiment = false
+    @in stop_experiment = false
+
+    stop_signal = Threads.Atomic{Bool}(false)
+
+    @onchange stop_experiment begin
+        if stop_experiment
+            is_running = false
+            stop_signal[] = true
+            stop_experiment = false
+        end
+    end
 
     @onchange start_experiment begin
         if start_experiment
             try
                 is_running = true
                 start_experiment = false
+                stop_signal[] = false
 
                 dev = device == "gpu" ? gpu_device() : cpu_device()
 
@@ -77,7 +89,11 @@ const OPTIMIZERS = Dict(
                     target_acc=Float64(target_acc)
                 )
 
-                stipple_logger = StippleCallback((est) -> begin
+                stipple_callback = StippleCallback((est) -> begin
+                    if stop_signal[]
+                        throw(InterruptException())
+                    end
+
                     current_step = est.i
                     best_acc = Float64(est.best_acc)
                     if !isempty(est.history.loss)
@@ -85,14 +101,18 @@ const OPTIMIZERS = Dict(
                     end
                 end)
 
-                est = Kiseki.init(exp, (stipple_logger,))
+                est = Kiseki.init(exp, (stipple_callback,))
 
                 errormonitor(
                     Threads.@spawn begin
                         try
                             run!(exp, est)
                         catch e
-                            @error "Experiment execution failed" exception = (e, catch_backtrace())
+                            if e isa InterruptException
+                                @info "Experiment stopped by user."
+                            else
+                                @error "Experiment execution failed" exception = (e, catch_backtrace())
+                            end
                         finally
                             sleep(0.2)
                             is_running = false
