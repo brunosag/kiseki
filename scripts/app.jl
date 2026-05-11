@@ -74,12 +74,17 @@ end
 
     # State
     @out is_running = !isnothing(est)
+    @out current_step = 0
+    @out best_acc = 0.0
+    @out loss_history = []
+    @out acc_history = []
 
     # Actions
     @in start_experiment = false
     @onbutton start_experiment begin
         try
             @info "Starting experiment"
+            Threads.atomic_xchg!(stop_signal, false)
             is_running = true
 
             opt_kwargs = NamedTuple(
@@ -98,6 +103,16 @@ end
             global est = Kiseki.init(exp, (StippleCallback(),))
 
             Threads.@spawn run!(exp, est)
+
+            errormonitor(Threads.@spawn begin
+                while is_running
+                    current_step = est.i
+                    best_acc = est.best_acc
+                    loss_history = est.history.loss
+                    acc_history = est.history.acc
+                    sleep(0.5)
+                end
+            end)
         catch e
             @error "Exception caught in start_experiment:" exception = (e, catch_backtrace())
             is_running = false
@@ -108,6 +123,7 @@ end
     @onbutton stop_experiment begin
         @info "Stopping experiment"
         Threads.atomic_xchg!(stop_signal, true)
+        global est = nothing
         is_running = false
     end
 end
