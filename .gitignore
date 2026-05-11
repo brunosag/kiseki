@@ -3,6 +3,7 @@ Manifest.toml
 
 # genie
 log/
+.theme
 
 # nix
 shell.nix

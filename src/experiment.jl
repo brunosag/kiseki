@@ -108,6 +108,8 @@ function run!(exp::Experiment, est::ExperimentState; resume=false)
     st = Lux.testmode(Lux.initialstates(TaskLocalRNG(), model))
 
     rng_data = Xoshiro(exp.seed)
+
+    @info "Loading dataset"
     train_loader, val_set, _ = load_MNIST(
         rng_data, exp.batchsize, exp.device, val_size=10_000
     )
