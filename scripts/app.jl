@@ -1,4 +1,4 @@
-using Kiseki, GenieFramework, StippleLatex
+using Kiseki, GenieFramework, StippleLatex, PlotlyBase
 import DataStructures: OrderedDict
 import Lux: gpu_device, cpu_device
 @genietools
@@ -7,11 +7,11 @@ const CONFIG_SCHEMA = OrderedDict(
     "dataset" => Dict("type" => "select", "label" => "Dataset", "options" => [
         Dict("label" => "MNIST", "value" => "mnist"),
         Dict("label" => "Fashion MNIST", "value" => "fashion"),
-        Dict("label" => "CIFAR-10", "value" => "cifar10")
+        Dict("label" => "CIFAR-10", "value" => "cifar10"),
     ]),
     "device" => Dict("type" => "select", "label" => "Device", "options" => [
         Dict("label" => "CPU", "value" => "cpu"),
-        Dict("label" => "GPU", "value" => "gpu")
+        Dict("label" => "GPU", "value" => "gpu"),
     ]),
     "seed" => Dict("type" => "number", "step" => 1, "default" => 42, "label" => "Seed"),
     "batch_size" => Dict("type" => "number", "step" => 1, "default" => 1000, "label" => "Batch size"),
@@ -25,7 +25,7 @@ const CONFIG_SCHEMA = OrderedDict(
 
 const OPTIMIZERS_SCHEMA = OrderedDict(
     "SGD" => [
-        Dict("key" => "η", "label" => raw"\eta", "type" => "number", "default" => 0.01, "step" => 0.01, "desc" => "Learning rate")
+        Dict("key" => "η", "label" => raw"\eta", "type" => "number", "default" => 0.01, "step" => 0.01, "desc" => "Learning rate"),
     ],
     "LEEA" => [
         Dict("key" => "N", "label" => raw"N", "type" => "number", "default" => 200, "step" => 1, "desc" => "Population size"),
@@ -35,8 +35,25 @@ const OPTIMIZERS_SCHEMA = OrderedDict(
         Dict("key" => "ρ", "label" => raw"\rho", "type" => "number", "default" => 0.4, "step" => 0.01, "desc" => "Retention fraction"),
         Dict("key" => "ρₓ", "label" => raw"\rho_{\mathrm{x}}", "type" => "number", "default" => 0.5, "step" => 0.01, "desc" => "Crossover fraction"),
         Dict("key" => "λ", "label" => raw"\lambda", "type" => "number", "default" => 0.2, "step" => 0.01, "desc" => "Fitness decay coefficient"),
-        Dict("key" => "τ_pat", "label" => raw"\tau_{\mathrm{pat}}", "type" => "number", "default" => 25, "step" => 1, "desc" => "Validation patience threshold")
+        Dict("key" => "τ_pat", "label" => raw"\tau_{\mathrm{pat}}", "type" => "number", "default" => 25, "step" => 1, "desc" => "Validation patience threshold"),
     ]
+)
+
+const PLOT_LAYOUT = PlotlyBase.Layout(
+    xaxis=attr(title="Step", fixedrange=false, gridcolor="#f4f4f5"), # zinc-100
+    yaxis=attr(title="Loss", fixedrange=false, gridcolor="#f4f4f5"), # zinc-100
+    yaxis2=attr(title="Accuracy (%)", fixedrange=false, overlaying="y", side="right", showgrid=false),
+    legend=attr(orientation="h", x=0.5, y=1, xanchor="center", yanchor="bottom"),
+    font=attr(family="sans-serif"),
+    paper_bgcolor="transparent",
+    plot_bgcolor="transparent",
+    dragmode=false,
+)
+
+const PLOT_CONFIG = PlotlyBase.PlotConfig(
+    displayModeBar=false,
+    displaylogo=false,
+    scrollZoom=false,
 )
 
 @kwdef mutable struct ExperimentConfig
@@ -52,18 +69,34 @@ end
 const stop_signal = Threads.Atomic{Bool}(false)
 global est::Union{ExperimentState,Nothing} = nothing
 
-struct StippleCallback <: AbstractCallback end
+@kwdef struct StippleCallback <: AbstractCallback
+    update_step::Function
+    update_val::Function
+    last_t::Threads.Atomic{Float64}
+    throttle_sec::Float64
+end
+
 function Kiseki.on_step_end!(cb::StippleCallback, exp, est, loss, Δt)
     if stop_signal[]
         Threads.atomic_xchg!(stop_signal, false)
         throw(InterruptException())
     end
+
+    t = Base.time()
+    if t - cb.last_t[] > cb.throttle_sec
+        Threads.atomic_xchg!(cb.last_t, t)
+        cb.update_step(est, loss, Δt)
+    end
 end
+
+Kiseki.on_val_end!(cb::StippleCallback, exp, est, val_set, model, θ, st, acc, is_best) = cb.update_val(est, acc)
 
 @app begin
     # Constants
     @out config_schema = CONFIG_SCHEMA
     @out optimizers_schema = OPTIMIZERS_SCHEMA
+    @out plot_layout = PLOT_LAYOUT
+    @out plot_config = PLOT_CONFIG
 
     # Input
     @in config = ExperimentConfig()
@@ -76,8 +109,11 @@ end
     @out is_running = !isnothing(est)
     @out current_step = 0
     @out best_acc = 0.0
-    @out loss_history = []
-    @out acc_history = []
+    @out current_loss = 0.0
+    @out plot_data = AbstractTrace[
+        scatter(name="Loss", x=Int[], y=Float64[]),
+        scatter(name="Accuracy", x=Int[], y=Float64[], yaxis="y2")
+    ]
 
     # Actions
     @in start_experiment = false
@@ -100,19 +136,34 @@ end
                 opt=getproperty(Kiseki, Symbol(config.optimizer))(; opt_kwargs...)
             )
 
-            global est = Kiseki.init(exp, (StippleCallback(),))
+            reactive_callback = StippleCallback(
+                update_step=(est, loss, Δt) -> begin
+                    __model__.current_step[] = est.i
+                    __model__.current_loss[] = !isempty(est.history.loss) ? est.history.loss[end] : 0.0
+                    __model__.plot_data[][1] = scatter(
+                        name="Loss",
+                        x=eachindex(est.history.loss),
+                        y=est.history.loss,
+                        line=PlotlyBase.attr(color="#18181b", width=1.5) # zinc-900
+                    )
+                end,
+                update_val=(est, acc) -> begin
+                    __model__.best_acc[] = est.best_acc
+                    __model__.plot_data[][2] = scatter(
+                        name="Accuracy",
+                        x=[a.i for a in est.history.acc],
+                        y=[a.value for a in est.history.acc],
+                        yaxis="y2",
+                        line=PlotlyBase.attr(color="#a1a1aa", width=1.5) # zinc-400
+                    )
+                end,
+                last_t=Threads.Atomic{Float64}(Base.time()),
+                throttle_sec=0.1
+            )
+
+            global est = Kiseki.init(exp, (reactive_callback,))
 
             Threads.@spawn run!(exp, est)
-
-            errormonitor(Threads.@spawn begin
-                while is_running
-                    current_step = est.i
-                    best_acc = est.best_acc
-                    loss_history = est.history.loss
-                    acc_history = est.history.acc
-                    sleep(0.5)
-                end
-            end)
         catch e
             @error "Exception caught in start_experiment:" exception = (e, catch_backtrace())
             is_running = false

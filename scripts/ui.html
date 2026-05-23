@@ -70,20 +70,20 @@
 			<div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
 				<div class="stat-card">
 					<p class="stat-label">Step</p>
-					<p class="stat-value">{{current_step}}</p>
+					<p class="stat-value">{{ current_step }}</p>
 				</div>
 				<div class="stat-card">
 					<p class="stat-label">Loss</p>
-					<p class="stat-value">{{(loss_history.at(-1) || 0).toFixed(4)}}</p>
+					<p class="stat-value">{{ current_loss.toFixed(4) }}</p>
 				</div>
 				<div class="stat-card">
 					<p class="stat-label">Best accuracy</p>
-					<p class="stat-value">{{best_acc.toFixed(2)}}%</p>
+					<p class="stat-value">{{ best_acc.toFixed(2) }}%</p>
 				</div>
 			</div>
 
 			<div class="mt-6 w-full">
-				<!-- <plotly :data="plot_data" :layout="plot_layout"></plotly> -->
+				<plotly :data="plot_data" :layout="plot_layout" :config="plot_config"></plotly>
 			</div>
 		</div>
 	</div>
@@ -96,6 +96,12 @@
 		.stat-card { @apply p-4 rounded-xl border; }
 		.stat-label { @apply text-sm text-zinc-500; }
 		.stat-value { @apply text-2xl; }
+	
+		.js-plotly-plot .plotly .cursor-crosshair,
+		.js-plotly-plot .plotly .cursor-ew-resize,
+		.js-plotly-plot .plotly .cursor-ns-resize { 
+			cursor: default !important; 
+		}
 	`;
 	document.head.appendChild(customStyles);
 
