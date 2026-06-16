@@ -1,0 +1,33 @@
+[project]
+name = "kiseki"
+version = "0.1.0"
+description = "FastAPI and PyTorch service for Kiseki experiments"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi[standard-no-fastapi-cloud-cli]>=0.137.1",
+    "numpy>=2.4.6",
+    "torch==2.12.0",
+    "torchvision==0.27.0",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.0",
+    "ruff>=0.15.17",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["kiseki"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
