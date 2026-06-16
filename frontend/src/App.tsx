@@ -50,6 +50,7 @@ const Plot = (
 const configOrder: (keyof ExperimentConfig)[] = [
   "dataset",
   "device",
+  "speed_mode",
   "seed",
   "batch_size",
   "iterations",

@@ -38,6 +38,7 @@ class OptimizerParamField(BaseModel):
 class ExperimentConfig(BaseModel):
     dataset: Literal["mnist"] = "mnist"
     device: Literal["cpu", "gpu"] = "cpu"
+    speed_mode: Literal["safe", "fast"] = "safe"
     seed: int = 42
     batch_size: int = 1000
     iterations: int = 100000
@@ -98,6 +99,14 @@ CONFIG_SCHEMA: dict[str, ConfigField] = {
         type="select",
         label="Device",
         options=[SelectOption(label="CPU", value="cpu"), SelectOption(label="GPU", value="gpu")],
+    ),
+    "speed_mode": ConfigField(
+        type="select",
+        label="Speed mode",
+        options=[
+            SelectOption(label="Safe", value="safe"),
+            SelectOption(label="Fast", value="fast"),
+        ],
     ),
     "seed": ConfigField(type="number", label="Seed", step=1, default=42),
     "batch_size": ConfigField(type="number", label="Batch size", step=1, default=1000),
@@ -177,4 +186,3 @@ OPTIMIZERS_SCHEMA: dict[str, list[OptimizerParamField]] = {
 
 def schema_response() -> SchemaResponse:
     return SchemaResponse(config_schema=CONFIG_SCHEMA, optimizers_schema=OPTIMIZERS_SCHEMA)
-

@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 from .checkpoint import CheckpointSaver
 from .data import DataLoaderFactory, cycle_loader
 from .models import CNN2C2DMNIST
-from .optimizers import build_optimizer_runner
+from .optimizers import as_channels_last, build_optimizer_runner
 from .schemas import AccuracyPoint, ExperimentStatus, StartExperimentRequest
 
 VAL_FREQ = 10
@@ -79,6 +79,8 @@ class ExperimentManager:
             config = request.config
             seed_everything(config.seed)
             device = resolve_device(config.device)
+            if hasattr(self.data_loader_factory, "pin_memory"):
+                self.data_loader_factory.pin_memory = device.type == "cuda"
             train_loader, val_loader = self.data_loader_factory.mnist(
                 batch_size=config.batch_size,
                 seed=config.seed,
@@ -90,6 +92,7 @@ class ExperimentManager:
                 request.opt_params.get(config.optimizer, {}),
                 device=device,
                 seed=config.seed,
+                speed_mode=config.speed_mode,
             )
             train_batches = cycle_loader(train_loader)
 
@@ -99,14 +102,13 @@ class ExperimentManager:
                     break
 
                 inputs, targets = next(train_batches)
-                inputs = inputs.to(device)
-                targets = targets.to(device)
+                inputs, targets = move_batch(inputs, targets, device, config.speed_mode)
                 loss = runner.step(inputs, targets)
                 status = self._update_step(step, loss)
                 self._publish("step", status)
 
                 if step % VAL_FREQ == 0:
-                    accuracy = evaluate(model, val_loader, device)
+                    accuracy = evaluate(model, val_loader, device, config.speed_mode)
                     status = self._update_accuracy(step, accuracy)
                     self._publish("validation", status)
                     if accuracy >= config.target_acc:
@@ -170,14 +172,32 @@ def resolve_device(requested: str) -> torch.device:
     return torch.device("cpu")
 
 
-def evaluate(model: torch.nn.Module, loader: DataLoader, device: torch.device) -> float:
+def move_batch(
+    inputs: torch.Tensor,
+    targets: torch.Tensor,
+    device: torch.device,
+    speed_mode: str = "safe",
+) -> tuple[torch.Tensor, torch.Tensor]:
+    non_blocking = device.type == "cuda"
+    inputs = inputs.to(device, non_blocking=non_blocking)
+    targets = targets.to(device, non_blocking=non_blocking)
+    if speed_mode == "fast" and device.type == "cuda":
+        inputs = as_channels_last(inputs)
+    return inputs, targets
+
+
+def evaluate(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    speed_mode: str = "safe",
+) -> float:
     model.eval()
     correct = 0
     total = 0
     with torch.no_grad():
         for inputs, targets in loader:
-            inputs = inputs.to(device)
-            targets = targets.to(device)
+            inputs, targets = move_batch(inputs, targets, device, speed_mode)
             predictions = model(inputs).argmax(dim=1)
             correct += int((predictions == targets).sum().cpu())
             total += targets.numel()
@@ -190,4 +210,3 @@ def format_sse(event_type: str, payload: ExperimentStatus | dict[str, Any]) -> s
     else:
         data = payload
     return f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
-

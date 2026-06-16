@@ -3,8 +3,8 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader, random_split
-from torchvision import datasets, transforms
+from torch.utils.data import DataLoader, TensorDataset, random_split
+from torchvision import datasets
 
 
 def load_mnist(
@@ -14,18 +14,19 @@ def load_mnist(
     *,
     download: bool = True,
     num_workers: int = 0,
+    pin_memory: bool = False,
 ) -> tuple[DataLoader, DataLoader]:
-    dataset = datasets.MNIST(
-        root=Path(data_dir),
-        train=True,
-        transform=transforms.ToTensor(),
-        download=download,
+    raw_dataset = datasets.MNIST(root=Path(data_dir), train=True, download=download)
+    dataset = TensorDataset(
+        raw_dataset.data.unsqueeze(1).float().div(255.0),
+        torch.as_tensor(raw_dataset.targets, dtype=torch.long),
     )
     return make_regular_train_val_loaders(
         dataset,
         batch_size=batch_size,
         seed=seed,
         num_workers=num_workers,
+        pin_memory=pin_memory,
     )
 
 
@@ -35,6 +36,7 @@ def make_regular_train_val_loaders(
     seed: int,
     *,
     num_workers: int = 0,
+    pin_memory: bool = False,
 ) -> tuple[DataLoader, DataLoader]:
     if len(dataset) < 60000:
         raise ValueError("MNIST train split must contain at least 60000 examples")
@@ -49,12 +51,14 @@ def make_regular_train_val_loaders(
         shuffle=True,
         generator=shuffle_generator,
         num_workers=num_workers,
+        pin_memory=pin_memory,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
         num_workers=num_workers,
+        pin_memory=pin_memory,
     )
     return train_loader, val_loader
 
@@ -70,6 +74,7 @@ class DataLoaderFactory:
     data_dir: Path = Path("data")
     download: bool = True
     num_workers: int = 0
+    pin_memory: bool = False
 
     def mnist(self, batch_size: int, seed: int) -> tuple[DataLoader, DataLoader]:
         return load_mnist(
@@ -78,5 +83,5 @@ class DataLoaderFactory:
             seed=seed,
             download=self.download,
             num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
         )
-

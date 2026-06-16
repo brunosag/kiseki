@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from contextlib import nullcontext
 from typing import Protocol
 
 import torch
@@ -16,6 +17,7 @@ class OptimizerRunner(Protocol):
 @dataclass(slots=True)
 class SGDConfig:
     eta: float = 0.01
+    speed_mode: str = "safe"
 
 
 @dataclass(slots=True)
@@ -28,20 +30,39 @@ class LEEAConfig:
     crossover_fraction: float = 0.5
     fitness_decay: float = 0.2
     validation_patience: int = 25
+    speed_mode: str = "safe"
 
 
 class SGDRunner:
     def __init__(self, model: nn.Module, config: SGDConfig) -> None:
         self.model = model
         self.optimizer = torch.optim.SGD(model.parameters(), lr=config.eta)
+        self.device = next(model.parameters()).device
+        self.use_fast_cuda = config.speed_mode == "fast" and self.device.type == "cuda"
+        self.scaler = torch.amp.GradScaler("cuda", enabled=True) if self.use_fast_cuda else None
+
+        if self.use_fast_cuda:
+            enable_cuda_fast_math()
+            self.model.to(memory_format=torch.channels_last)
 
     def step(self, inputs: torch.Tensor, targets: torch.Tensor) -> float:
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
-        logits = self.model(inputs)
-        loss = F.cross_entropy(logits, targets)
-        loss.backward()
-        self.optimizer.step()
+
+        if self.use_fast_cuda:
+            inputs = as_channels_last(inputs)
+            with torch.amp.autocast("cuda", dtype=torch.float16):
+                logits = self.model(inputs)
+                loss = F.cross_entropy(logits, targets)
+            assert self.scaler is not None
+            self.scaler.scale(loss).backward()
+            self.scaler.step(self.optimizer)
+            self.scaler.update()
+        else:
+            logits = self.model(inputs)
+            loss = F.cross_entropy(logits, targets)
+            loss.backward()
+            self.optimizer.step()
         return float(loss.detach().cpu())
 
 
@@ -58,6 +79,9 @@ class LEEARunner:
         self.config = config
         self.device = device
         self.generator = torch.Generator(device=device).manual_seed(seed)
+        self.use_fast_cuda = config.speed_mode == "fast" and device.type == "cuda"
+        if self.use_fast_cuda:
+            self.model.to(memory_format=torch.channels_last)
         self.mutation_step = config.initial_mutation_step
         self.parameter_shapes = [parameter.shape for parameter in model.parameters()]
         self.parameter_sizes = [parameter.numel() for parameter in model.parameters()]
@@ -78,8 +102,15 @@ class LEEARunner:
     def step(self, inputs: torch.Tensor, targets: torch.Tensor) -> float:
         self.model.eval()
         losses = torch.empty(self.population.shape[0], device=self.device)
+        if self.use_fast_cuda:
+            inputs = as_channels_last(inputs)
+        autocast_context = (
+            torch.amp.autocast("cuda", dtype=torch.float16)
+            if self.use_fast_cuda
+            else nullcontext()
+        )
 
-        with torch.no_grad():
+        with torch.no_grad(), autocast_context:
             for index, vector in enumerate(self.population):
                 copy_vector_to_model(vector, self.model)
                 logits = self.model(inputs)
@@ -112,36 +143,59 @@ class LEEARunner:
         next_population[:retain_count] = retained
         next_fitness[:retain_count] = retained_fitness
 
-        for child_index in range(retain_count, population_size):
-            parent_a = int(torch.randint(retain_count, (1,), generator=self.generator, device=self.device))
-            parent_b = int(torch.randint(retain_count, (1,), generator=self.generator, device=self.device))
-            child = retained[parent_a].clone()
-            inherited = retained_fitness[parent_a]
-
-            if random_scalar(self.generator, self.device) < self.config.crossover_fraction:
-                mask = torch.rand(
-                    self.num_parameters,
-                    generator=self.generator,
-                    device=self.device,
-                ) < 0.5
-                child = torch.where(mask, child, retained[parent_b])
-                inherited = 0.5 * (retained_fitness[parent_a] + retained_fitness[parent_b])
-
-            mutation_mask = torch.rand(
-                self.num_parameters,
+        child_count = population_size - retain_count
+        if child_count > 0:
+            parent_a = torch.randint(
+                retain_count,
+                (child_count,),
                 generator=self.generator,
                 device=self.device,
-            ) < self.config.mutation_probability
+            )
+            parent_b = torch.randint(
+                retain_count,
+                (child_count,),
+                generator=self.generator,
+                device=self.device,
+            )
+            children = retained[parent_a].clone()
+            child_fitness = retained_fitness[parent_a].clone()
+
+            crossover_rows = (
+                torch.rand(child_count, generator=self.generator, device=self.device)
+                < self.config.crossover_fraction
+            )
+            if bool(crossover_rows.any()):
+                crossover_mask = (
+                    torch.rand(
+                        (child_count, self.num_parameters),
+                        generator=self.generator,
+                        device=self.device,
+                    )
+                    < 0.5
+                )
+                crossed_children = torch.where(crossover_mask, children, retained[parent_b])
+                children = torch.where(crossover_rows[:, None], crossed_children, children)
+                averaged_fitness = 0.5 * (retained_fitness[parent_a] + retained_fitness[parent_b])
+                child_fitness = torch.where(crossover_rows, averaged_fitness, child_fitness)
+
+            mutation_mask = (
+                torch.rand(
+                    (child_count, self.num_parameters),
+                    generator=self.generator,
+                    device=self.device,
+                )
+                < self.config.mutation_probability
+            )
             if bool(mutation_mask.any()):
                 noise = torch.randn(
-                    self.num_parameters,
+                    (child_count, self.num_parameters),
                     generator=self.generator,
                     device=self.device,
                 ) * self.mutation_step
-                child = child + torch.where(mutation_mask, noise, torch.zeros_like(noise))
+                children = children + noise * mutation_mask.to(children.dtype)
 
-            next_population[child_index] = child
-            next_fitness[child_index] = inherited
+            next_population[retain_count:] = children
+            next_fitness[retain_count:] = child_fitness
 
         self.population = next_population
         self.inherited_fitness = next_fitness
@@ -152,9 +206,10 @@ def random_scalar(generator: torch.Generator, device: torch.device) -> float:
 
 
 def flatten_parameters(model: nn.Module) -> torch.Tensor:
-    return torch.nn.utils.parameters_to_vector(
-        [parameter.detach() for parameter in model.parameters()]
-    ).detach()
+    chunks = [parameter.detach().reshape(-1) for parameter in model.parameters()]
+    if not chunks:
+        return torch.empty(0)
+    return torch.cat(chunks).detach()
 
 
 def copy_vector_to_model(vector: torch.Tensor, model: nn.Module) -> None:
@@ -162,7 +217,10 @@ def copy_vector_to_model(vector: torch.Tensor, model: nn.Module) -> None:
     with torch.no_grad():
         for parameter in model.parameters():
             width = parameter.numel()
-            parameter.copy_(vector[offset : offset + width].view_as(parameter))
+            source = vector[offset : offset + width].reshape(parameter.shape)
+            if source.device != parameter.device or source.dtype != parameter.dtype:
+                source = source.to(device=parameter.device, dtype=parameter.dtype)
+            parameter.copy_(source)
             offset += width
 
 
@@ -177,9 +235,13 @@ def build_optimizer_runner(
     *,
     device: torch.device,
     seed: int,
+    speed_mode: str = "safe",
 ) -> OptimizerRunner:
     if optimizer_name == "SGD":
-        return SGDRunner(model, SGDConfig(eta=float(raw_params.get(ETA, 0.01))))
+        return SGDRunner(
+            model,
+            SGDConfig(eta=float(raw_params.get(ETA, 0.01)), speed_mode=speed_mode),
+        )
     if optimizer_name == "LEEA":
         config = LEEAConfig(
             population_size=max(2, int(raw_params.get("N", 200))),
@@ -190,6 +252,7 @@ def build_optimizer_runner(
             crossover_fraction=clamp(float(raw_params.get(RHO_X, 0.5)), 0.0, 1.0),
             fitness_decay=clamp(float(raw_params.get(LAMBDA, 0.2)), 0.0, 1.0),
             validation_patience=max(1, int(raw_params.get(TAU_PAT, 25))),
+            speed_mode=speed_mode,
         )
         return LEEARunner(model, config, device=device, seed=seed)
     raise ValueError(f"Unsupported optimizer: {optimizer_name}")
@@ -198,3 +261,13 @@ def build_optimizer_runner(
 def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
 
+
+def as_channels_last(inputs: torch.Tensor) -> torch.Tensor:
+    if inputs.ndim == 4:
+        return inputs.contiguous(memory_format=torch.channels_last)
+    return inputs
+
+
+def enable_cuda_fast_math() -> None:
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True

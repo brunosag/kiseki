@@ -11,6 +11,9 @@ dependencies = [
     "torchvision==0.27.0",
 ]
 
+[project.scripts]
+kiseki = "kiseki.cli:main"
+
 [dependency-groups]
 dev = [
     "httpx>=0.28.1",

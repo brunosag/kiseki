@@ -28,6 +28,7 @@ export type SchemaResponse = {
 export type ExperimentConfig = {
   dataset: "mnist"
   device: "cpu" | "gpu"
+  speed_mode: "safe" | "fast"
   seed: number
   batch_size: number
   iterations: number
@@ -71,6 +72,14 @@ export const fallbackSchema: SchemaResponse = {
       options: [
         { label: "CPU", value: "cpu" },
         { label: "GPU", value: "gpu" },
+      ],
+    },
+    speed_mode: {
+      type: "select",
+      label: "Speed mode",
+      options: [
+        { label: "Safe", value: "safe" },
+        { label: "Fast", value: "fast" },
       ],
     },
     seed: { type: "number", step: 1, default: 42, label: "Seed" },
@@ -198,6 +207,9 @@ export function configDefaults(schema: SchemaResponse): ExperimentConfig {
   return {
     dataset: firstOption(schema.config_schema.dataset, "mnist") as "mnist",
     device: firstOption(schema.config_schema.device, "cpu") as "cpu" | "gpu",
+    speed_mode: firstOption(schema.config_schema.speed_mode, "safe") as
+      | "safe"
+      | "fast",
     seed: numberDefault(schema.config_schema.seed, 42),
     batch_size: numberDefault(schema.config_schema.batch_size, 1000),
     iterations: numberDefault(schema.config_schema.iterations, 100000),
