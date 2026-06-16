@@ -17,6 +17,19 @@ A Julia-based machine learning framework designed to investigate whether gradien
 
 ## Interfaces
 
+### Local development
+
+Run the backend and frontend together from the repository root:
+
+```bash
+npm run dev
+```
+
+This starts the FastAPI backend at `http://127.0.0.1:8000` and the Vite frontend
+at `http://127.0.0.1:5173`. The frontend dev server proxies `/api` requests to
+the backend. Install frontend dependencies first with
+`npm --prefix frontend install` if `frontend/node_modules` is not present.
+
 ### Web dashboard
 
 The repository features a reactive web user interface built with GenieFramework and StippleLatex. The application (`scripts/app.jl`) allows users to:
