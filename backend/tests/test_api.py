@@ -1,3 +1,4 @@
+import os
 import time
 
 import torch
@@ -6,7 +7,8 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from kiseki.api import create_app
 from kiseki.checkpoint import CheckpointSaver
-from kiseki.experiment import ExperimentManager, format_sse
+from kiseki import experiment
+from kiseki.experiment import ExperimentManager, format_sse, resolve_device, seed_everything
 from kiseki.schemas import ETA, ExperimentStatus
 
 
@@ -53,6 +55,9 @@ def test_api_start_status_stop_flow(tmp_path) -> None:
         status = client.get("/api/experiments/status").json()
 
     assert status["current_step"] > 0
+    assert status["requested_device"] == "cpu"
+    assert status["device"] == "cpu"
+    assert status["device_name"] == "cpu"
 
     stop_response = client.post("/api/experiments/stop")
     assert stop_response.status_code == 200
@@ -64,3 +69,40 @@ def test_sse_event_serialization() -> None:
     assert payload.startswith("event: step\n")
     assert '"current_step": 1' in payload
     assert payload.endswith("\n\n")
+
+    failed_payload = format_sse("failed", ExperimentStatus(error="boom"))
+    assert failed_payload.startswith("event: failed\n")
+    assert '"error": "boom"' in failed_payload
+
+
+def test_gpu_request_errors_when_cuda_is_unavailable(monkeypatch) -> None:
+    monkeypatch.setattr(experiment.torch.cuda, "is_available", lambda: False)
+
+    try:
+        resolve_device("gpu")
+    except RuntimeError as exc:
+        message = str(exc)
+    else:
+        raise AssertionError("GPU request should fail when CUDA is unavailable")
+
+    assert "CUDA was requested" in message
+    assert "direnv allow" in message
+    assert "repository root" in message
+
+
+def test_seed_everything_configures_deterministic_torch(monkeypatch) -> None:
+    monkeypatch.delenv("CUBLAS_WORKSPACE_CONFIG", raising=False)
+    torch.use_deterministic_algorithms(False)
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cudnn.deterministic = False
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
+
+    seed_everything(123)
+
+    assert os.environ["CUBLAS_WORKSPACE_CONFIG"] == ":4096:8"
+    assert torch.are_deterministic_algorithms_enabled()
+    assert torch.backends.cudnn.benchmark is False
+    assert torch.backends.cudnn.deterministic is True
+    assert torch.backends.cuda.matmul.allow_tf32 is False
+    assert torch.backends.cudnn.allow_tf32 is False

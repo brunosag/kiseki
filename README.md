@@ -30,6 +30,10 @@ at `http://127.0.0.1:5173`. The frontend dev server proxies `/api` requests to
 the backend. Install frontend dependencies first with
 `npm --prefix frontend install` if `frontend/node_modules` is not present.
 
+On NixOS, run `direnv allow` once from the repository root before `npm run dev`
+so CUDA driver libraries and the system CA bundle are exported before the
+backend Python process starts.
+
 ### Web dashboard
 
 The repository features a reactive web user interface built with GenieFramework and StippleLatex. The application (`scripts/app.jl`) allows users to:

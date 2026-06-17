@@ -1,4 +1,5 @@
 import json
+import os
 import random
 import threading
 from collections.abc import Iterator
@@ -13,11 +14,17 @@ from torch.utils.data import DataLoader
 from .checkpoint import CheckpointSaver
 from .data import DataLoaderFactory, cycle_loader
 from .models import CNN2C2DMNIST
-from .optimizers import as_channels_last, build_optimizer_runner
+from .optimizers import build_optimizer_runner
 from .schemas import AccuracyPoint, ExperimentStatus, StartExperimentRequest
 
 VAL_FREQ = 10
 SAVE_FREQ = 50
+NIXOS_CUDA_LIBRARY = Path("/run/opengl-driver/lib/libcuda.so.1")
+NIXOS_CUDA_HINT = (
+    "CUDA was requested, but torch.cuda.is_available() is false. "
+    "From the repository root, run `direnv allow` and restart the API process so shell.nix "
+    "exports the CUDA driver path before Python starts."
+)
 
 
 class ExperimentManager:
@@ -44,7 +51,10 @@ class ExperimentManager:
             if self._status.is_running:
                 raise RuntimeError("An experiment is already running")
             self.stop_event.clear()
-            self._status = ExperimentStatus(is_running=True)
+            self._status = ExperimentStatus(
+                is_running=True,
+                requested_device=request.config.device,
+            )
             self.worker = threading.Thread(target=self._run, args=(request,), daemon=True)
             self.worker.start()
             status = self._status.model_copy(deep=True)
@@ -79,6 +89,8 @@ class ExperimentManager:
             config = request.config
             seed_everything(config.seed)
             device = resolve_device(config.device)
+            status = self._update_runtime(config.device, device)
+            self._publish("runtime", status)
             if hasattr(self.data_loader_factory, "pin_memory"):
                 self.data_loader_factory.pin_memory = device.type == "cuda"
             train_loader, val_loader = self.data_loader_factory.mnist(
@@ -92,7 +104,6 @@ class ExperimentManager:
                 request.opt_params.get(config.optimizer, {}),
                 device=device,
                 seed=config.seed,
-                speed_mode=config.speed_mode,
             )
             train_batches = cycle_loader(train_loader)
 
@@ -102,13 +113,13 @@ class ExperimentManager:
                     break
 
                 inputs, targets = next(train_batches)
-                inputs, targets = move_batch(inputs, targets, device, config.speed_mode)
+                inputs, targets = move_batch(inputs, targets, device)
                 loss = runner.step(inputs, targets)
                 status = self._update_step(step, loss)
                 self._publish("step", status)
 
                 if step % VAL_FREQ == 0:
-                    accuracy = evaluate(model, val_loader, device, config.speed_mode)
+                    accuracy = evaluate(model, val_loader, device)
                     status = self._update_accuracy(step, accuracy)
                     self._publish("validation", status)
                     if accuracy >= config.target_acc:
@@ -124,7 +135,7 @@ class ExperimentManager:
                     )
 
         except Exception as exc:  # pragma: no cover - surfaced through API status.
-            final_event = "error"
+            final_event = "failed"
             status = self._set_finished(error=str(exc))
             self._publish(final_event, status)
             return
@@ -145,6 +156,17 @@ class ExperimentManager:
             self._status.history.acc.append(AccuracyPoint(i=step, value=accuracy))
             return self._status.model_copy(deep=True)
 
+    def _update_runtime(
+        self,
+        requested_device: str,
+        device: torch.device,
+    ) -> ExperimentStatus:
+        with self.lock:
+            self._status.requested_device = requested_device
+            self._status.device = device.type
+            self._status.device_name = device_name(device)
+            return self._status.model_copy(deep=True)
+
     def _set_finished(self, error: str | None = None) -> ExperimentStatus:
         with self.lock:
             self._status.is_running = False
@@ -159,9 +181,15 @@ class ExperimentManager:
 
 
 def seed_everything(seed: int) -> None:
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
+    torch.use_deterministic_algorithms(True)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
@@ -169,20 +197,28 @@ def seed_everything(seed: int) -> None:
 def resolve_device(requested: str) -> torch.device:
     if requested == "gpu" and torch.cuda.is_available():
         return torch.device("cuda")
+    if requested == "gpu":
+        message = NIXOS_CUDA_HINT
+        if NIXOS_CUDA_LIBRARY.exists():
+            message = f"{message} Found {NIXOS_CUDA_LIBRARY}."
+        raise RuntimeError(message)
     return torch.device("cpu")
+
+
+def device_name(device: torch.device) -> str:
+    if device.type == "cuda":
+        return torch.cuda.get_device_name(device)
+    return "cpu"
 
 
 def move_batch(
     inputs: torch.Tensor,
     targets: torch.Tensor,
     device: torch.device,
-    speed_mode: str = "safe",
 ) -> tuple[torch.Tensor, torch.Tensor]:
     non_blocking = device.type == "cuda"
     inputs = inputs.to(device, non_blocking=non_blocking)
     targets = targets.to(device, non_blocking=non_blocking)
-    if speed_mode == "fast" and device.type == "cuda":
-        inputs = as_channels_last(inputs)
     return inputs, targets
 
 
@@ -190,14 +226,13 @@ def evaluate(
     model: torch.nn.Module,
     loader: DataLoader,
     device: torch.device,
-    speed_mode: str = "safe",
 ) -> float:
     model.eval()
     correct = 0
     total = 0
     with torch.no_grad():
         for inputs, targets in loader:
-            inputs, targets = move_batch(inputs, targets, device, speed_mode)
+            inputs, targets = move_batch(inputs, targets, device)
             predictions = model(inputs).argmax(dim=1)
             correct += int((predictions == targets).sum().cpu())
             total += targets.numel()

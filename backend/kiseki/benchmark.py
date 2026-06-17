@@ -17,7 +17,7 @@ from .schemas import ETA, ETA_0, OPTIMIZERS_SCHEMA, P_M, ExperimentConfig
 
 BenchmarkName = Literal["synthetic", "mnist"]
 OptimizerName = Literal["LEEA", "SGD"]
-RequestedDevice = Literal["auto", "cpu", "gpu"]
+RequestedDevice = Literal["auto", "both", "cpu", "gpu"]
 
 FRONTEND_DEFAULT_CONFIG = ExperimentConfig()
 FRONTEND_DEFAULT_OPTIMIZER_PARAMS = {
@@ -28,7 +28,7 @@ FRONTEND_DEFAULT_OPTIMIZER_PARAMS = {
 NIXOS_CUDA_LIBRARY = Path("/run/opengl-driver/lib/libcuda.so.1")
 NIXOS_CUDA_PREFIX = (
     "direnv allow\n"
-    "uv run kiseki benchmark --device gpu --speed-mode fast"
+    "uv run kiseki benchmark --device gpu"
 )
 
 
@@ -38,11 +38,10 @@ class BenchmarkError(RuntimeError):
 
 @dataclass(slots=True)
 class BenchmarkOptions:
-    device: RequestedDevice = "auto"
-    optimizer: Literal["LEEA", "SGD", "both"] = FRONTEND_DEFAULT_CONFIG.optimizer
+    device: RequestedDevice = "both"
+    optimizer: Literal["LEEA", "SGD", "both"] = "both"
     benchmark: Literal["synthetic", "mnist", "both"] = FRONTEND_DEFAULT_CONFIG.dataset
-    speed_mode: Literal["safe", "fast"] = FRONTEND_DEFAULT_CONFIG.speed_mode
-    iterations: int = FRONTEND_DEFAULT_CONFIG.iterations
+    iterations: int = 10
     batch_size: int = FRONTEND_DEFAULT_CONFIG.batch_size
     seed: int = FRONTEND_DEFAULT_CONFIG.seed
     num_workers: int = 0
@@ -53,14 +52,15 @@ class BenchmarkOptions:
 
 
 def run_benchmarks(options: BenchmarkOptions) -> list[dict[str, Any]]:
-    device = resolve_benchmark_device(options.device)
+    devices = resolve_benchmark_devices(options.device)
     optimizers = expand_optimizer(options.optimizer)
     benchmarks = expand_benchmark(options.benchmark)
 
     results = []
-    for benchmark_name in benchmarks:
-        for optimizer_name in optimizers:
-            results.append(run_single_benchmark(benchmark_name, optimizer_name, device, options))
+    for device in devices:
+        for benchmark_name in benchmarks:
+            for optimizer_name in optimizers:
+                results.append(run_single_benchmark(benchmark_name, optimizer_name, device, options))
     return results
 
 
@@ -80,7 +80,6 @@ def run_single_benchmark(
         raw_optimizer_params(optimizer_name, options),
         device=device,
         seed=options.seed,
-        speed_mode=options.speed_mode,
     )
     train_batches = cycle_loader(train_loader)
 
@@ -92,7 +91,7 @@ def run_single_benchmark(
     for _ in range(options.iterations):
         iteration_start = time.perf_counter()
         inputs, targets = next(train_batches)
-        inputs, targets = move_batch(inputs, targets, device, options.speed_mode)
+        inputs, targets = move_batch(inputs, targets, device)
         final_loss = runner.step(inputs, targets)
         if device.type == "cuda":
             torch.cuda.synchronize(device)
@@ -108,7 +107,6 @@ def run_single_benchmark(
         "requested_device": options.device,
         "device": device.type,
         "device_name": device_name(device),
-        "speed_mode": options.speed_mode,
         "iterations": options.iterations,
         "batch_size": options.batch_size,
         "num_workers": options.num_workers,
@@ -172,21 +170,26 @@ def synthetic_loader(options: BenchmarkOptions, *, pin_memory: bool) -> DataLoad
     )
 
 
-def resolve_benchmark_device(requested: RequestedDevice | str) -> torch.device:
+def resolve_benchmark_devices(requested: RequestedDevice | str) -> tuple[torch.device, ...]:
     if requested == "auto":
-        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        return (torch.device("cuda" if torch.cuda.is_available() else "cpu"),)
+    if requested == "both":
+        devices = [torch.device("cpu")]
+        if torch.cuda.is_available():
+            devices.append(torch.device("cuda"))
+        return tuple(devices)
     if requested == "cpu":
-        return torch.device("cpu")
+        return (torch.device("cpu"),)
 
     if torch.cuda.is_available():
-        return torch.device("cuda")
+        return (torch.device("cuda"),)
 
     message = "CUDA was requested for benchmarking, but torch.cuda.is_available() is false."
     if NIXOS_CUDA_LIBRARY.exists():
         message = (
             f"{message}\n"
             f"NixOS CUDA driver library found at {NIXOS_CUDA_LIBRARY}.\n"
-            "From backend/, allow the direnv shell first:\n"
+            "From the repository root, allow the direnv shell first:\n"
             f"{NIXOS_CUDA_PREFIX}"
         )
     raise BenchmarkError(message)
@@ -195,7 +198,7 @@ def resolve_benchmark_device(requested: RequestedDevice | str) -> torch.device:
 def mnist_unavailable_message(exc: RuntimeError) -> str:
     return (
         "MNIST is not available in data/ and torchvision could not download it. "
-        "If you are using direnv, run `direnv allow` in backend/ so shell.nix exports "
+        "If you are using direnv, run `direnv allow` at the repository root so shell.nix exports "
         "the system CA bundle before Python starts.\n"
         f"Original error: {exc}"
     )
@@ -250,7 +253,7 @@ def print_summary(results: list[dict[str, Any]], stream: Any | None = None) -> N
         print(
             (
                 f"- {result['benchmark']} / {result['optimizer']} on {result['device']}"
-                f" ({result['speed_mode']}): {result['iterations_per_second']:.2f} iter/s, "
+                f": {result['iterations_per_second']:.2f} iter/s, "
                 f"avg={result['average_iteration_seconds'] * 1000.0:.3f}ms/iter, "
                 f"median={result['median_iteration_seconds'] * 1000.0:.3f}ms/iter, "
                 f"{result['duration_seconds']:.3f}s total, final_loss={result['final_loss']:.4f}"

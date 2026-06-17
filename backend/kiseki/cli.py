@@ -21,7 +21,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             device=args.device,
             optimizer=args.optimizer,
             benchmark=args.benchmark,
-            speed_mode=args.speed_mode,
             iterations=args.iterations,
             batch_size=args.batch_size,
             seed=args.seed,
@@ -51,7 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
     defaults = BenchmarkOptions()
 
     benchmark = subparsers.add_parser("benchmark", help="Run backend training benchmarks")
-    benchmark.add_argument("--device", choices=("auto", "cpu", "gpu"), default=defaults.device)
+    benchmark.add_argument(
+        "--device",
+        choices=("auto", "both", "cpu", "gpu"),
+        default=defaults.device,
+    )
     benchmark.add_argument(
         "--optimizer",
         choices=("LEEA", "SGD", "both"),
@@ -62,7 +65,6 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("synthetic", "mnist", "both"),
         default=defaults.benchmark,
     )
-    benchmark.add_argument("--speed-mode", choices=("safe", "fast"), default=defaults.speed_mode)
     benchmark.add_argument("--iterations", type=positive_int, default=defaults.iterations)
     benchmark.add_argument("--batch-size", type=positive_int, default=defaults.batch_size)
     benchmark.add_argument("--seed", type=int, default=defaults.seed)

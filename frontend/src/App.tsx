@@ -50,7 +50,6 @@ const Plot = (
 const configOrder: (keyof ExperimentConfig)[] = [
   "dataset",
   "device",
-  "speed_mode",
   "seed",
   "batch_size",
   "iterations",
@@ -61,11 +60,12 @@ const configOrder: (keyof ExperimentConfig)[] = [
 const eventTypes = [
   "status",
   "started",
+  "runtime",
   "step",
   "validation",
   "completed",
   "stopped",
-  "error",
+  "failed",
 ]
 
 type ResolvedTheme = "dark" | "light"
@@ -396,6 +396,11 @@ export function App() {
                 value={`${status.best_acc.toFixed(2)}%`}
               />
             </div>
+            {status.error ? (
+              <div className="mt-4 rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
+                {status.error}
+              </div>
+            ) : null}
 
             <div className="mt-6 w-full">
               <Plot

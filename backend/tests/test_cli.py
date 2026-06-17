@@ -14,11 +14,10 @@ def test_benchmark_defaults_match_frontend_schema() -> None:
     config = ExperimentConfig()
     leea_defaults = {field.key: field.default for field in OPTIMIZERS_SCHEMA["LEEA"]}
 
-    assert args.device == "auto"
-    assert args.optimizer == config.optimizer
+    assert args.device == "both"
+    assert args.optimizer == "both"
     assert args.benchmark == config.dataset
-    assert args.speed_mode == config.speed_mode
-    assert args.iterations == config.iterations
+    assert args.iterations == 10
     assert args.batch_size == config.batch_size
     assert args.seed == config.seed
     assert args.population_size == leea_defaults["N"]
@@ -37,8 +36,6 @@ def test_benchmark_argument_parsing() -> None:
             "LEEA",
             "--benchmark",
             "synthetic",
-            "--speed-mode",
-            "fast",
             "--iterations",
             "2",
             "--batch-size",
@@ -55,7 +52,6 @@ def test_benchmark_argument_parsing() -> None:
     assert args.command == "benchmark"
     assert args.optimizer == "LEEA"
     assert args.benchmark == "synthetic"
-    assert args.speed_mode == "fast"
     assert args.population_size == 6
     assert args.mutation_probability == 0.2
 
@@ -91,6 +87,7 @@ def test_benchmark_cli_writes_synthetic_jsonl(tmp_path, capsys) -> None:
     assert result["device"] == "cpu"
     assert result["iterations"] == 1
     assert result["batch_size"] == 4
+    assert "speed_mode" not in result
     assert result["duration_seconds"] > 0
     assert result["iterations_per_second"] > 0
     assert result["average_iteration_seconds"] > 0
@@ -127,8 +124,9 @@ def test_benchmark_cli_prints_nixos_cuda_hint(monkeypatch, tmp_path, capsys) -> 
 
     assert exit_code == 1
     assert "NixOS CUDA driver library found" in captured.err
+    assert "repository root" in captured.err
     assert "direnv allow" in captured.err
-    assert "uv run kiseki benchmark --device gpu --speed-mode fast" in captured.err
+    assert "uv run kiseki benchmark --device gpu" in captured.err
 
 
 def test_explicit_mnist_failure_returns_error(monkeypatch, capsys) -> None:
@@ -160,36 +158,59 @@ def test_explicit_mnist_failure_returns_error(monkeypatch, capsys) -> None:
     assert "certificate verify failed" in captured.err
 
 
-@pytest.mark.parametrize("removed_option", ["--data-dir", "--no-download"])
-def test_benchmark_parser_rejects_removed_mnist_options(removed_option, capsys) -> None:
+@pytest.mark.parametrize(
+    ("argv", "message"),
+    [
+        (["--data-dir", "mnist-cache"], "unrecognized arguments: --data-dir"),
+        (["--no-download"], "unrecognized arguments: --no-download"),
+        (["--speed-mode", "fast"], "unrecognized arguments: --speed-mode"),
+    ],
+)
+def test_benchmark_parser_rejects_removed_options(argv, message, capsys) -> None:
     with pytest.raises(SystemExit) as exc_info:
-        main(["benchmark", removed_option, "mnist-cache"])
+        main(["benchmark", *argv])
 
     captured = capsys.readouterr()
 
     assert exc_info.value.code == 2
-    assert f"unrecognized arguments: {removed_option}" in captured.err
+    assert message in captured.err
 
 
 def test_direnv_shell_sets_nixos_environment() -> None:
-    backend_dir = Path(__file__).parents[1]
-    envrc = backend_dir / ".envrc"
-    shell_nix = backend_dir / "shell.nix"
+    repo_root = Path(__file__).parents[2]
+    envrc = repo_root / ".envrc"
+    shell_nix = repo_root / "shell.nix"
     text = shell_nix.read_text(encoding="utf-8")
 
     assert envrc.read_text(encoding="utf-8").strip() == "use nix"
     assert "LD_LIBRARY_PATH" in text
     assert "TRITON_LIBCUDA_PATH" in text
+    assert "CUBLAS_WORKSPACE_CONFIG" in text
     assert "SSL_CERT_FILE" in text
 
 
 def test_auto_device_prefers_cuda_when_available(monkeypatch) -> None:
     monkeypatch.setattr(benchmark.torch.cuda, "is_available", lambda: True)
 
-    assert benchmark.resolve_benchmark_device("auto") == benchmark.torch.device("cuda")
+    assert benchmark.resolve_benchmark_devices("auto") == (benchmark.torch.device("cuda"),)
 
 
 def test_auto_device_falls_back_to_cpu(monkeypatch) -> None:
     monkeypatch.setattr(benchmark.torch.cuda, "is_available", lambda: False)
 
-    assert benchmark.resolve_benchmark_device("auto") == benchmark.torch.device("cpu")
+    assert benchmark.resolve_benchmark_devices("auto") == (benchmark.torch.device("cpu"),)
+
+
+def test_both_device_includes_cpu_and_available_cuda(monkeypatch) -> None:
+    monkeypatch.setattr(benchmark.torch.cuda, "is_available", lambda: True)
+
+    assert benchmark.resolve_benchmark_devices("both") == (
+        benchmark.torch.device("cpu"),
+        benchmark.torch.device("cuda"),
+    )
+
+
+def test_both_device_falls_back_to_cpu(monkeypatch) -> None:
+    monkeypatch.setattr(benchmark.torch.cuda, "is_available", lambda: False)
+
+    assert benchmark.resolve_benchmark_devices("both") == (benchmark.torch.device("cpu"),)

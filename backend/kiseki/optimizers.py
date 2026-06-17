@@ -1,5 +1,4 @@
 from dataclasses import dataclass
-from contextlib import nullcontext
 from typing import Protocol
 
 import torch
@@ -17,7 +16,6 @@ class OptimizerRunner(Protocol):
 @dataclass(slots=True)
 class SGDConfig:
     eta: float = 0.01
-    speed_mode: str = "safe"
 
 
 @dataclass(slots=True)
@@ -30,39 +28,21 @@ class LEEAConfig:
     crossover_fraction: float = 0.5
     fitness_decay: float = 0.2
     validation_patience: int = 25
-    speed_mode: str = "safe"
 
 
 class SGDRunner:
     def __init__(self, model: nn.Module, config: SGDConfig) -> None:
         self.model = model
         self.optimizer = torch.optim.SGD(model.parameters(), lr=config.eta)
-        self.device = next(model.parameters()).device
-        self.use_fast_cuda = config.speed_mode == "fast" and self.device.type == "cuda"
-        self.scaler = torch.amp.GradScaler("cuda", enabled=True) if self.use_fast_cuda else None
-
-        if self.use_fast_cuda:
-            enable_cuda_fast_math()
-            self.model.to(memory_format=torch.channels_last)
 
     def step(self, inputs: torch.Tensor, targets: torch.Tensor) -> float:
         self.model.train()
         self.optimizer.zero_grad(set_to_none=True)
 
-        if self.use_fast_cuda:
-            inputs = as_channels_last(inputs)
-            with torch.amp.autocast("cuda", dtype=torch.float16):
-                logits = self.model(inputs)
-                loss = F.cross_entropy(logits, targets)
-            assert self.scaler is not None
-            self.scaler.scale(loss).backward()
-            self.scaler.step(self.optimizer)
-            self.scaler.update()
-        else:
-            logits = self.model(inputs)
-            loss = F.cross_entropy(logits, targets)
-            loss.backward()
-            self.optimizer.step()
+        logits = self.model(inputs)
+        loss = F.cross_entropy(logits, targets)
+        loss.backward()
+        self.optimizer.step()
         return float(loss.detach().cpu())
 
 
@@ -79,9 +59,6 @@ class LEEARunner:
         self.config = config
         self.device = device
         self.generator = torch.Generator(device=device).manual_seed(seed)
-        self.use_fast_cuda = config.speed_mode == "fast" and device.type == "cuda"
-        if self.use_fast_cuda:
-            self.model.to(memory_format=torch.channels_last)
         self.mutation_step = config.initial_mutation_step
         self.parameter_shapes = [parameter.shape for parameter in model.parameters()]
         self.parameter_sizes = [parameter.numel() for parameter in model.parameters()]
@@ -102,15 +79,8 @@ class LEEARunner:
     def step(self, inputs: torch.Tensor, targets: torch.Tensor) -> float:
         self.model.eval()
         losses = torch.empty(self.population.shape[0], device=self.device)
-        if self.use_fast_cuda:
-            inputs = as_channels_last(inputs)
-        autocast_context = (
-            torch.amp.autocast("cuda", dtype=torch.float16)
-            if self.use_fast_cuda
-            else nullcontext()
-        )
 
-        with torch.no_grad(), autocast_context:
+        with torch.no_grad():
             for index, vector in enumerate(self.population):
                 copy_vector_to_model(vector, self.model)
                 logits = self.model(inputs)
@@ -235,12 +205,11 @@ def build_optimizer_runner(
     *,
     device: torch.device,
     seed: int,
-    speed_mode: str = "safe",
 ) -> OptimizerRunner:
     if optimizer_name == "SGD":
         return SGDRunner(
             model,
-            SGDConfig(eta=float(raw_params.get(ETA, 0.01)), speed_mode=speed_mode),
+            SGDConfig(eta=float(raw_params.get(ETA, 0.01))),
         )
     if optimizer_name == "LEEA":
         config = LEEAConfig(
@@ -252,7 +221,6 @@ def build_optimizer_runner(
             crossover_fraction=clamp(float(raw_params.get(RHO_X, 0.5)), 0.0, 1.0),
             fitness_decay=clamp(float(raw_params.get(LAMBDA, 0.2)), 0.0, 1.0),
             validation_patience=max(1, int(raw_params.get(TAU_PAT, 25))),
-            speed_mode=speed_mode,
         )
         return LEEARunner(model, config, device=device, seed=seed)
     raise ValueError(f"Unsupported optimizer: {optimizer_name}")
@@ -260,14 +228,3 @@ def build_optimizer_runner(
 
 def clamp(value: float, low: float, high: float) -> float:
     return max(low, min(high, value))
-
-
-def as_channels_last(inputs: torch.Tensor) -> torch.Tensor:
-    if inputs.ndim == 4:
-        return inputs.contiguous(memory_format=torch.channels_last)
-    return inputs
-
-
-def enable_cuda_fast_math() -> None:
-    torch.backends.cuda.matmul.allow_tf32 = True
-    torch.backends.cudnn.allow_tf32 = True
