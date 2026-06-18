@@ -4,11 +4,11 @@ export type SelectOption = {
 }
 
 export type ConfigField = {
-  type: "select" | "number"
+  type: "select" | "number" | "boolean"
   label: string
   options?: SelectOption[] | null
   step?: number | null
-  default?: string | number | null
+  default?: string | number | boolean | null
 }
 
 export type OptimizerParamField = {
@@ -32,6 +32,7 @@ export type ExperimentConfig = {
   batch_size: number
   iterations: number
   target_acc: number
+  deterministic: boolean
   optimizer: "LEEA" | "SGD"
 }
 
@@ -95,6 +96,11 @@ export const fallbackSchema: SchemaResponse = {
       default: 100.0,
       label: "Target accuracy",
     },
+    deterministic: {
+      type: "boolean",
+      default: true,
+      label: "Deterministic",
+    },
     optimizer: {
       type: "select",
       label: "Optimizer",
@@ -120,7 +126,7 @@ export const fallbackSchema: SchemaResponse = {
         key: "N",
         label: "N",
         type: "number",
-        default: 200,
+        default: 1000,
         step: 1,
         desc: "Population size",
       },
@@ -176,7 +182,7 @@ export const fallbackSchema: SchemaResponse = {
         key: "τ_pat",
         label: "\\tau_{\\mathrm{pat}}",
         type: "number",
-        default: 25,
+        default: 5,
         step: 1,
         desc: "Validation patience threshold",
       },
@@ -208,6 +214,7 @@ export function configDefaults(schema: SchemaResponse): ExperimentConfig {
     batch_size: numberDefault(schema.config_schema.batch_size, 1000),
     iterations: numberDefault(schema.config_schema.iterations, 100000),
     target_acc: numberDefault(schema.config_schema.target_acc, 100.0),
+    deterministic: booleanDefault(schema.config_schema.deterministic, true),
     optimizer: firstOption(schema.config_schema.optimizer, "LEEA") as
       | "LEEA"
       | "SGD",
@@ -229,6 +236,10 @@ function firstOption(field: ConfigField, fallback: string): string {
 
 function numberDefault(field: ConfigField, fallback: number): number {
   return typeof field.default === "number" ? field.default : fallback
+}
+
+function booleanDefault(field: ConfigField, fallback: boolean): boolean {
+  return typeof field.default === "boolean" ? field.default : fallback
 }
 
 export async function fetchSchema(): Promise<SchemaResponse> {

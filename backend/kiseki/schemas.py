@@ -19,11 +19,11 @@ class SelectOption(BaseModel):
 
 
 class ConfigField(BaseModel):
-    type: Literal["select", "number"]
+    type: Literal["select", "number", "boolean"]
     label: str
     options: list[SelectOption] | None = None
     step: float | None = None
-    default: str | float | int | None = None
+    default: str | bool | float | int | None = None
 
 
 class OptimizerParamField(BaseModel):
@@ -43,6 +43,7 @@ class ExperimentConfig(BaseModel):
     iterations: int = 100000
     target_acc: float = 100.0
     optimizer: Literal["LEEA", "SGD"] = "LEEA"
+    deterministic: bool = True
 
     @field_validator("batch_size", "iterations")
     @classmethod
@@ -106,6 +107,7 @@ CONFIG_SCHEMA: dict[str, ConfigField] = {
     "batch_size": ConfigField(type="number", label="Batch size", step=1, default=1000),
     "iterations": ConfigField(type="number", label="Iterations", step=1, default=100000),
     "target_acc": ConfigField(type="number", label="Target accuracy", step=0.01, default=100.0),
+    "deterministic": ConfigField(type="boolean", label="Deterministic", default=True),
     "optimizer": ConfigField(
         type="select",
         label="Optimizer",
@@ -124,7 +126,7 @@ OPTIMIZERS_SCHEMA: dict[str, list[OptimizerParamField]] = {
         ),
     ],
     "LEEA": [
-        OptimizerParamField(key="N", label="N", default=200, step=1, desc="Population size"),
+        OptimizerParamField(key="N", label="N", default=1000, step=1, desc="Population size"),
         OptimizerParamField(
             key=P_M,
             label=r"p_{\mathrm{m}}",
@@ -170,7 +172,7 @@ OPTIMIZERS_SCHEMA: dict[str, list[OptimizerParamField]] = {
         OptimizerParamField(
             key=TAU_PAT,
             label=r"\tau_{\mathrm{pat}}",
-            default=25,
+            default=5,
             step=1,
             desc="Validation patience threshold",
         ),

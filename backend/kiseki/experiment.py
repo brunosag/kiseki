@@ -5,7 +5,7 @@ import threading
 from collections.abc import Iterator
 from pathlib import Path
 from queue import Empty, Queue
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import torch
@@ -19,6 +19,8 @@ from .schemas import AccuracyPoint, ExperimentStatus, StartExperimentRequest
 
 VAL_FREQ = 10
 SAVE_FREQ = 50
+NumericMode = Literal["strict", "fast"]
+NUMERIC_MODES = ("strict", "fast")
 NIXOS_CUDA_LIBRARY = Path("/run/opengl-driver/lib/libcuda.so.1")
 NIXOS_CUDA_HINT = (
     "CUDA was requested, but torch.cuda.is_available() is false. "
@@ -87,7 +89,7 @@ class ExperimentManager:
         final_event = "completed"
         try:
             config = request.config
-            seed_everything(config.seed)
+            seed_everything(config.seed, numeric_mode="strict" if config.deterministic else "fast")
             device = resolve_device(config.device)
             status = self._update_runtime(config.device, device)
             self._publish("runtime", status)
@@ -120,7 +122,11 @@ class ExperimentManager:
 
                 if step % VAL_FREQ == 0:
                     accuracy = evaluate(model, val_loader, device)
+                    is_best = accuracy > status.best_acc
                     status = self._update_accuracy(step, accuracy)
+                    update_scheduler = getattr(runner, "update_scheduler", None)
+                    if callable(update_scheduler):
+                        update_scheduler(is_best)
                     self._publish("validation", status)
                     if accuracy >= config.target_acc:
                         final_event = "completed"
@@ -180,16 +186,22 @@ class ExperimentManager:
             queue.put((event_type, status))
 
 
-def seed_everything(seed: int) -> None:
-    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+def seed_everything(seed: int, numeric_mode: NumericMode = "strict") -> None:
+    if numeric_mode not in NUMERIC_MODES:
+        choices = ", ".join(NUMERIC_MODES)
+        raise ValueError(f"Unsupported numeric mode {numeric_mode!r}; choose one of {choices}")
+
+    if numeric_mode == "strict":
+        os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-    torch.use_deterministic_algorithms(True)
-    torch.backends.cudnn.benchmark = False
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cuda.matmul.allow_tf32 = False
-    torch.backends.cudnn.allow_tf32 = False
+    torch.use_deterministic_algorithms(numeric_mode == "strict")
+    torch.backends.cudnn.benchmark = numeric_mode == "fast"
+    torch.backends.cudnn.deterministic = numeric_mode == "strict"
+    torch.backends.cuda.matmul.allow_tf32 = numeric_mode == "fast"
+    torch.backends.cudnn.allow_tf32 = numeric_mode == "fast"
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 

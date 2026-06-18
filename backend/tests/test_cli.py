@@ -23,6 +23,9 @@ def test_benchmark_defaults_match_frontend_schema() -> None:
     assert args.population_size == leea_defaults["N"]
     assert args.mutation_probability == leea_defaults[P_M]
     assert args.mutation_step == leea_defaults[ETA_0]
+    assert args.leea_chunk_size is None
+    assert args.leea_profile is False
+    assert args.numeric_mode == "strict"
 
 
 def test_benchmark_argument_parsing() -> None:
@@ -46,6 +49,11 @@ def test_benchmark_argument_parsing() -> None:
             "0.2",
             "--mutation-step",
             "0.01",
+            "--leea-chunk-size",
+            "3",
+            "--leea-profile",
+            "--numeric-mode",
+            "fast",
         ]
     )
 
@@ -54,6 +62,9 @@ def test_benchmark_argument_parsing() -> None:
     assert args.benchmark == "synthetic"
     assert args.population_size == 6
     assert args.mutation_probability == 0.2
+    assert args.leea_chunk_size == 3
+    assert args.leea_profile is True
+    assert args.numeric_mode == "fast"
 
 
 def test_benchmark_cli_writes_synthetic_jsonl(tmp_path, capsys) -> None:
@@ -88,6 +99,8 @@ def test_benchmark_cli_writes_synthetic_jsonl(tmp_path, capsys) -> None:
     assert result["iterations"] == 1
     assert result["batch_size"] == 4
     assert "speed_mode" not in result
+    assert result["numeric_mode"] == "strict"
+    assert result["numeric_mode_trajectory_changing"] is False
     assert result["duration_seconds"] > 0
     assert result["iterations_per_second"] > 0
     assert result["average_iteration_seconds"] > 0
@@ -96,6 +109,48 @@ def test_benchmark_cli_writes_synthetic_jsonl(tmp_path, capsys) -> None:
     assert result["status"] == "ok"
     assert "avg=" in captured.out
     assert "median=" in captured.out
+    assert "steady_median=" in captured.out
+
+
+def test_benchmark_cli_writes_leea_profile_jsonl(tmp_path, capsys) -> None:
+    output = tmp_path / "profile.jsonl"
+
+    exit_code = main(
+        [
+            "benchmark",
+            "--device",
+            "cpu",
+            "--benchmark",
+            "synthetic",
+            "--optimizer",
+            "LEEA",
+            "--iterations",
+            "1",
+            "--batch-size",
+            "4",
+            "--population-size",
+            "4",
+            "--leea-chunk-size",
+            "2",
+            "--leea-profile",
+            "--numeric-mode",
+            "fast",
+            "--output",
+            str(output),
+        ]
+    )
+
+    captured = capsys.readouterr()
+    result = json.loads(output.read_text(encoding="utf-8").strip())
+
+    assert exit_code == 0
+    assert result["leea_profile"] is True
+    assert result["leea_profile_steps"][0]["iteration"] == 1
+    assert result["leea_profile_summary"]["evaluation_seconds_mean"] >= 0.0
+    assert result["numeric_mode"] == "fast"
+    assert result["numeric_mode_trajectory_changing"] is True
+    assert "profile_eval_avg=" in captured.out
+    assert "trajectory-changing" in captured.out
 
 
 def test_benchmark_cli_prints_nixos_cuda_hint(monkeypatch, tmp_path, capsys) -> None:
@@ -164,6 +219,8 @@ def test_explicit_mnist_failure_returns_error(monkeypatch, capsys) -> None:
         (["--data-dir", "mnist-cache"], "unrecognized arguments: --data-dir"),
         (["--no-download"], "unrecognized arguments: --no-download"),
         (["--speed-mode", "fast"], "unrecognized arguments: --speed-mode"),
+        (["--leea-evaluator", "on"], "unrecognized arguments: --leea-evaluator"),
+        (["--leea-eval-backend", "generic"], "unrecognized arguments: --leea-eval-backend"),
     ],
 )
 def test_benchmark_parser_rejects_removed_options(argv, message, capsys) -> None:

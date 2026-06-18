@@ -15,6 +15,7 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card"
+import { Checkbox } from "@/components/ui/checkbox"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
@@ -55,6 +56,7 @@ const configOrder: (keyof ExperimentConfig)[] = [
   "iterations",
   "target_acc",
   "optimizer",
+  "deterministic",
 ]
 
 const eventTypes = [
@@ -490,6 +492,27 @@ function ConfigControl<K extends keyof ExperimentConfig>({
   disabled,
   onChange,
 }: ConfigControlProps<K>) {
+  if (field.type === "boolean") {
+    return (
+      <div className="flex h-8 items-center justify-between gap-4">
+        <Label className="text-sm text-muted-foreground" htmlFor={fieldKey}>
+          {field.label}
+        </Label>
+        <div className="flex w-40 justify-start">
+          <Checkbox
+            checked={Boolean(value)}
+            disabled={disabled}
+            id={fieldKey}
+            name={fieldKey}
+            onCheckedChange={(checked) =>
+              onChange(Boolean(checked) as ExperimentConfig[K])
+            }
+          />
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="flex items-center justify-between gap-4">
       <Label className="text-sm text-muted-foreground">{field.label}</Label>
@@ -522,7 +545,7 @@ function ConfigControl<K extends keyof ExperimentConfig>({
           type="number"
           step={field.step ?? 1}
           disabled={disabled}
-          value={value}
+          value={Number(value)}
           onChange={(event) =>
             onChange(Number(event.currentTarget.value) as ExperimentConfig[K])
           }

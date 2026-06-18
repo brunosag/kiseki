@@ -106,3 +106,20 @@ def test_seed_everything_configures_deterministic_torch(monkeypatch) -> None:
     assert torch.backends.cudnn.deterministic is True
     assert torch.backends.cuda.matmul.allow_tf32 is False
     assert torch.backends.cudnn.allow_tf32 is False
+
+
+def test_seed_everything_fast_enables_opt_in_nondeterministic_controls() -> None:
+    torch.use_deterministic_algorithms(True)
+    torch.backends.cudnn.benchmark = False
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+
+    seed_everything(123, numeric_mode="fast")
+
+    assert not torch.are_deterministic_algorithms_enabled()
+    assert torch.backends.cudnn.benchmark is True
+    assert torch.backends.cudnn.deterministic is False
+    assert torch.backends.cuda.matmul.allow_tf32 is True
+    assert torch.backends.cudnn.allow_tf32 is True
+    seed_everything(123)

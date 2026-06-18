@@ -28,6 +28,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             population_size=args.population_size,
             mutation_probability=args.mutation_probability,
             mutation_step=args.mutation_step,
+            leea_chunk_size=args.leea_chunk_size,
+            leea_profile=args.leea_profile,
+            numeric_mode=args.numeric_mode,
             output=args.output,
         )
         try:
@@ -70,6 +73,13 @@ def build_parser() -> argparse.ArgumentParser:
     benchmark.add_argument("--seed", type=int, default=defaults.seed)
     benchmark.add_argument("--num-workers", type=non_negative_int, default=0)
     benchmark.add_argument("--population-size", type=positive_int, default=defaults.population_size)
+    benchmark.add_argument("--leea-chunk-size", type=positive_int)
+    benchmark.add_argument("--leea-profile", action="store_true", default=defaults.leea_profile)
+    benchmark.add_argument(
+        "--numeric-mode",
+        choices=("strict", "fast"),
+        default=defaults.numeric_mode,
+    )
     benchmark.add_argument(
         "--mutation-probability",
         type=probability,
