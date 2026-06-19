@@ -70,15 +70,23 @@ class AccuracyPoint(BaseModel):
     value: float
 
 
+class MutationStepPoint(BaseModel):
+    i: int
+    value: float
+
+
 class TrainingHistory(BaseModel):
     loss: list[float] = Field(default_factory=list)
     acc: list[AccuracyPoint] = Field(default_factory=list)
+    mutation_step: list[MutationStepPoint] = Field(default_factory=list)
 
 
 class ExperimentStatus(BaseModel):
     is_running: bool = False
+    optimizer: Literal["LEEA", "SGD"] | None = None
     current_step: int = 0
     current_loss: float = 0.0
+    current_mutation_step: float | None = None
     best_acc: float = 0.0
     total_elapsed_seconds: float = 0.0
     last_iteration_seconds: float = 0.0

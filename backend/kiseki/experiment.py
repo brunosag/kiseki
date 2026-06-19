@@ -16,7 +16,7 @@ from .checkpoint import CheckpointSaver
 from .data import DataLoaderFactory, cycle_loader
 from .models import CNN2C2DMNIST
 from .optimizers import build_optimizer_runner
-from .schemas import AccuracyPoint, ExperimentStatus, StartExperimentRequest
+from .schemas import AccuracyPoint, ExperimentStatus, MutationStepPoint, StartExperimentRequest
 
 VAL_FREQ = 10
 SAVE_FREQ = 50
@@ -56,6 +56,7 @@ class ExperimentManager:
             self.stop_event.clear()
             self._status = ExperimentStatus(
                 is_running=True,
+                optimizer=request.config.optimizer,
                 requested_device=request.config.device,
             )
             self.worker = threading.Thread(target=self._run, args=(request,), daemon=True)
@@ -126,20 +127,22 @@ class ExperimentManager:
                     loss,
                     elapsed_seconds=time.perf_counter() - started_at,
                     last_iteration_seconds=iteration_seconds,
+                    mutation_step=current_mutation_step(runner),
                 )
                 self._publish("step", status)
 
                 if step % VAL_FREQ == 0:
                     accuracy = evaluate(model, val_loader, device)
                     is_best = accuracy > status.best_acc
+                    update_scheduler = getattr(runner, "update_scheduler", None)
+                    if callable(update_scheduler):
+                        update_scheduler(is_best)
                     status = self._update_accuracy(
                         step,
                         accuracy,
                         elapsed_seconds=time.perf_counter() - started_at,
+                        mutation_step=current_mutation_step(runner),
                     )
-                    update_scheduler = getattr(runner, "update_scheduler", None)
-                    if callable(update_scheduler):
-                        update_scheduler(is_best)
                     self._publish("validation", status)
                     if accuracy >= config.target_acc:
                         final_event = "completed"
@@ -172,6 +175,7 @@ class ExperimentManager:
         *,
         elapsed_seconds: float,
         last_iteration_seconds: float,
+        mutation_step: float | None,
     ) -> ExperimentStatus:
         with self.lock:
             self._status.current_step = step
@@ -179,6 +183,7 @@ class ExperimentManager:
             self._status.total_elapsed_seconds = max(elapsed_seconds, 0.0)
             self._status.last_iteration_seconds = max(last_iteration_seconds, 0.0)
             self._status.history.loss.append(loss)
+            self._record_mutation_step(step, mutation_step)
             return self._status.model_copy(deep=True)
 
     def _update_accuracy(
@@ -187,12 +192,26 @@ class ExperimentManager:
         accuracy: float,
         *,
         elapsed_seconds: float,
+        mutation_step: float | None,
     ) -> ExperimentStatus:
         with self.lock:
             self._status.best_acc = max(self._status.best_acc, accuracy)
             self._status.total_elapsed_seconds = max(elapsed_seconds, 0.0)
             self._status.history.acc.append(AccuracyPoint(i=step, value=accuracy))
+            self._record_mutation_step(step, mutation_step)
             return self._status.model_copy(deep=True)
+
+    def _record_mutation_step(self, step: int, mutation_step: float | None) -> None:
+        self._status.current_mutation_step = mutation_step
+        if mutation_step is None:
+            return
+
+        point = MutationStepPoint(i=step, value=mutation_step)
+        if self._status.history.mutation_step and self._status.history.mutation_step[-1].i == step:
+            self._status.history.mutation_step[-1] = point
+            return
+
+        self._status.history.mutation_step.append(point)
 
     def _update_runtime(
         self,
@@ -260,6 +279,13 @@ def device_name(device: torch.device) -> str:
     if device.type == "cuda":
         return torch.cuda.get_device_name(device)
     return "cpu"
+
+
+def current_mutation_step(runner: Any) -> float | None:
+    mutation_step = getattr(runner, "mutation_step", None)
+    if mutation_step is None:
+        return None
+    return float(mutation_step)
 
 
 def move_batch(

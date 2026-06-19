@@ -9,7 +9,7 @@ from kiseki.api import create_app
 from kiseki.checkpoint import CheckpointSaver
 from kiseki import experiment
 from kiseki.experiment import ExperimentManager, format_sse, resolve_device, seed_everything
-from kiseki.schemas import ETA, ExperimentStatus
+from kiseki.schemas import ETA, ETA_0, ExperimentStatus
 
 
 class SyntheticLoaderFactory:
@@ -60,9 +60,46 @@ def test_api_start_status_stop_flow(tmp_path) -> None:
     assert status["device_name"] == "cpu"
     assert status["total_elapsed_seconds"] > 0
     assert status["last_iteration_seconds"] > 0
+    assert status["current_mutation_step"] is None
+    assert status["history"]["mutation_step"] == []
 
     stop_response = client.post("/api/experiments/stop")
     assert stop_response.status_code == 200
+
+
+def test_api_reports_leea_mutation_step(tmp_path) -> None:
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=CheckpointSaver(tmp_path),
+    )
+    client = TestClient(create_app(manager))
+
+    payload = {
+        "config": {
+            "dataset": "mnist",
+            "device": "cpu",
+            "seed": 5,
+            "batch_size": 4,
+            "iterations": 1,
+            "target_acc": 100.0,
+            "optimizer": "LEEA",
+        },
+        "opt_params": {"LEEA": {"N": 4, ETA_0: 0.2}},
+    }
+
+    response = client.post("/api/experiments/start", json=payload)
+
+    assert response.status_code == 200
+
+    deadline = time.monotonic() + 5
+    status = client.get("/api/experiments/status").json()
+    while status["current_step"] == 0 and time.monotonic() < deadline:
+        time.sleep(0.05)
+        status = client.get("/api/experiments/status").json()
+
+    assert status["optimizer"] == "LEEA"
+    assert status["current_mutation_step"] == 0.2
+    assert status["history"]["mutation_step"] == [{"i": 1, "value": 0.2}]
 
 
 def test_sse_event_serialization() -> None:

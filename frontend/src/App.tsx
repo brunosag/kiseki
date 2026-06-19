@@ -41,6 +41,7 @@ import {
   type OptimizerParams,
   type SchemaResponse,
 } from "@/lib/api"
+import { cn } from "@/lib/utils"
 
 const Plot = (
   ReactPlotly as unknown as {
@@ -70,6 +71,8 @@ const eventTypes = [
   "failed",
 ]
 
+const PLOT_UI_REVISION = "training-telemetry"
+
 type ResolvedTheme = "dark" | "light"
 
 type PlotPalette = {
@@ -80,8 +83,13 @@ type PlotPalette = {
   hoverBorder: string
   hoverText: string
   loss: string
+  mutationStep: string
   muted: string
   text: string
+}
+
+type MultiAxisLayout = Partial<Layout> & {
+  yaxis3?: Record<string, unknown>
 }
 
 const plotPalettes: Record<ResolvedTheme, PlotPalette> = {
@@ -93,6 +101,7 @@ const plotPalettes: Record<ResolvedTheme, PlotPalette> = {
     hoverBorder: "#e4e4e7",
     hoverText: "#18181b",
     loss: "#18181b",
+    mutationStep: "#71717a",
     muted: "#71717a",
     text: "#18181b",
   },
@@ -104,6 +113,7 @@ const plotPalettes: Record<ResolvedTheme, PlotPalette> = {
     hoverBorder: "#3f3f46",
     hoverText: "#fafafa",
     loss: "#fafafa",
+    mutationStep: "#a1a1aa",
     muted: "#a1a1aa",
     text: "#e4e4e7",
   },
@@ -171,12 +181,20 @@ export function App() {
 
   const isRunning = status.is_running
   const activeOptimizerSchema = schema.optimizers_schema[config.optimizer] ?? []
+  const mutationStepHistory = useMemo(
+    () => status.history.mutation_step ?? [],
+    [status.history.mutation_step]
+  )
+  const hasMutationStepHistory = mutationStepHistory.length > 0
+  const hasCurrentMutationStep =
+    typeof status.current_mutation_step === "number"
 
   const plotData = useMemo<Data[]>(() => {
     const lossTrace: Data = {
       type: "scatter",
       mode: "lines",
       name: "Loss",
+      uid: "loss",
       x: status.history.loss.map((_, index) => index + 1),
       y: status.history.loss,
       hoverlabel: {
@@ -193,6 +211,7 @@ export function App() {
       type: "scatter",
       mode: "lines",
       name: "Accuracy",
+      uid: "accuracy",
       x: status.history.acc.map((point) => point.i),
       y: status.history.acc.map((point) => point.value),
       hoverlabel: {
@@ -207,24 +226,51 @@ export function App() {
       line: { color: plotPalette.accuracy, width: 1.5 },
     }
 
-    return [lossTrace, accuracyTrace]
+    if (!mutationStepHistory.length) {
+      return [lossTrace, accuracyTrace]
+    }
+
+    const mutationStepTrace: Data = {
+      type: "scatter",
+      mode: "lines",
+      name: "Mutation step",
+      uid: "mutation-step",
+      x: mutationStepHistory.map((point) => point.i),
+      y: mutationStepHistory.map((point) => point.value),
+      hoverlabel: {
+        align: "left",
+        bgcolor: plotPalette.hoverBackground,
+        bordercolor: plotPalette.hoverBorder,
+        font: { color: plotPalette.hoverText, size: 12 },
+      },
+      hovertemplate:
+        "<b>Mutation step</b><br>Step %{x}<br>%{y:.4f}<extra></extra>",
+      yaxis: "y3",
+      line: { color: plotPalette.mutationStep, width: 1.5, dash: "dot" },
+    }
+
+    return [mutationStepTrace, lossTrace, accuracyTrace]
   }, [
+    mutationStepHistory,
     plotPalette.accuracy,
     plotPalette.hoverBackground,
     plotPalette.hoverBorder,
     plotPalette.hoverText,
     plotPalette.loss,
+    plotPalette.mutationStep,
     status.history.acc,
     status.history.loss,
   ])
 
-  const plotLayout = useMemo<Partial<Layout>>(
+  const plotLayout = useMemo<MultiAxisLayout>(
     () => ({
       autosize: true,
       height: 420,
-      margin: { l: 52, r: 58, t: 34, b: 48 },
+      uirevision: PLOT_UI_REVISION,
+      margin: { l: 52, r: hasMutationStepHistory ? 116 : 58, t: 34, b: 48 },
       xaxis: {
         color: plotPalette.text,
+        ...(hasMutationStepHistory ? { domain: [0, 0.86] } : {}),
         linecolor: plotPalette.axis,
         tickfont: { color: plotPalette.muted },
         title: { text: "Step", font: { color: plotPalette.muted } },
@@ -239,7 +285,7 @@ export function App() {
         title: { text: "Loss", font: { color: plotPalette.muted } },
         fixedrange: false,
         gridcolor: plotPalette.grid,
-        zerolinecolor: plotPalette.axis,
+        zeroline: false,
       },
       yaxis2: {
         color: plotPalette.text,
@@ -250,7 +296,29 @@ export function App() {
         overlaying: "y",
         side: "right",
         showgrid: false,
+        zeroline: false,
       },
+      ...(hasMutationStepHistory
+        ? {
+            yaxis3: {
+              color: plotPalette.text,
+              linecolor: plotPalette.axis,
+              tickfont: { color: plotPalette.muted },
+              title: {
+                text: "Mutation step",
+                font: { color: plotPalette.muted },
+              },
+              tickformat: ".2g",
+              fixedrange: false,
+              overlaying: "y",
+              side: "right",
+              anchor: "free",
+              position: 0.98,
+              showgrid: false,
+              zeroline: false,
+            },
+          }
+        : {}),
       legend: {
         orientation: "h",
         x: 0.5,
@@ -274,7 +342,7 @@ export function App() {
       plot_bgcolor: "transparent",
       dragmode: false,
     }),
-    [plotPalette]
+    [hasMutationStepHistory, plotPalette]
   )
 
   async function startExperiment() {
@@ -390,13 +458,24 @@ export function App() {
           </CardHeader>
           <CardContent>
             <Separator />
-            <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
+            <div
+              className={cn(
+                "mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2",
+                hasCurrentMutationStep ? "xl:grid-cols-6" : "xl:grid-cols-5"
+              )}
+            >
               <Metric label="Step" value={status.current_step.toString()} />
               <Metric label="Loss" value={status.current_loss.toFixed(4)} />
               <Metric
                 label="Best accuracy"
                 value={`${status.best_acc.toFixed(2)}%`}
               />
+              {hasCurrentMutationStep ? (
+                <Metric
+                  label="Mutation step"
+                  value={formatMutationStep(status.current_mutation_step ?? 0)}
+                />
+              ) : null}
               <Metric
                 label="Total elapsed"
                 value={formatDuration(status.total_elapsed_seconds)}
@@ -571,6 +650,14 @@ function Metric({ label, value }: { label: string; value: string }) {
       <p className="text-2xl">{value}</p>
     </div>
   )
+}
+
+function formatMutationStep(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "0.0000"
+  }
+
+  return value.toFixed(4)
 }
 
 function formatDuration(seconds: number): string {

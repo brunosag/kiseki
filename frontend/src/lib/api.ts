@@ -41,15 +41,23 @@ export type AccuracyPoint = {
   value: number
 }
 
+export type MutationStepPoint = {
+  i: number
+  value: number
+}
+
 export type TrainingHistory = {
   loss: number[]
   acc: AccuracyPoint[]
+  mutation_step: MutationStepPoint[]
 }
 
 export type ExperimentStatus = {
   is_running: boolean
+  optimizer?: "LEEA" | "SGD" | null
   current_step: number
   current_loss: number
+  current_mutation_step?: number | null
   best_acc: number
   total_elapsed_seconds: number
   last_iteration_seconds: number
@@ -194,15 +202,17 @@ export const fallbackSchema: SchemaResponse = {
 
 export const defaultStatus: ExperimentStatus = {
   is_running: false,
+  optimizer: null,
   current_step: 0,
   current_loss: 0.0,
+  current_mutation_step: null,
   best_acc: 0.0,
   total_elapsed_seconds: 0.0,
   last_iteration_seconds: 0.0,
   requested_device: "cpu",
   device: "cpu",
   device_name: "cpu",
-  history: { loss: [], acc: [] },
+  history: { loss: [], acc: [], mutation_step: [] },
   error: null,
 }
 
