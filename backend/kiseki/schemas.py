@@ -80,6 +80,8 @@ class ExperimentStatus(BaseModel):
     current_step: int = 0
     current_loss: float = 0.0
     best_acc: float = 0.0
+    total_elapsed_seconds: float = 0.0
+    last_iteration_seconds: float = 0.0
     requested_device: str = "cpu"
     device: str = "cpu"
     device_name: str = "cpu"

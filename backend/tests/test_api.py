@@ -58,6 +58,8 @@ def test_api_start_status_stop_flow(tmp_path) -> None:
     assert status["requested_device"] == "cpu"
     assert status["device"] == "cpu"
     assert status["device_name"] == "cpu"
+    assert status["total_elapsed_seconds"] > 0
+    assert status["last_iteration_seconds"] > 0
 
     stop_response = client.post("/api/experiments/stop")
     assert stop_response.status_code == 200

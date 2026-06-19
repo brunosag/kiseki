@@ -2,6 +2,7 @@ import json
 import os
 import random
 import threading
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from queue import Empty, Queue
@@ -87,6 +88,7 @@ class ExperimentManager:
 
     def _run(self, request: StartExperimentRequest) -> None:
         final_event = "completed"
+        started_at = time.perf_counter()
         try:
             config = request.config
             seed_everything(config.seed, numeric_mode="strict" if config.deterministic else "fast")
@@ -114,16 +116,27 @@ class ExperimentManager:
                     final_event = "stopped"
                     break
 
+                iteration_started_at = time.perf_counter()
                 inputs, targets = next(train_batches)
                 inputs, targets = move_batch(inputs, targets, device)
                 loss = runner.step(inputs, targets)
-                status = self._update_step(step, loss)
+                iteration_seconds = time.perf_counter() - iteration_started_at
+                status = self._update_step(
+                    step,
+                    loss,
+                    elapsed_seconds=time.perf_counter() - started_at,
+                    last_iteration_seconds=iteration_seconds,
+                )
                 self._publish("step", status)
 
                 if step % VAL_FREQ == 0:
                     accuracy = evaluate(model, val_loader, device)
                     is_best = accuracy > status.best_acc
-                    status = self._update_accuracy(step, accuracy)
+                    status = self._update_accuracy(
+                        step,
+                        accuracy,
+                        elapsed_seconds=time.perf_counter() - started_at,
+                    )
                     update_scheduler = getattr(runner, "update_scheduler", None)
                     if callable(update_scheduler):
                         update_scheduler(is_best)
@@ -142,23 +155,42 @@ class ExperimentManager:
 
         except Exception as exc:  # pragma: no cover - surfaced through API status.
             final_event = "failed"
-            status = self._set_finished(error=str(exc))
+            status = self._set_finished(
+                error=str(exc),
+                elapsed_seconds=time.perf_counter() - started_at,
+            )
             self._publish(final_event, status)
             return
 
-        status = self._set_finished()
+        status = self._set_finished(elapsed_seconds=time.perf_counter() - started_at)
         self._publish(final_event, status)
 
-    def _update_step(self, step: int, loss: float) -> ExperimentStatus:
+    def _update_step(
+        self,
+        step: int,
+        loss: float,
+        *,
+        elapsed_seconds: float,
+        last_iteration_seconds: float,
+    ) -> ExperimentStatus:
         with self.lock:
             self._status.current_step = step
             self._status.current_loss = loss
+            self._status.total_elapsed_seconds = max(elapsed_seconds, 0.0)
+            self._status.last_iteration_seconds = max(last_iteration_seconds, 0.0)
             self._status.history.loss.append(loss)
             return self._status.model_copy(deep=True)
 
-    def _update_accuracy(self, step: int, accuracy: float) -> ExperimentStatus:
+    def _update_accuracy(
+        self,
+        step: int,
+        accuracy: float,
+        *,
+        elapsed_seconds: float,
+    ) -> ExperimentStatus:
         with self.lock:
             self._status.best_acc = max(self._status.best_acc, accuracy)
+            self._status.total_elapsed_seconds = max(elapsed_seconds, 0.0)
             self._status.history.acc.append(AccuracyPoint(i=step, value=accuracy))
             return self._status.model_copy(deep=True)
 
@@ -173,10 +205,17 @@ class ExperimentManager:
             self._status.device_name = device_name(device)
             return self._status.model_copy(deep=True)
 
-    def _set_finished(self, error: str | None = None) -> ExperimentStatus:
+    def _set_finished(
+        self,
+        error: str | None = None,
+        *,
+        elapsed_seconds: float | None = None,
+    ) -> ExperimentStatus:
         with self.lock:
             self._status.is_running = False
             self._status.error = error
+            if elapsed_seconds is not None:
+                self._status.total_elapsed_seconds = max(elapsed_seconds, 0.0)
             return self._status.model_copy(deep=True)
 
     def _publish(self, event_type: str, status: ExperimentStatus) -> None:

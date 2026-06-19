@@ -51,6 +51,8 @@ export type ExperimentStatus = {
   current_step: number
   current_loss: number
   best_acc: number
+  total_elapsed_seconds: number
+  last_iteration_seconds: number
   requested_device: string
   device: string
   device_name: string
@@ -195,6 +197,8 @@ export const defaultStatus: ExperimentStatus = {
   current_step: 0,
   current_loss: 0.0,
   best_acc: 0.0,
+  total_elapsed_seconds: 0.0,
+  last_iteration_seconds: 0.0,
   requested_device: "cpu",
   device: "cpu",
   device_name: "cpu",

@@ -390,12 +390,20 @@ export function App() {
           </CardHeader>
           <CardContent>
             <Separator />
-            <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-5">
               <Metric label="Step" value={status.current_step.toString()} />
               <Metric label="Loss" value={status.current_loss.toFixed(4)} />
               <Metric
                 label="Best accuracy"
                 value={`${status.best_acc.toFixed(2)}%`}
+              />
+              <Metric
+                label="Total elapsed"
+                value={formatDuration(status.total_elapsed_seconds)}
+              />
+              <Metric
+                label="Last iteration"
+                value={formatDuration(status.last_iteration_seconds)}
               />
             </div>
             {status.error ? (
@@ -563,6 +571,25 @@ function Metric({ label, value }: { label: string; value: string }) {
       <p className="text-2xl">{value}</p>
     </div>
   )
+}
+
+function formatDuration(seconds: number): string {
+  const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 0
+
+  if (safeSeconds < 1) {
+    return `${Math.round(safeSeconds * 1000)}ms`
+  }
+
+  if (safeSeconds < 60) {
+    return `${safeSeconds.toFixed(2)}s`
+  }
+
+  const totalSeconds = Math.round(safeSeconds)
+  const minutes = Math.floor(totalSeconds / 60)
+  const remainingSeconds = (totalSeconds % 60)
+    .toString()
+    .padStart(2, "0")
+  return `${minutes}m ${remainingSeconds}s`
 }
 
 function MathLabel({ math }: { math: string }) {
