@@ -81,9 +81,11 @@ const CONFIG_STORAGE_KEY = "kiseki.config.v1"
 const OPT_PARAMS_STORAGE_KEY = "kiseki.optimizerParams.v1"
 const MARKER_POINT_LIMIT = 20
 const Y_AXIS_SEGMENTS = 10
-const MUTATION_STEP_AXIS_GRANULARITY = 0.001
 const MUTATION_STEP_AXIS_MIN_UPPER_BOUND = 0.001
 const MUTATION_STEP_AXIS_PADDING = 1.05
+const MUTATION_STEP_AXIS_SEGMENTS = 8
+const MUTATION_STEP_TICK_MAX_DECIMALS = 3
+const MUTATION_STEP_PLOT_DOMAIN_END = 0.88
 
 type ResolvedTheme = "dark" | "light"
 
@@ -208,8 +210,22 @@ export function App() {
     [status.history.mutation_step]
   )
   const hasMutationStepHistory = mutationStepHistory.length > 0
-  const hasCurrentMutationStep =
-    typeof status.current_mutation_step === "number"
+  const showMutationStepAxis =
+    config.optimizer === "LEEA" ||
+    status.optimizer === "LEEA" ||
+    hasMutationStepHistory
+  const shouldUseSelectedMutationStep =
+    config.optimizer === "LEEA" || status.optimizer === "LEEA"
+  const selectedInitialMutationStep = initialMutationStepFor(schema, optParams)
+  const latestMutationStep =
+    mutationStepHistory.length > 0
+      ? mutationStepHistory[mutationStepHistory.length - 1]?.value
+      : undefined
+  const mutationStepMetricValue =
+    status.current_mutation_step ??
+    latestMutationStep ??
+    selectedInitialMutationStep ??
+    0
   const stepAxisUpperBound = nextStepAxisUpperBound(status.current_step)
   const lossAxisUpperBound = lossAxisUpperBoundFor(
     status.history.loss,
@@ -221,11 +237,17 @@ export function App() {
   )
   const mutationStepAxisUpperBound = mutationStepAxisUpperBoundFor(
     mutationStepHistory.map((point) => point.value),
-    status.current_mutation_step
+    status.current_mutation_step,
+    shouldUseSelectedMutationStep ? selectedInitialMutationStep : undefined
   )
   const mutationStepTickValues = useMemo(
-    () => axisTickValues(mutationStepAxisUpperBound, Y_AXIS_SEGMENTS),
+    () =>
+      niceTickValues(mutationStepAxisUpperBound, MUTATION_STEP_AXIS_SEGMENTS),
     [mutationStepAxisUpperBound]
+  )
+  const mutationStepTickText = useMemo(
+    () => roundedTickText(mutationStepTickValues),
+    [mutationStepTickValues]
   )
 
   const plotData = useMemo<Data[]>(() => {
@@ -270,28 +292,41 @@ export function App() {
       marker: { color: plotPalette.accuracy, size: 5 },
     }
 
-    if (!mutationStepHistory.length) {
+    if (!mutationStepHistory.length && !showMutationStepAxis) {
       return [lossTrace, accuracyTrace]
     }
 
-    const mutationStepTrace: Data = {
-      type: "scatter",
-      mode: "lines",
-      name: "Mutation step",
-      uid: "mutation-step",
-      x: mutationStepHistory.map((point) => point.i),
-      y: mutationStepHistory.map((point) => point.value),
-      hoverlabel: {
-        align: "left",
-        bgcolor: plotPalette.hoverBackground,
-        bordercolor: plotPalette.hoverBorder,
-        font: { color: plotPalette.hoverText, size: 12 },
-      },
-      hovertemplate:
-        "<b>Mutation step</b><br>Step %{x}<br>%{y:.4f}<extra></extra>",
-      yaxis: "y3",
-      line: { color: plotPalette.mutationStep, width: 1.5, dash: "dot" },
-    }
+    const mutationStepTrace: Data = mutationStepHistory.length
+      ? {
+          type: "scatter",
+          mode: "lines",
+          name: "Mutation step",
+          uid: "mutation-step",
+          x: mutationStepHistory.map((point) => point.i),
+          y: mutationStepHistory.map((point) => point.value),
+          hoverlabel: {
+            align: "left",
+            bgcolor: plotPalette.hoverBackground,
+            bordercolor: plotPalette.hoverBorder,
+            font: { color: plotPalette.hoverText, size: 12 },
+          },
+          hovertemplate:
+            "<b>Mutation step</b><br>Step %{x}<br>%{y:.4f}<extra></extra>",
+          yaxis: "y3",
+          line: { color: plotPalette.mutationStep, width: 1.5, dash: "dot" },
+        }
+      : {
+          type: "scatter",
+          mode: "markers",
+          name: "Mutation step",
+          uid: "mutation-step-axis-anchor",
+          x: [0],
+          y: [0],
+          hoverinfo: "skip",
+          marker: { color: "rgba(0,0,0,0)", size: 1 },
+          showlegend: false,
+          yaxis: "y3",
+        }
 
     return [mutationStepTrace, lossTrace, accuracyTrace]
   }, [
@@ -302,6 +337,7 @@ export function App() {
     plotPalette.hoverText,
     plotPalette.loss,
     plotPalette.mutationStep,
+    showMutationStepAxis,
     status.history.acc,
     status.history.loss,
   ])
@@ -311,17 +347,19 @@ export function App() {
       autosize: true,
       height: 420,
       uirevision: `${PLOT_UI_REVISION}-${stepAxisUpperBound}-${lossAxisUpperBound}-${mutationStepAxisUpperBound}`,
-      margin: { l: 52, r: hasMutationStepHistory ? 116 : 58, t: 34, b: 48 },
+      margin: { l: 52, r: showMutationStepAxis ? 116 : 58, t: 42, b: 48 },
       xaxis: {
         color: plotPalette.text,
-        ...(hasMutationStepHistory ? { domain: [0, 0.86] } : {}),
+        ...(showMutationStepAxis
+          ? { domain: [0, MUTATION_STEP_PLOT_DOMAIN_END] }
+          : {}),
         linecolor: plotPalette.axis,
         tickfont: { color: plotPalette.muted },
         title: { text: "Step", font: { color: plotPalette.muted } },
         range: [0, stepAxisUpperBound],
         tickmode: "auto",
         nticks: 12,
-        fixedrange: false,
+        fixedrange: true,
         gridcolor: plotPalette.grid,
         zerolinecolor: plotPalette.axis,
       },
@@ -334,7 +372,7 @@ export function App() {
         tickmode: "array",
         tickvals: lossTickValues,
         tickformat: ".2f",
-        fixedrange: false,
+        fixedrange: true,
         gridcolor: plotPalette.grid,
         showgrid: true,
         zeroline: false,
@@ -347,13 +385,13 @@ export function App() {
         range: [0, 100],
         tick0: 0,
         dtick: 100 / Y_AXIS_SEGMENTS,
-        fixedrange: false,
+        fixedrange: true,
         overlaying: "y",
         side: "right",
         showgrid: false,
         zeroline: false,
       },
-      ...(hasMutationStepHistory
+      ...(showMutationStepAxis
         ? {
             yaxis3: {
               color: plotPalette.text,
@@ -366,8 +404,8 @@ export function App() {
               range: [0, mutationStepAxisUpperBound],
               tickmode: "array",
               tickvals: mutationStepTickValues,
-              tickformat: ".3f",
-              fixedrange: false,
+              ticktext: mutationStepTickText,
+              fixedrange: true,
               overlaying: "y",
               side: "right",
               anchor: "free",
@@ -380,9 +418,10 @@ export function App() {
       legend: {
         orientation: "h",
         x: 0.5,
-        y: 1,
+        y: 1.04,
         xanchor: "center",
         yanchor: "bottom",
+        uirevision: PLOT_UI_REVISION,
         font: { color: plotPalette.muted },
       },
       hoverlabel: {
@@ -401,12 +440,13 @@ export function App() {
       dragmode: false,
     }),
     [
-      hasMutationStepHistory,
       lossAxisUpperBound,
       lossTickValues,
       mutationStepAxisUpperBound,
+      mutationStepTickText,
       mutationStepTickValues,
       plotPalette,
+      showMutationStepAxis,
       stepAxisUpperBound,
     ]
   )
@@ -571,21 +611,10 @@ export function App() {
             <div
               className={cn(
                 "mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2",
-                hasCurrentMutationStep ? "xl:grid-cols-6" : "xl:grid-cols-5"
+                showMutationStepAxis ? "xl:grid-cols-6" : "xl:grid-cols-5"
               )}
             >
               <Metric label="Step" value={status.current_step.toString()} />
-              <Metric label="Loss" value={status.current_loss.toFixed(4)} />
-              <Metric
-                label="Best accuracy"
-                value={`${status.best_acc.toFixed(2)}%`}
-              />
-              {hasCurrentMutationStep ? (
-                <Metric
-                  label="Mutation step"
-                  value={formatMutationStep(status.current_mutation_step ?? 0)}
-                />
-              ) : null}
               <Metric
                 label="Total elapsed"
                 value={formatDuration(status.total_elapsed_seconds)}
@@ -594,6 +623,17 @@ export function App() {
                 label="Last iteration"
                 value={formatDuration(status.last_iteration_seconds)}
               />
+              <Metric label="Loss" value={status.current_loss.toFixed(4)} />
+              <Metric
+                label="Best accuracy"
+                value={`${status.best_acc.toFixed(2)}%`}
+              />
+              {showMutationStepAxis ? (
+                <Metric
+                  label="Mutation step"
+                  value={formatMutationStep(mutationStepMetricValue)}
+                />
+              ) : null}
             </div>
             {status.error ? (
               <div className="mt-4 rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
@@ -606,7 +646,7 @@ export function App() {
               </div>
             ) : null}
 
-            <div className="mt-6 w-full">
+            <div className="mt-4 w-full">
               <Plot
                 className="w-full"
                 data={plotData}
@@ -706,17 +746,27 @@ function lossAxisUpperBoundFor(losses: number[], currentLoss: number): number {
 
 function mutationStepAxisUpperBoundFor(
   values: number[],
-  currentValue: number | null | undefined
+  currentValue: number | null | undefined,
+  selectedInitialValue: number | null | undefined
 ): number {
-  const maxValue = maxFiniteAxisValue(values, currentValue)
+  const selectedValue =
+    typeof selectedInitialValue === "number" && Number.isFinite(selectedInitialValue)
+      ? selectedInitialValue
+      : undefined
+  const maxObservedValue = maxFiniteAxisValue(values, currentValue)
+  const baselineValue = selectedValue ?? maxObservedValue
 
-  if (maxValue <= 0) {
+  if (baselineValue <= 0) {
     return MUTATION_STEP_AXIS_MIN_UPPER_BOUND
   }
 
-  return roundUpToStep(
-    maxValue * MUTATION_STEP_AXIS_PADDING,
-    MUTATION_STEP_AXIS_GRANULARITY
+  if (maxObservedValue <= baselineValue) {
+    return Math.max(MUTATION_STEP_AXIS_MIN_UPPER_BOUND, baselineValue)
+  }
+
+  return Math.max(
+    MUTATION_STEP_AXIS_MIN_UPPER_BOUND,
+    niceAxisUpperBound(maxObservedValue * MUTATION_STEP_AXIS_PADDING)
   )
 }
 
@@ -735,15 +785,15 @@ function numericAxisUpperBoundFor(
 
 function maxFiniteAxisValue(
   values: number[],
-  currentValue: number | null | undefined
+  ...currentValues: (number | null | undefined)[]
 ): number {
   const finiteValues = values.filter((value) => Number.isFinite(value))
-  const safeCurrentValue =
-    typeof currentValue === "number" && Number.isFinite(currentValue)
-      ? currentValue
-      : 0
+  const finiteCurrentValues = currentValues.filter(
+    (value): value is number =>
+      typeof value === "number" && Number.isFinite(value)
+  )
 
-  return Math.max(0, safeCurrentValue, ...finiteValues)
+  return Math.max(0, ...finiteCurrentValues, ...finiteValues)
 }
 
 function niceAxisUpperBound(value: number): number {
@@ -775,8 +825,96 @@ function axisTickValues(upperBound: number, segments: number): number[] {
   )
 }
 
-function roundUpToStep(value: number, step: number): number {
-  return Number((Math.ceil(value / step) * step).toPrecision(12))
+function niceTickValues(upperBound: number, preferredSegments: number): number[] {
+  const safeUpperBound =
+    Number.isFinite(upperBound) && upperBound > 0 ? upperBound : 1
+  const rawStep = safeUpperBound / preferredSegments
+  const tickStep = niceStepSize(rawStep)
+  const tickCount = Math.ceil(safeUpperBound / tickStep)
+  const tickValues = Array.from({ length: tickCount + 1 }, (_, index) =>
+    Number((tickStep * index).toPrecision(12))
+  ).filter((value) => value <= safeUpperBound + Number.EPSILON)
+  const roundedUpperBound = Number(safeUpperBound.toPrecision(12))
+  const lastTick = tickValues[tickValues.length - 1] ?? 0
+
+  if (Math.abs(lastTick - roundedUpperBound) > roundedUpperBound * 1e-9) {
+    tickValues.push(roundedUpperBound)
+  }
+
+  return tickValues
+}
+
+function niceStepSize(value: number): number {
+  const magnitude = 10 ** Math.floor(Math.log10(value))
+  const normalized = value / magnitude
+
+  if (normalized <= 1) {
+    return magnitude
+  }
+
+  if (normalized <= 2) {
+    return 2 * magnitude
+  }
+
+  if (normalized <= 2.5) {
+    return 2.5 * magnitude
+  }
+
+  if (normalized <= 5) {
+    return 5 * magnitude
+  }
+
+  return 10 * magnitude
+}
+
+function roundedTickText(values: number[]): string[] {
+  const decimals = Math.min(
+    MUTATION_STEP_TICK_MAX_DECIMALS,
+    maxDecimalPlacesForValues(values)
+  )
+
+  return values.map((value) => formatRoundedTick(value, decimals))
+}
+
+function maxDecimalPlacesForValues(values: number[]): number {
+  return Math.max(0, ...values.map(decimalPlacesForRoundedValue))
+}
+
+function decimalPlacesForRoundedValue(value: number): number {
+  if (!Number.isFinite(value)) {
+    return 0
+  }
+
+  const text = Math.abs(value)
+    .toFixed(MUTATION_STEP_TICK_MAX_DECIMALS)
+    .replace(/0+$/, "")
+    .replace(/\.$/, "")
+  const decimalPointIndex = text.indexOf(".")
+
+  return decimalPointIndex === -1 ? 0 : text.length - decimalPointIndex - 1
+}
+
+function formatRoundedTick(value: number, decimals: number): string {
+  const normalizedValue = Object.is(value, -0) ? 0 : value
+  return normalizedValue.toFixed(decimals)
+}
+
+function initialMutationStepFor(
+  schema: SchemaResponse,
+  optParams: OptimizerParams
+): number | undefined {
+  const mutationStepField = schema.optimizers_schema.LEEA?.find(
+    (field) => field.label === "\\eta_0"
+  )
+
+  if (!mutationStepField) {
+    return undefined
+  }
+
+  const value = optParams.LEEA?.[mutationStepField.key]
+  return typeof value === "number" && Number.isFinite(value)
+    ? value
+    : mutationStepField.default
 }
 
 function readStoredConfig(schema: SchemaResponse): ExperimentConfig {
