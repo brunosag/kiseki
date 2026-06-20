@@ -1,5 +1,6 @@
 import os
 import time
+from datetime import UTC, datetime
 
 import torch
 from fastapi.testclient import TestClient
@@ -8,8 +9,14 @@ from torch.utils.data import DataLoader, TensorDataset
 from kiseki.api import create_app
 from kiseki.checkpoint import CheckpointSaver
 from kiseki import experiment
-from kiseki.experiment import ExperimentManager, format_sse, resolve_device, seed_everything
-from kiseki.schemas import ETA, ETA_0, ExperimentStatus
+from kiseki.experiment import (
+    ExperimentManager,
+    build_run_id,
+    format_sse,
+    resolve_device,
+    seed_everything,
+)
+from kiseki.schemas import ETA, ETA_0, ExperimentConfig, ExperimentStatus
 from kiseki.optimizers import SGDConfig, SGDRunner
 
 
@@ -120,6 +127,122 @@ def test_api_interval_checkpoint_and_checkpoint_interval_zero(tmp_path) -> None:
 
     assert status["last_checkpoint_step"] is None
     assert not (tmp_path / status["run_id"] / "latest.pt").exists()
+
+
+def test_api_best_checkpoint_updates_only_on_strict_checkpoint_accuracy_improvement(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    validation_accuracies = iter([10.0, 8.0, 10.0, 12.0])
+
+    def evaluate_sequence(model, loader, device) -> float:
+        return next(validation_accuracies)
+
+    monkeypatch.setattr(experiment, "evaluate", evaluate_sequence)
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=CheckpointSaver(tmp_path),
+    )
+    client = TestClient(create_app(manager))
+
+    payload = {
+        "config": {
+            "dataset": "mnist",
+            "device": "cpu",
+            "seed": 3,
+            "batch_size": 4,
+            "iterations": 8,
+            "target_acc": 100.0,
+            "optimizer": "SGD",
+            "checkpoint_interval": 2,
+        },
+        "opt_params": {"SGD": {ETA: 0.01}},
+    }
+
+    response = client.post("/api/experiments/start", json=payload)
+    assert response.status_code == 200
+    status = wait_for_status(client, lambda status: not status["is_running"])
+    run_id = status["run_id"]
+
+    assert status["last_checkpoint_step"] == 8
+    assert status["last_checkpoint_acc"] == 12.0
+    assert status["best_checkpoint_step"] == 8
+    assert status["best_checkpoint_acc"] == 12.0
+    assert status["best_checkpoint_path"] == str(tmp_path / run_id / "best.pt")
+
+    latest_metadata = (tmp_path / run_id / "latest.json").read_text(encoding="utf-8")
+    best_metadata = (tmp_path / run_id / "best.json").read_text(encoding="utf-8")
+    assert '"checkpoint": "latest.pt"' in latest_metadata
+    assert '"step": 8' in latest_metadata
+    assert '"last_checkpoint_acc": 12.0' in latest_metadata
+    assert '"checkpoint": "best.pt"' in best_metadata
+    assert '"step": 8' in best_metadata
+    assert '"best_checkpoint_acc": 12.0' in best_metadata
+
+
+def test_api_best_checkpoint_ignores_regressions_and_ties(tmp_path, monkeypatch) -> None:
+    validation_accuracies = iter([10.0, 8.0, 10.0])
+
+    def evaluate_sequence(model, loader, device) -> float:
+        return next(validation_accuracies)
+
+    monkeypatch.setattr(experiment, "evaluate", evaluate_sequence)
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=CheckpointSaver(tmp_path),
+    )
+    client = TestClient(create_app(manager))
+
+    payload = {
+        "config": {
+            "dataset": "mnist",
+            "device": "cpu",
+            "seed": 3,
+            "batch_size": 4,
+            "iterations": 6,
+            "target_acc": 100.0,
+            "optimizer": "SGD",
+            "checkpoint_interval": 2,
+        },
+        "opt_params": {"SGD": {ETA: 0.01}},
+    }
+
+    response = client.post("/api/experiments/start", json=payload)
+    assert response.status_code == 200
+    status = wait_for_status(client, lambda status: not status["is_running"])
+    run_id = status["run_id"]
+
+    assert status["last_checkpoint_step"] == 6
+    assert status["last_checkpoint_acc"] == 10.0
+    assert status["best_checkpoint_step"] == 2
+    assert status["best_checkpoint_acc"] == 10.0
+
+    latest_metadata = (tmp_path / run_id / "latest.json").read_text(encoding="utf-8")
+    best_metadata = (tmp_path / run_id / "best.json").read_text(encoding="utf-8")
+    assert '"checkpoint": "latest.pt"' in latest_metadata
+    assert '"step": 6' in latest_metadata
+    assert '"last_checkpoint_acc": 10.0' in latest_metadata
+    assert '"checkpoint": "best.pt"' in best_metadata
+    assert '"step": 2' in best_metadata
+    assert '"best_checkpoint_acc": 10.0' in best_metadata
+
+
+def test_build_run_id_uses_stable_config_slug() -> None:
+    config = ExperimentConfig(
+        dataset="mnist",
+        device="cpu",
+        seed=7,
+        batch_size=32,
+        iterations=123,
+        optimizer="SGD",
+    )
+
+    run_id = build_run_id(
+        config,
+        started_at=datetime(2026, 6, 20, 18, 45, 12, 123456, tzinfo=UTC),
+    )
+
+    assert run_id == "mnist-sgd-cpu-seed7-20260620T154512123456"
 
 
 def test_api_pause_resume_and_stop_clears_paused_state(tmp_path, monkeypatch) -> None:

@@ -71,8 +71,13 @@ export type ExperimentStatus = {
   history: TrainingHistory
   error?: string | null
   last_checkpoint_step?: number | null
+  last_checkpoint_acc?: number | null
   last_checkpoint_saved_at?: string | null
   checkpoint_path?: string | null
+  best_checkpoint_acc?: number | null
+  best_checkpoint_step?: number | null
+  best_checkpoint_saved_at?: string | null
+  best_checkpoint_path?: string | null
   reproducibility_mode: string
   checkpoint_warnings: string[]
 }
@@ -234,8 +239,13 @@ export const defaultStatus: ExperimentStatus = {
   history: { loss: [], acc: [], mutation_step: [] },
   error: null,
   last_checkpoint_step: null,
+  last_checkpoint_acc: null,
   last_checkpoint_saved_at: null,
   checkpoint_path: null,
+  best_checkpoint_acc: null,
+  best_checkpoint_step: null,
+  best_checkpoint_saved_at: null,
+  best_checkpoint_path: null,
   reproducibility_mode: "best_effort",
   checkpoint_warnings: [],
 }

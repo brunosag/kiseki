@@ -3,8 +3,8 @@ import os
 import random
 import threading
 import time
-import uuid
 from collections.abc import Iterator
+from datetime import datetime
 from pathlib import Path
 from queue import Empty, Queue
 from typing import Any, Literal
@@ -65,7 +65,7 @@ class ExperimentManager:
             return self._status.model_copy(deep=True)
 
     def start(self, request: StartExperimentRequest) -> ExperimentStatus:
-        run_id = uuid.uuid4().hex
+        run_id = build_run_id(request.config)
         with self.lock:
             if self._status.is_running:
                 raise RuntimeError("An experiment is already running")
@@ -273,6 +273,8 @@ class ExperimentManager:
                 )
                 self._publish("step", status)
 
+                checkpoint_accuracy = None
+                target_reached = False
                 if step % VAL_FREQ == 0:
                     accuracy = evaluate(model, val_loader, device)
                     is_best = accuracy > status.best_acc
@@ -286,11 +288,22 @@ class ExperimentManager:
                         mutation_step=current_mutation_step(runner),
                     )
                     self._publish("validation", status)
+                    checkpoint_accuracy = accuracy
                     if accuracy >= config.target_acc:
-                        final_event = "completed"
-                        break
+                        target_reached = True
 
                 if config.checkpoint_interval > 0 and step % config.checkpoint_interval == 0:
+                    if checkpoint_accuracy is None:
+                        checkpoint_accuracy = evaluate(model, val_loader, device)
+                        status = self._update_accuracy(
+                            step,
+                            checkpoint_accuracy,
+                            elapsed_seconds=elapsed_offset + time.perf_counter() - started_at,
+                            mutation_step=current_mutation_step(runner),
+                        )
+                        self._publish("validation", status)
+
+                    save_best = is_best_checkpoint(status, checkpoint_accuracy)
                     status = self._save_checkpoint(
                         model=model,
                         runner=runner,
@@ -299,8 +312,16 @@ class ExperimentManager:
                         config=config,
                         opt_params=request.opt_params,
                         device=device,
+                        checkpoint_accuracy=checkpoint_accuracy,
+                        save_best=save_best,
                     )
                     self._publish("checkpoint", status)
+                    if checkpoint_accuracy >= config.target_acc:
+                        target_reached = True
+
+                if target_reached:
+                    final_event = "completed"
+                    break
 
                 if self.stop_event.is_set():
                     final_event = "stopped"
@@ -315,6 +336,8 @@ class ExperimentManager:
                         config=config,
                         opt_params=request.opt_params,
                         device=device,
+                        checkpoint_accuracy=None,
+                        save_best=False,
                     )
                     status = self._set_paused(
                         elapsed_seconds=elapsed_offset + time.perf_counter() - started_at,
@@ -346,13 +369,23 @@ class ExperimentManager:
         config: ExperimentConfig,
         opt_params: dict[str, dict[str, float]],
         device: torch.device,
+        checkpoint_accuracy: float | None,
+        save_best: bool,
     ) -> ExperimentStatus:
         saved_at = utc_now_iso()
         checkpoint_path = self.checkpoint_saver.latest_pt_path(run_id)
-        status = self._record_checkpoint(saved_at=saved_at, checkpoint_path=checkpoint_path)
+        best_checkpoint_path = self.checkpoint_saver.best_pt_path(run_id) if save_best else None
+        status = self._record_checkpoint(
+            saved_at=saved_at,
+            checkpoint_path=checkpoint_path,
+            checkpoint_accuracy=checkpoint_accuracy,
+            best_checkpoint_path=best_checkpoint_path,
+        )
         optimizer_state = runner_state_dict(runner)
         loader_state = train_batches.state_dict() if config.deterministic else None
         compatibility_warnings = status.checkpoint_warnings
+        rng_state = capture_rng_state()
+        runtime_manifest = build_runtime_manifest(device)
         self.checkpoint_saver.save(
             model=model,
             status=status,
@@ -362,11 +395,27 @@ class ExperimentManager:
             optimizer_params=opt_params,
             optimizer_state=optimizer_state,
             loader_state=loader_state,
-            rng_state=capture_rng_state(),
-            runtime_manifest=build_runtime_manifest(device),
+            rng_state=rng_state,
+            runtime_manifest=runtime_manifest,
             saved_at=saved_at,
             compatibility_warnings=compatibility_warnings,
         )
+        if save_best:
+            self.checkpoint_saver.save(
+                model=model,
+                status=status,
+                config=config,
+                optimizer=config.optimizer,
+                run_id=run_id,
+                optimizer_params=opt_params,
+                optimizer_state=optimizer_state,
+                loader_state=loader_state,
+                rng_state=rng_state,
+                runtime_manifest=runtime_manifest,
+                saved_at=saved_at,
+                compatibility_warnings=compatibility_warnings,
+                kind="best",
+            )
         return status
 
     def _update_step(
@@ -455,11 +504,24 @@ class ExperimentManager:
             self._status = restored
             return self._status.model_copy(deep=True)
 
-    def _record_checkpoint(self, *, saved_at: str, checkpoint_path: Path) -> ExperimentStatus:
+    def _record_checkpoint(
+        self,
+        *,
+        saved_at: str,
+        checkpoint_path: Path,
+        checkpoint_accuracy: float | None,
+        best_checkpoint_path: Path | None,
+    ) -> ExperimentStatus:
         with self.lock:
             self._status.last_checkpoint_step = self._status.current_step
+            self._status.last_checkpoint_acc = checkpoint_accuracy
             self._status.last_checkpoint_saved_at = saved_at
             self._status.checkpoint_path = str(checkpoint_path)
+            if best_checkpoint_path is not None:
+                self._status.best_checkpoint_acc = checkpoint_accuracy
+                self._status.best_checkpoint_step = self._status.current_step
+                self._status.best_checkpoint_saved_at = saved_at
+                self._status.best_checkpoint_path = str(best_checkpoint_path)
             return self._status.model_copy(deep=True)
 
     def _set_paused(self, *, elapsed_seconds: float | None = None) -> ExperimentStatus:
@@ -512,6 +574,26 @@ def seed_everything(seed: int, numeric_mode: NumericMode = "strict") -> None:
     torch.backends.cudnn.allow_tf32 = numeric_mode == "fast"
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def build_run_id(config: ExperimentConfig, *, started_at: datetime | None = None) -> str:
+    started_at = started_at.astimezone() if started_at is not None else datetime.now().astimezone()
+    timestamp = started_at.strftime("%Y%m%dT%H%M%S%f")
+    return "-".join(
+        (
+            config.dataset,
+            config.optimizer.lower(),
+            config.device,
+            f"seed{config.seed}",
+            timestamp,
+        )
+    )
+
+
+def is_best_checkpoint(status: ExperimentStatus, checkpoint_accuracy: float | None) -> bool:
+    if checkpoint_accuracy is None:
+        return False
+    return status.best_checkpoint_acc is None or checkpoint_accuracy > status.best_checkpoint_acc
 
 
 def resolve_device(requested: str) -> torch.device:

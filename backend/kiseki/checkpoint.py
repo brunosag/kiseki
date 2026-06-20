@@ -5,7 +5,7 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 import torch
@@ -14,6 +14,7 @@ from torch import nn
 from .schemas import ExperimentConfig, ExperimentStatus
 
 CHECKPOINT_SCHEMA_VERSION = 1
+CheckpointKind = Literal["latest", "best"]
 
 
 @dataclass(slots=True)
@@ -28,6 +29,22 @@ class CheckpointSaver:
 
     def latest_metadata_path(self, run_id: str) -> Path:
         return self.run_directory(run_id) / "latest.json"
+
+    def best_pt_path(self, run_id: str) -> Path:
+        return self.run_directory(run_id) / "best.pt"
+
+    def best_metadata_path(self, run_id: str) -> Path:
+        return self.run_directory(run_id) / "best.json"
+
+    def pt_path(self, run_id: str, kind: CheckpointKind = "latest") -> Path:
+        if kind == "best":
+            return self.best_pt_path(run_id)
+        return self.latest_pt_path(run_id)
+
+    def metadata_path(self, run_id: str, kind: CheckpointKind = "latest") -> Path:
+        if kind == "best":
+            return self.best_metadata_path(run_id)
+        return self.latest_metadata_path(run_id)
 
     def save(
         self,
@@ -44,6 +61,7 @@ class CheckpointSaver:
         runtime_manifest: dict[str, Any] | None = None,
         saved_at: str | None = None,
         compatibility_warnings: list[str] | None = None,
+        kind: CheckpointKind = "latest",
     ) -> Path:
         run_id = run_id or status.run_id or "default"
         saved_at = saved_at or utc_now_iso()
@@ -53,8 +71,8 @@ class CheckpointSaver:
 
         run_directory = self.run_directory(run_id)
         run_directory.mkdir(parents=True, exist_ok=True)
-        pt_path = self.latest_pt_path(run_id)
-        metadata_path = self.latest_metadata_path(run_id)
+        pt_path = self.pt_path(run_id, kind)
+        metadata_path = self.metadata_path(run_id, kind)
 
         metadata = checkpoint_metadata(
             run_id=run_id,
@@ -97,6 +115,16 @@ class CheckpointSaver:
     def load_latest_metadata(self, run_id: str) -> dict[str, Any]:
         return json.loads(self.latest_metadata_path(run_id).read_text(encoding="utf-8"))
 
+    def load_best(self, run_id: str, *, map_location: str | torch.device = "cpu") -> dict[str, Any]:
+        path = self.best_pt_path(run_id)
+        try:
+            return torch.load(path, map_location=map_location, weights_only=False)
+        except TypeError:
+            return torch.load(path, map_location=map_location)
+
+    def load_best_metadata(self, run_id: str) -> dict[str, Any]:
+        return json.loads(self.best_metadata_path(run_id).read_text(encoding="utf-8"))
+
 
 def checkpoint_metadata(
     *,
@@ -129,6 +157,11 @@ def checkpoint_metadata(
         "config": config.model_dump(),
         "optimizer_params": optimizer_params,
         "best_acc": status.best_acc,
+        "last_checkpoint_acc": status.last_checkpoint_acc,
+        "best_checkpoint_acc": status.best_checkpoint_acc,
+        "best_checkpoint_step": status.best_checkpoint_step,
+        "best_checkpoint_saved_at": status.best_checkpoint_saved_at,
+        "best_checkpoint_path": status.best_checkpoint_path,
         "current_loss": status.current_loss,
         "reproducibility_mode": reproducibility_mode(config.deterministic, compatibility_warnings),
         "reproducibility_status": reproducibility_status(config.deterministic, compatibility_warnings),

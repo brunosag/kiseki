@@ -107,8 +107,13 @@ class ExperimentStatus(BaseModel):
     history: TrainingHistory = Field(default_factory=TrainingHistory)
     error: str | None = None
     last_checkpoint_step: int | None = None
+    last_checkpoint_acc: float | None = None
     last_checkpoint_saved_at: str | None = None
     checkpoint_path: str | None = None
+    best_checkpoint_acc: float | None = None
+    best_checkpoint_step: int | None = None
+    best_checkpoint_saved_at: str | None = None
+    best_checkpoint_path: str | None = None
     reproducibility_mode: str = "best_effort"
     checkpoint_warnings: list[str] = Field(default_factory=list)
 
