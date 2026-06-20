@@ -3,6 +3,7 @@ import os
 import random
 import threading
 import time
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from queue import Empty, Queue
@@ -12,14 +13,27 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from .checkpoint import CheckpointSaver
-from .data import DataLoaderFactory, cycle_loader
+from .checkpoint import (
+    CheckpointSaver,
+    build_runtime_manifest,
+    capture_rng_state,
+    compare_runtime_manifests,
+    reproducibility_mode,
+    restore_rng_state,
+    utc_now_iso,
+)
+from .data import DataLoaderFactory, cycle_loader, deterministic_batch_stream
 from .models import CNN2C2DMNIST
 from .optimizers import build_optimizer_runner
-from .schemas import AccuracyPoint, ExperimentStatus, MutationStepPoint, StartExperimentRequest
+from .schemas import (
+    AccuracyPoint,
+    ExperimentConfig,
+    ExperimentStatus,
+    MutationStepPoint,
+    StartExperimentRequest,
+)
 
 VAL_FREQ = 10
-SAVE_FREQ = 50
 NumericMode = Literal["strict", "fast"]
 NUMERIC_MODES = ("strict", "fast")
 NIXOS_CUDA_LIBRARY = Path("/run/opengl-driver/lib/libcuda.so.1")
@@ -40,6 +54,7 @@ class ExperimentManager:
         self.data_loader_factory = data_loader_factory or DataLoaderFactory(Path("data"))
         self.checkpoint_saver = checkpoint_saver or CheckpointSaver(Path("checkpoints"))
         self.stop_event = threading.Event()
+        self.pause_event = threading.Event()
         self.lock = threading.Lock()
         self.subscribers: set[Queue[tuple[str, ExperimentStatus]]] = set()
         self.worker: threading.Thread | None = None
@@ -50,24 +65,86 @@ class ExperimentManager:
             return self._status.model_copy(deep=True)
 
     def start(self, request: StartExperimentRequest) -> ExperimentStatus:
+        run_id = uuid.uuid4().hex
         with self.lock:
             if self._status.is_running:
                 raise RuntimeError("An experiment is already running")
+            if self._status.is_paused:
+                raise RuntimeError("Resume or stop the paused experiment before starting a new one")
+
             self.stop_event.clear()
+            self.pause_event.clear()
             self._status = ExperimentStatus(
                 is_running=True,
                 optimizer=request.config.optimizer,
                 requested_device=request.config.device,
+                run_id=run_id,
+                reproducibility_mode=reproducibility_mode(request.config.deterministic),
             )
-            self.worker = threading.Thread(target=self._run, args=(request,), daemon=True)
+            self.worker = threading.Thread(
+                target=self._run,
+                args=(request, run_id, None),
+                daemon=True,
+            )
             self.worker.start()
             status = self._status.model_copy(deep=True)
         self._publish("started", status)
         return status
 
+    def pause(self) -> ExperimentStatus:
+        with self.lock:
+            if not self._status.is_running:
+                raise RuntimeError("No running experiment can be paused")
+            if self._status.pause_requested:
+                raise RuntimeError("Pause is already requested")
+            self.pause_event.set()
+            self._status.pause_requested = True
+            status = self._status.model_copy(deep=True)
+        self._publish("pause_requested", status)
+        return status
+
+    def resume(self) -> ExperimentStatus:
+        with self.lock:
+            if self._status.is_running:
+                raise RuntimeError("An experiment is already running")
+            if not self._status.is_paused or self._status.run_id is None:
+                raise RuntimeError("No paused experiment can be resumed")
+
+            run_id = self._status.run_id
+            self.stop_event.clear()
+            self.pause_event.clear()
+            self._status.is_running = True
+            self._status.is_paused = False
+            self._status.pause_requested = False
+            self._status.error = None
+            self.worker = threading.Thread(target=self._resume_run, args=(run_id,), daemon=True)
+            self.worker.start()
+            status = self._status.model_copy(deep=True)
+        self._publish("resumed", status)
+        return status
+
     def stop(self) -> ExperimentStatus:
-        self.stop_event.set()
-        return self.status()
+        publish_stopped = False
+        with self.lock:
+            if self._status.is_paused:
+                self.pause_event.clear()
+                self.stop_event.clear()
+                self._status.is_running = False
+                self._status.is_paused = False
+                self._status.pause_requested = False
+                status = self._status.model_copy(deep=True)
+                publish_stopped = True
+            elif self._status.is_running:
+                self.pause_event.clear()
+                self.stop_event.set()
+                self._status.pause_requested = False
+                status = self._status.model_copy(deep=True)
+            else:
+                status = self._status.model_copy(deep=True)
+
+        if publish_stopped:
+            self._publish("stopped", status)
+        return status
 
     def events(self) -> Iterator[str]:
         queue: Queue[tuple[str, ExperimentStatus]] = Queue()
@@ -87,15 +164,53 @@ class ExperimentManager:
             with self.lock:
                 self.subscribers.discard(queue)
 
-    def _run(self, request: StartExperimentRequest) -> None:
+    def _resume_run(self, run_id: str) -> None:
+        try:
+            checkpoint = self.checkpoint_saver.load_latest(run_id, map_location="cpu")
+            config = ExperimentConfig.model_validate(checkpoint["config"])
+            request = StartExperimentRequest(
+                config=config,
+                opt_params=checkpoint.get("optimizer_params", {}),
+            )
+        except Exception as exc:  # pragma: no cover - surfaced through API status.
+            status = self._set_finished(error=str(exc))
+            self._publish("failed", status)
+            return
+
+        self._run(request, run_id, checkpoint)
+
+    def _run(
+        self,
+        request: StartExperimentRequest,
+        run_id: str,
+        checkpoint: dict[str, Any] | None,
+    ) -> None:
         final_event = "completed"
         started_at = time.perf_counter()
+        elapsed_offset = 0.0
         try:
             config = request.config
             seed_everything(config.seed, numeric_mode="strict" if config.deterministic else "fast")
-            device = resolve_device(config.device)
-            status = self._update_runtime(config.device, device)
-            self._publish("runtime", status)
+            device, resume_warnings = resolve_run_device(config.device, allow_cpu_fallback=checkpoint is not None)
+            current_manifest = build_runtime_manifest(device)
+            compatibility_warnings = list(resume_warnings)
+            if checkpoint is not None:
+                compatibility_warnings.extend(
+                    compare_runtime_manifests(
+                        checkpoint.get("runtime_manifest"),
+                        current_manifest,
+                    )
+                )
+
+            if checkpoint is None:
+                status = self._update_runtime(
+                    config.device,
+                    device,
+                    reproducibility_mode=reproducibility_mode(config.deterministic),
+                    checkpoint_warnings=[],
+                )
+                self._publish("runtime", status)
+
             if hasattr(self.data_loader_factory, "pin_memory"):
                 self.data_loader_factory.pin_memory = device.type == "cuda"
             train_loader, val_loader = self.data_loader_factory.mnist(
@@ -110,9 +225,35 @@ class ExperimentManager:
                 device=device,
                 seed=config.seed,
             )
-            train_batches = cycle_loader(train_loader)
+            if config.deterministic:
+                train_batches = deterministic_batch_stream(
+                    train_loader,
+                    val_loader,
+                    batch_size=config.batch_size,
+                    seed=config.seed,
+                )
+            else:
+                train_batches = cycle_loader(train_loader)
 
-            for step in range(1, config.iterations + 1):
+            first_step = 1
+            if checkpoint is not None:
+                saved_status = ExperimentStatus.model_validate(checkpoint["status"])
+                elapsed_offset = saved_status.total_elapsed_seconds
+                model.load_state_dict(checkpoint["model_state"])
+                load_runner_state(runner, checkpoint.get("optimizer_state", {}))
+                if config.deterministic and checkpoint.get("loader_state") is not None:
+                    train_batches.load_state_dict(checkpoint["loader_state"])
+                restore_rng_state(checkpoint.get("rng_state"))
+                status = self._restore_status_for_resume(
+                    saved_status,
+                    config=config,
+                    device=device,
+                    compatibility_warnings=compatibility_warnings,
+                )
+                self._publish("runtime", status)
+                first_step = saved_status.current_step + 1
+
+            for step in range(first_step, config.iterations + 1):
                 if self.stop_event.is_set():
                     final_event = "stopped"
                     break
@@ -122,10 +263,11 @@ class ExperimentManager:
                 inputs, targets = move_batch(inputs, targets, device)
                 loss = runner.step(inputs, targets)
                 iteration_seconds = time.perf_counter() - iteration_started_at
+                elapsed_seconds = elapsed_offset + time.perf_counter() - started_at
                 status = self._update_step(
                     step,
                     loss,
-                    elapsed_seconds=time.perf_counter() - started_at,
+                    elapsed_seconds=elapsed_seconds,
                     last_iteration_seconds=iteration_seconds,
                     mutation_step=current_mutation_step(runner),
                 )
@@ -140,7 +282,7 @@ class ExperimentManager:
                     status = self._update_accuracy(
                         step,
                         accuracy,
-                        elapsed_seconds=time.perf_counter() - started_at,
+                        elapsed_seconds=elapsed_offset + time.perf_counter() - started_at,
                         mutation_step=current_mutation_step(runner),
                     )
                     self._publish("validation", status)
@@ -148,25 +290,84 @@ class ExperimentManager:
                         final_event = "completed"
                         break
 
-                if step % SAVE_FREQ == 0:
-                    self.checkpoint_saver.save(
+                if config.checkpoint_interval > 0 and step % config.checkpoint_interval == 0:
+                    status = self._save_checkpoint(
                         model=model,
-                        status=self.status(),
+                        runner=runner,
+                        train_batches=train_batches,
+                        run_id=run_id,
                         config=config,
-                        optimizer=config.optimizer,
+                        opt_params=request.opt_params,
+                        device=device,
                     )
+                    self._publish("checkpoint", status)
+
+                if self.stop_event.is_set():
+                    final_event = "stopped"
+                    break
+
+                if self.pause_event.is_set():
+                    self._save_checkpoint(
+                        model=model,
+                        runner=runner,
+                        train_batches=train_batches,
+                        run_id=run_id,
+                        config=config,
+                        opt_params=request.opt_params,
+                        device=device,
+                    )
+                    status = self._set_paused(
+                        elapsed_seconds=elapsed_offset + time.perf_counter() - started_at,
+                    )
+                    self._publish("paused", status)
+                    return
 
         except Exception as exc:  # pragma: no cover - surfaced through API status.
             final_event = "failed"
             status = self._set_finished(
                 error=str(exc),
-                elapsed_seconds=time.perf_counter() - started_at,
+                elapsed_seconds=elapsed_offset + time.perf_counter() - started_at,
             )
             self._publish(final_event, status)
             return
 
-        status = self._set_finished(elapsed_seconds=time.perf_counter() - started_at)
+        status = self._set_finished(
+            elapsed_seconds=elapsed_offset + time.perf_counter() - started_at,
+        )
         self._publish(final_event, status)
+
+    def _save_checkpoint(
+        self,
+        *,
+        model: torch.nn.Module,
+        runner: Any,
+        train_batches: Any,
+        run_id: str,
+        config: ExperimentConfig,
+        opt_params: dict[str, dict[str, float]],
+        device: torch.device,
+    ) -> ExperimentStatus:
+        saved_at = utc_now_iso()
+        checkpoint_path = self.checkpoint_saver.latest_pt_path(run_id)
+        status = self._record_checkpoint(saved_at=saved_at, checkpoint_path=checkpoint_path)
+        optimizer_state = runner_state_dict(runner)
+        loader_state = train_batches.state_dict() if config.deterministic else None
+        compatibility_warnings = status.checkpoint_warnings
+        self.checkpoint_saver.save(
+            model=model,
+            status=status,
+            config=config,
+            optimizer=config.optimizer,
+            run_id=run_id,
+            optimizer_params=opt_params,
+            optimizer_state=optimizer_state,
+            loader_state=loader_state,
+            rng_state=capture_rng_state(),
+            runtime_manifest=build_runtime_manifest(device),
+            saved_at=saved_at,
+            compatibility_warnings=compatibility_warnings,
+        )
+        return status
 
     def _update_step(
         self,
@@ -217,11 +418,58 @@ class ExperimentManager:
         self,
         requested_device: str,
         device: torch.device,
+        *,
+        reproducibility_mode: str,
+        checkpoint_warnings: list[str],
     ) -> ExperimentStatus:
         with self.lock:
             self._status.requested_device = requested_device
             self._status.device = device.type
             self._status.device_name = device_name(device)
+            self._status.reproducibility_mode = reproducibility_mode
+            self._status.checkpoint_warnings = checkpoint_warnings
+            return self._status.model_copy(deep=True)
+
+    def _restore_status_for_resume(
+        self,
+        saved_status: ExperimentStatus,
+        *,
+        config: ExperimentConfig,
+        device: torch.device,
+        compatibility_warnings: list[str],
+    ) -> ExperimentStatus:
+        with self.lock:
+            restored = saved_status.model_copy(deep=True)
+            restored.is_running = True
+            restored.is_paused = False
+            restored.pause_requested = False
+            restored.error = None
+            restored.requested_device = config.device
+            restored.device = device.type
+            restored.device_name = device_name(device)
+            restored.reproducibility_mode = reproducibility_mode(
+                config.deterministic,
+                compatibility_warnings,
+            )
+            restored.checkpoint_warnings = compatibility_warnings
+            self._status = restored
+            return self._status.model_copy(deep=True)
+
+    def _record_checkpoint(self, *, saved_at: str, checkpoint_path: Path) -> ExperimentStatus:
+        with self.lock:
+            self._status.last_checkpoint_step = self._status.current_step
+            self._status.last_checkpoint_saved_at = saved_at
+            self._status.checkpoint_path = str(checkpoint_path)
+            return self._status.model_copy(deep=True)
+
+    def _set_paused(self, *, elapsed_seconds: float | None = None) -> ExperimentStatus:
+        with self.lock:
+            self._status.is_running = False
+            self._status.is_paused = True
+            self._status.pause_requested = False
+            self._status.error = None
+            if elapsed_seconds is not None:
+                self._status.total_elapsed_seconds = max(elapsed_seconds, 0.0)
             return self._status.model_copy(deep=True)
 
     def _set_finished(
@@ -232,6 +480,8 @@ class ExperimentManager:
     ) -> ExperimentStatus:
         with self.lock:
             self._status.is_running = False
+            self._status.is_paused = False
+            self._status.pause_requested = False
             self._status.error = error
             if elapsed_seconds is not None:
                 self._status.total_elapsed_seconds = max(elapsed_seconds, 0.0)
@@ -275,6 +525,19 @@ def resolve_device(requested: str) -> torch.device:
     return torch.device("cpu")
 
 
+def resolve_run_device(
+    requested: str,
+    *,
+    allow_cpu_fallback: bool,
+) -> tuple[torch.device, list[str]]:
+    try:
+        return resolve_device(requested), []
+    except RuntimeError:
+        if requested == "gpu" and allow_cpu_fallback:
+            return torch.device("cpu"), ["CUDA is unavailable; resumed checkpoint on CPU."]
+        raise
+
+
 def device_name(device: torch.device) -> str:
     if device.type == "cuda":
         return torch.cuda.get_device_name(device)
@@ -286,6 +549,19 @@ def current_mutation_step(runner: Any) -> float | None:
     if mutation_step is None:
         return None
     return float(mutation_step)
+
+
+def runner_state_dict(runner: Any) -> dict[str, Any]:
+    state_dict = getattr(runner, "state_dict", None)
+    if callable(state_dict):
+        return state_dict()
+    return {}
+
+
+def load_runner_state(runner: Any, state: dict[str, Any]) -> None:
+    load_state_dict = getattr(runner, "load_state_dict", None)
+    if callable(load_state_dict):
+        load_state_dict(state)
 
 
 def move_batch(

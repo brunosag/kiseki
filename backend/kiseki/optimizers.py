@@ -2,7 +2,7 @@ import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
 
 import torch
 from torch import nn
@@ -14,6 +14,12 @@ from .schemas import ETA, ETA_0, GAMMA, LAMBDA, P_M, RHO, RHO_X, TAU_PAT
 
 class OptimizerRunner(Protocol):
     def step(self, inputs: torch.Tensor, targets: torch.Tensor) -> float:
+        ...
+
+    def state_dict(self) -> dict[str, Any]:
+        ...
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
         ...
 
 
@@ -39,6 +45,7 @@ class LEEAConfig:
 class SGDRunner:
     def __init__(self, model: nn.Module, config: SGDConfig) -> None:
         self.model = model
+        self.config = config
         self.optimizer = torch.optim.SGD(model.parameters(), lr=config.eta)
 
     def step(self, inputs: torch.Tensor, targets: torch.Tensor) -> float:
@@ -50,6 +57,17 @@ class SGDRunner:
         loss.backward()
         self.optimizer.step()
         return float(loss.detach().cpu())
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "config": {"eta": self.config.eta},
+            "optimizer": self.optimizer.state_dict(),
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        optimizer_state = state.get("optimizer")
+        if optimizer_state is not None:
+            self.optimizer.load_state_dict(optimizer_state)
 
 
 class LEEARunner:
@@ -109,6 +127,47 @@ class LEEARunner:
             device=device,
         )
         copy_vector_to_model(self.population[0], self.model)
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "population": self.population,
+            "next_population": self._next_population,
+            "inherited_fitness": self.inherited_fitness,
+            "asexual_parent_indices": self.asexual_parent_indices,
+            "sexual_parent_1_indices": self.sexual_parent_1_indices,
+            "sexual_parent_2_indices": self.sexual_parent_2_indices,
+            "mutation_step": self.mutation_step,
+            "validation_patience": self.validation_patience,
+            "is_first_step": self.is_first_step,
+            "manual_evaluation_chunk_size": self.manual_evaluation_chunk_size,
+            "evaluation_chunk_size": self.evaluation_chunk_size,
+            "auto_chunk_signature": self._auto_chunk_signature,
+            "generator_state": self.generator.get_state(),
+            "last_profile": self.last_profile,
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        self.population = state["population"].to(self.device)
+        self._next_population = state.get(
+            "next_population",
+            torch.empty_like(self.population),
+        ).to(self.device)
+        self.inherited_fitness = state["inherited_fitness"].to(self.device)
+        self.asexual_parent_indices = state["asexual_parent_indices"].to(self.device)
+        self.sexual_parent_1_indices = state["sexual_parent_1_indices"].to(self.device)
+        self.sexual_parent_2_indices = state["sexual_parent_2_indices"].to(self.device)
+        self.population_size = int(self.population.shape[0])
+        self.mutation_step = float(state["mutation_step"])
+        self.validation_patience = int(state["validation_patience"])
+        self.is_first_step = bool(state["is_first_step"])
+        self.manual_evaluation_chunk_size = state.get("manual_evaluation_chunk_size")
+        self.evaluation_chunk_size = state.get("evaluation_chunk_size")
+        self._auto_chunk_signature = state.get("auto_chunk_signature")
+        self.last_profile = state.get("last_profile")
+
+        generator_state = state.get("generator_state")
+        if generator_state is not None:
+            self.generator.set_state(generator_state)
 
     def step(self, inputs: torch.Tensor, targets: torch.Tensor) -> float:
         if self.profile_enabled:

@@ -33,6 +33,7 @@ export type ExperimentConfig = {
   iterations: number
   target_acc: number
   deterministic: boolean
+  checkpoint_interval: number
   optimizer: "LEEA" | "SGD"
 }
 
@@ -54,7 +55,10 @@ export type TrainingHistory = {
 
 export type ExperimentStatus = {
   is_running: boolean
+  is_paused: boolean
+  pause_requested: boolean
   optimizer?: "LEEA" | "SGD" | null
+  run_id?: string | null
   current_step: number
   current_loss: number
   current_mutation_step?: number | null
@@ -66,6 +70,11 @@ export type ExperimentStatus = {
   device_name: string
   history: TrainingHistory
   error?: string | null
+  last_checkpoint_step?: number | null
+  last_checkpoint_saved_at?: string | null
+  checkpoint_path?: string | null
+  reproducibility_mode: string
+  checkpoint_warnings: string[]
 }
 
 export type OptimizerParams = Record<string, Record<string, number>>
@@ -111,6 +120,12 @@ export const fallbackSchema: SchemaResponse = {
       type: "boolean",
       default: false,
       label: "Deterministic",
+    },
+    checkpoint_interval: {
+      type: "number",
+      step: 1,
+      default: 50,
+      label: "Checkpoint interval",
     },
     optimizer: {
       type: "select",
@@ -203,7 +218,10 @@ export const fallbackSchema: SchemaResponse = {
 
 export const defaultStatus: ExperimentStatus = {
   is_running: false,
+  is_paused: false,
+  pause_requested: false,
   optimizer: null,
+  run_id: null,
   current_step: 0,
   current_loss: 0.0,
   current_mutation_step: null,
@@ -215,6 +233,11 @@ export const defaultStatus: ExperimentStatus = {
   device_name: "cpu",
   history: { loss: [], acc: [], mutation_step: [] },
   error: null,
+  last_checkpoint_step: null,
+  last_checkpoint_saved_at: null,
+  checkpoint_path: null,
+  reproducibility_mode: "best_effort",
+  checkpoint_warnings: [],
 }
 
 export function apiUrl(path: string): string {
@@ -230,6 +253,7 @@ export function configDefaults(schema: SchemaResponse): ExperimentConfig {
     iterations: numberDefault(schema.config_schema.iterations, 100000),
     target_acc: numberDefault(schema.config_schema.target_acc, 100.0),
     deterministic: booleanDefault(schema.config_schema.deterministic, false),
+    checkpoint_interval: numberDefault(schema.config_schema.checkpoint_interval, 50),
     optimizer: selectDefault(schema.config_schema.optimizer, "LEEA") as
       | "LEEA"
       | "SGD",

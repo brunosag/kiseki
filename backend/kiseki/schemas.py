@@ -44,12 +44,20 @@ class ExperimentConfig(BaseModel):
     target_acc: float = 100.0
     optimizer: Literal["LEEA", "SGD"] = "LEEA"
     deterministic: bool = False
+    checkpoint_interval: int = 50
 
     @field_validator("batch_size", "iterations")
     @classmethod
     def require_positive_int(cls, value: int) -> int:
         if value <= 0:
             raise ValueError("must be positive")
+        return value
+
+    @field_validator("checkpoint_interval")
+    @classmethod
+    def require_nonnegative_int(cls, value: int) -> int:
+        if value < 0:
+            raise ValueError("must be non-negative")
         return value
 
     @field_validator("target_acc")
@@ -83,7 +91,10 @@ class TrainingHistory(BaseModel):
 
 class ExperimentStatus(BaseModel):
     is_running: bool = False
+    is_paused: bool = False
+    pause_requested: bool = False
     optimizer: Literal["LEEA", "SGD"] | None = None
+    run_id: str | None = None
     current_step: int = 0
     current_loss: float = 0.0
     current_mutation_step: float | None = None
@@ -95,6 +106,11 @@ class ExperimentStatus(BaseModel):
     device_name: str = "cpu"
     history: TrainingHistory = Field(default_factory=TrainingHistory)
     error: str | None = None
+    last_checkpoint_step: int | None = None
+    last_checkpoint_saved_at: str | None = None
+    checkpoint_path: str | None = None
+    reproducibility_mode: str = "best_effort"
+    checkpoint_warnings: list[str] = Field(default_factory=list)
 
 
 class SchemaResponse(BaseModel):
@@ -119,6 +135,12 @@ CONFIG_SCHEMA: dict[str, ConfigField] = {
     "iterations": ConfigField(type="number", label="Iterations", step=1, default=100000),
     "target_acc": ConfigField(type="number", label="Target accuracy", step=0.01, default=100.0),
     "deterministic": ConfigField(type="boolean", label="Deterministic", default=False),
+    "checkpoint_interval": ConfigField(
+        type="number",
+        label="Checkpoint interval",
+        step=1,
+        default=50,
+    ),
     "optimizer": ConfigField(
         type="select",
         label="Optimizer",

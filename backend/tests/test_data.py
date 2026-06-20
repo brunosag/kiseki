@@ -1,9 +1,10 @@
 from pathlib import Path
 
+import torch
 import pytest
-from torch.utils.data import RandomSampler, WeightedRandomSampler
+from torch.utils.data import DataLoader, RandomSampler, TensorDataset, WeightedRandomSampler
 
-from kiseki.data import load_mnist
+from kiseki.data import deterministic_batch_stream, load_mnist
 
 
 def test_mnist_loader_shape_and_regular_shuffle() -> None:
@@ -20,3 +21,25 @@ def test_mnist_loader_shape_and_regular_shuffle() -> None:
     assert not isinstance(train_loader.sampler, WeightedRandomSampler)
     assert len(train_loader.dataset) == 50000
     assert len(val_loader.dataset) == 10000
+
+
+def test_deterministic_batch_stream_restores_exact_next_batch() -> None:
+    dataset = TensorDataset(torch.arange(12).float().reshape(12, 1), torch.arange(12))
+    train_loader = DataLoader(dataset, batch_size=3)
+    val_loader = DataLoader(dataset, batch_size=3)
+
+    uninterrupted = deterministic_batch_stream(train_loader, val_loader, batch_size=3, seed=9)
+    restored = deterministic_batch_stream(train_loader, val_loader, batch_size=3, seed=9)
+
+    next(uninterrupted)
+    next(uninterrupted)
+    restored.load_state_dict(uninterrupted.state_dict())
+
+    expected_inputs, expected_targets = next(uninterrupted)
+    actual_inputs, actual_targets = next(restored)
+
+    assert torch.equal(actual_inputs, expected_inputs)
+    assert torch.equal(actual_targets, expected_targets)
+    assert restored.state_dict()["next_batch_offset"] == uninterrupted.state_dict()[
+        "next_batch_offset"
+    ]

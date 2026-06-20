@@ -10,6 +10,7 @@ from kiseki.checkpoint import CheckpointSaver
 from kiseki import experiment
 from kiseki.experiment import ExperimentManager, format_sse, resolve_device, seed_everything
 from kiseki.schemas import ETA, ETA_0, ExperimentStatus
+from kiseki.optimizers import SGDConfig, SGDRunner
 
 
 class SyntheticLoaderFactory:
@@ -22,6 +23,21 @@ class SyntheticLoaderFactory:
             DataLoader(dataset, batch_size=batch_size, shuffle=True),
             DataLoader(dataset, batch_size=batch_size, shuffle=False),
         )
+
+
+class SlowSGDRunner(SGDRunner):
+    def step(self, inputs: torch.Tensor, targets: torch.Tensor) -> float:
+        time.sleep(0.02)
+        return super().step(inputs, targets)
+
+
+def wait_for_status(client: TestClient, predicate, timeout: float = 5.0) -> dict:
+    deadline = time.monotonic() + timeout
+    status = client.get("/api/experiments/status").json()
+    while not predicate(status) and time.monotonic() < deadline:
+        time.sleep(0.05)
+        status = client.get("/api/experiments/status").json()
+    return status
 
 
 def test_api_start_status_stop_flow(tmp_path) -> None:
@@ -65,6 +81,115 @@ def test_api_start_status_stop_flow(tmp_path) -> None:
 
     stop_response = client.post("/api/experiments/stop")
     assert stop_response.status_code == 200
+    wait_for_status(client, lambda status: not status["is_running"])
+
+
+def test_api_interval_checkpoint_and_checkpoint_interval_zero(tmp_path) -> None:
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=CheckpointSaver(tmp_path),
+    )
+    client = TestClient(create_app(manager))
+
+    payload = {
+        "config": {
+            "dataset": "mnist",
+            "device": "cpu",
+            "seed": 3,
+            "batch_size": 4,
+            "iterations": 3,
+            "target_acc": 100.0,
+            "optimizer": "SGD",
+            "checkpoint_interval": 2,
+        },
+        "opt_params": {"SGD": {ETA: 0.01}},
+    }
+
+    response = client.post("/api/experiments/start", json=payload)
+    assert response.status_code == 200
+    status = wait_for_status(client, lambda status: not status["is_running"])
+
+    assert status["last_checkpoint_step"] == 2
+    assert (tmp_path / status["run_id"] / "latest.pt").exists()
+    assert (tmp_path / status["run_id"] / "latest.json").exists()
+
+    payload["config"]["checkpoint_interval"] = 0
+    response = client.post("/api/experiments/start", json=payload)
+    assert response.status_code == 200
+    status = wait_for_status(client, lambda status: not status["is_running"])
+
+    assert status["last_checkpoint_step"] is None
+    assert not (tmp_path / status["run_id"] / "latest.pt").exists()
+
+
+def test_api_pause_resume_and_stop_clears_paused_state(tmp_path, monkeypatch) -> None:
+    def build_slow_runner(optimizer_name, model, raw_params, *, device, seed, **kwargs):
+        assert optimizer_name == "SGD"
+        return SlowSGDRunner(model, SGDConfig(eta=float(raw_params.get(ETA, 0.01))))
+
+    monkeypatch.setattr(experiment, "build_optimizer_runner", build_slow_runner)
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=CheckpointSaver(tmp_path),
+    )
+    client = TestClient(create_app(manager))
+
+    assert client.post("/api/experiments/pause").status_code == 409
+    assert client.post("/api/experiments/resume").status_code == 409
+
+    payload = {
+        "config": {
+            "dataset": "mnist",
+            "device": "cpu",
+            "seed": 11,
+            "batch_size": 4,
+            "iterations": 100,
+            "target_acc": 100.0,
+            "optimizer": "SGD",
+            "deterministic": True,
+            "checkpoint_interval": 0,
+        },
+        "opt_params": {"SGD": {ETA: 0.01}},
+    }
+
+    response = client.post("/api/experiments/start", json=payload)
+    assert response.status_code == 200
+    wait_for_status(client, lambda status: status["current_step"] >= 1)
+
+    pause_response = client.post("/api/experiments/pause")
+    assert pause_response.status_code == 200
+    assert pause_response.json()["pause_requested"] is True
+
+    paused = wait_for_status(client, lambda status: status["is_paused"])
+    paused_step = paused["current_step"]
+    run_id = paused["run_id"]
+    assert paused["is_running"] is False
+    assert paused["last_checkpoint_step"] == paused_step
+    assert paused["checkpoint_path"] == str(tmp_path / run_id / "latest.pt")
+    assert (tmp_path / run_id / "latest.pt").exists()
+    assert (tmp_path / run_id / "latest.json").exists()
+
+    assert client.post("/api/experiments/start", json=payload).status_code == 409
+
+    resume_response = client.post("/api/experiments/resume")
+    assert resume_response.status_code == 200
+    resumed = wait_for_status(
+        client,
+        lambda status: status["is_running"] and status["current_step"] > paused_step,
+    )
+    assert resumed["run_id"] == run_id
+    assert resumed["is_paused"] is False
+
+    second_pause_response = client.post("/api/experiments/pause")
+    assert second_pause_response.status_code == 200
+    paused_again = wait_for_status(client, lambda status: status["is_paused"])
+    assert paused_again["is_paused"] is True
+
+    stop_response = client.post("/api/experiments/stop")
+    assert stop_response.status_code == 200
+    stopped = stop_response.json()
+    assert stopped["is_paused"] is False
+    assert stopped["is_running"] is False
 
 
 def test_api_reports_leea_mutation_step(tmp_path) -> None:

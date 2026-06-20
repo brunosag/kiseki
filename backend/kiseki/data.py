@@ -1,9 +1,10 @@
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import torch
-from torch.utils.data import DataLoader, TensorDataset, random_split
+from torch.utils.data import DataLoader, TensorDataset, default_collate, random_split
 from torchvision import datasets
 
 
@@ -67,6 +68,92 @@ def cycle_loader(loader: DataLoader) -> Iterator[tuple[torch.Tensor, torch.Tenso
     while True:
         for batch in loader:
             yield batch
+
+
+class DeterministicBatchStream:
+    def __init__(
+        self,
+        dataset: torch.utils.data.Dataset,
+        *,
+        batch_size: int,
+        seed: int,
+        train_indices: list[int] | None = None,
+        validation_indices: list[int] | None = None,
+    ) -> None:
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.generator = torch.Generator().manual_seed(seed + 1)
+        self.train_indices = train_indices or dataset_indices(dataset)
+        self.validation_indices = validation_indices or []
+        self.current_epoch = -1
+        self.current_permutation: torch.Tensor | None = None
+        self.next_batch_offset = 0
+
+    def __iter__(self) -> "DeterministicBatchStream":
+        return self
+
+    def __next__(self) -> tuple[torch.Tensor, torch.Tensor]:
+        if len(self.dataset) == 0:
+            raise StopIteration
+
+        if (
+            self.current_permutation is None
+            or self.next_batch_offset >= len(self.current_permutation)
+        ):
+            self.current_epoch += 1
+            self.current_permutation = torch.randperm(len(self.dataset), generator=self.generator)
+            self.next_batch_offset = 0
+
+        end = min(self.next_batch_offset + self.batch_size, len(self.current_permutation))
+        batch_positions = self.current_permutation[self.next_batch_offset : end]
+        self.next_batch_offset = end
+        batch = [self.dataset[int(position)] for position in batch_positions.tolist()]
+        return default_collate(batch)
+
+    def state_dict(self) -> dict[str, Any]:
+        return {
+            "train_indices": self.train_indices,
+            "validation_indices": self.validation_indices,
+            "current_epoch": self.current_epoch,
+            "current_permutation": self.current_permutation,
+            "next_batch_offset": self.next_batch_offset,
+            "batch_size": self.batch_size,
+            "shuffle_generator_state": self.generator.get_state(),
+        }
+
+    def load_state_dict(self, state: dict[str, Any]) -> None:
+        self.current_epoch = int(state.get("current_epoch", -1))
+        self.current_permutation = state.get("current_permutation")
+        self.next_batch_offset = int(state.get("next_batch_offset", 0))
+        self.batch_size = int(state.get("batch_size", self.batch_size))
+        self.train_indices = list(state.get("train_indices", self.train_indices))
+        self.validation_indices = list(state.get("validation_indices", self.validation_indices))
+        generator_state = state.get("shuffle_generator_state")
+        if generator_state is not None:
+            self.generator.set_state(generator_state)
+
+
+def deterministic_batch_stream(
+    train_loader: DataLoader,
+    val_loader: DataLoader,
+    *,
+    batch_size: int,
+    seed: int,
+) -> DeterministicBatchStream:
+    return DeterministicBatchStream(
+        train_loader.dataset,
+        batch_size=batch_size,
+        seed=seed,
+        train_indices=dataset_indices(train_loader.dataset),
+        validation_indices=dataset_indices(val_loader.dataset),
+    )
+
+
+def dataset_indices(dataset: torch.utils.data.Dataset) -> list[int]:
+    indices = getattr(dataset, "indices", None)
+    if indices is None:
+        return list(range(len(dataset)))
+    return [int(index) for index in indices]
 
 
 @dataclass(slots=True)

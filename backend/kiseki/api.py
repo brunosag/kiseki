@@ -33,6 +33,20 @@ def create_app(manager: ExperimentManager | None = None) -> FastAPI:
     def stop_experiment() -> ExperimentStatus:
         return experiment_manager.stop()
 
+    @app.post("/api/experiments/pause", response_model=ExperimentStatus)
+    def pause_experiment() -> ExperimentStatus:
+        try:
+            return experiment_manager.pause()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/experiments/resume", response_model=ExperimentStatus)
+    def resume_experiment() -> ExperimentStatus:
+        try:
+            return experiment_manager.resume()
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.get("/api/experiments/status", response_model=ExperimentStatus)
     def get_status() -> ExperimentStatus:
         return experiment_manager.status()
@@ -46,4 +60,3 @@ def create_app(manager: ExperimentManager | None = None) -> FastAPI:
         )
 
     return app
-

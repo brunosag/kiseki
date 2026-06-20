@@ -44,6 +44,16 @@ def test_sgd_step_is_finite() -> None:
     assert math.isfinite(loss)
 
 
+def test_sgd_state_round_trip_restores_optimizer_params() -> None:
+    source = SGDRunner(TinyClassifier(), SGDConfig(eta=0.03))
+    source.step(*tiny_batch())
+
+    restored = SGDRunner(TinyClassifier(), SGDConfig(eta=0.2))
+    restored.load_state_dict(source.state_dict())
+
+    assert restored.optimizer.param_groups[0]["lr"] == 0.03
+
+
 def test_leea_step_is_finite() -> None:
     model = CNN2C2DMNIST()
     runner = LEEARunner(
@@ -60,6 +70,32 @@ def test_leea_step_is_finite() -> None:
     loss = runner.step(*synthetic_batch())
 
     assert math.isfinite(loss)
+
+
+def test_leea_state_round_trip_restores_internal_generation_state() -> None:
+    config = LEEAConfig(
+        population_size=4,
+        mutation_probability=0.1,
+        initial_mutation_step=0.2,
+        evaluation_chunk_size=2,
+    )
+    source = LEEARunner(TinyClassifier(), config, device=torch.device("cpu"), seed=7)
+    source.step(*tiny_batch())
+    source.update_scheduler(is_best=False)
+
+    restored = LEEARunner(TinyClassifier(), config, device=torch.device("cpu"), seed=99)
+    restored.load_state_dict(source.state_dict())
+
+    assert torch.allclose(restored.population, source.population)
+    assert torch.allclose(restored.inherited_fitness, source.inherited_fitness)
+    assert torch.equal(restored.asexual_parent_indices, source.asexual_parent_indices)
+    assert torch.equal(restored.sexual_parent_1_indices, source.sexual_parent_1_indices)
+    assert torch.equal(restored.sexual_parent_2_indices, source.sexual_parent_2_indices)
+    assert restored.mutation_step == source.mutation_step
+    assert restored.validation_patience == source.validation_patience
+    assert restored.is_first_step == source.is_first_step
+    assert restored.evaluation_chunk_size == source.evaluation_chunk_size
+    assert torch.equal(restored.generator.get_state(), source.generator.get_state())
 
 
 def test_leea_generic_evaluator_supports_other_models() -> None:

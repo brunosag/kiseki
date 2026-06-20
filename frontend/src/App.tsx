@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import ReactPlotly from "react-plotly.js"
 import katex from "katex"
-import { Moon, Sun } from "lucide-react"
+import { Moon, Pause, Play, RotateCcw, Square, Sun } from "lucide-react"
 import type { ComponentType } from "react"
 import type { PlotParams } from "react-plotly.js"
 import type { Data, Layout } from "plotly.js"
@@ -55,6 +55,7 @@ const configOrder: (keyof ExperimentConfig)[] = [
   "seed",
   "batch_size",
   "iterations",
+  "checkpoint_interval",
   "target_acc",
   "optimizer",
   "deterministic",
@@ -66,6 +67,10 @@ const eventTypes = [
   "runtime",
   "step",
   "validation",
+  "checkpoint",
+  "pause_requested",
+  "paused",
+  "resumed",
   "completed",
   "stopped",
   "failed",
@@ -195,6 +200,8 @@ export function App() {
   }, [])
 
   const isRunning = status.is_running
+  const isPaused = status.is_paused
+  const controlsDisabled = isRunning || isPaused
   const activeOptimizerSchema = schema.optimizers_schema[config.optimizer] ?? []
   const mutationStepHistory = useMemo(
     () => status.history.mutation_step ?? [],
@@ -424,6 +431,24 @@ export function App() {
     }
   }
 
+  async function pauseExperiment() {
+    const response = await fetch(apiUrl("/api/experiments/pause"), {
+      method: "POST",
+    })
+    if (response.ok) {
+      setStatus(await response.json())
+    }
+  }
+
+  async function resumeExperiment() {
+    const response = await fetch(apiUrl("/api/experiments/resume"), {
+      method: "POST",
+    })
+    if (response.ok) {
+      setStatus(await response.json())
+    }
+  }
+
   function updateConfig<K extends keyof ExperimentConfig>(
     key: K,
     value: ExperimentConfig[K]
@@ -462,7 +487,7 @@ export function App() {
                     fieldKey={key}
                     field={field}
                     value={config[key]}
-                    disabled={isRunning}
+                    disabled={controlsDisabled}
                     onChange={(value) => updateConfig(key, value)}
                   />
                 )
@@ -484,7 +509,7 @@ export function App() {
                       className="h-8 w-24"
                       type={param.type}
                       step={param.step}
-                      disabled={isRunning}
+                      disabled={controlsDisabled}
                       value={optParams[config.optimizer]?.[param.key] ?? ""}
                       onChange={(event) =>
                         updateOptimizerParam(
@@ -501,13 +526,39 @@ export function App() {
               </div>
             </div>
 
-            <Button
-              className="mt-6 w-full"
-              variant={isRunning ? "destructive" : "default"}
-              onClick={isRunning ? stopExperiment : startExperiment}
+            <div
+              className="mt-6 grid grid-cols-1 gap-2 data-[active=true]:grid-cols-2"
+              data-active={isRunning || isPaused}
             >
-              {isRunning ? "Stop experiment" : "Start experiment"}
-            </Button>
+              {!isRunning && !isPaused ? (
+                <Button onClick={startExperiment}>
+                  <Play className="size-4" />
+                  Start
+                </Button>
+              ) : null}
+              {isRunning ? (
+                <Button
+                  disabled={status.pause_requested}
+                  variant="secondary"
+                  onClick={pauseExperiment}
+                >
+                  <Pause className="size-4" />
+                  Pause
+                </Button>
+              ) : null}
+              {isPaused ? (
+                <Button onClick={resumeExperiment}>
+                  <RotateCcw className="size-4" />
+                  Resume
+                </Button>
+              ) : null}
+              {isRunning || isPaused ? (
+                <Button variant="destructive" onClick={stopExperiment}>
+                  <Square className="size-4" />
+                  Stop
+                </Button>
+              ) : null}
+            </div>
           </CardContent>
         </Card>
 
@@ -547,6 +598,11 @@ export function App() {
             {status.error ? (
               <div className="mt-4 rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
                 {status.error}
+              </div>
+            ) : null}
+            {status.checkpoint_warnings.length ? (
+              <div className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-700 dark:text-amber-300">
+                {status.checkpoint_warnings.join(" ")}
               </div>
             ) : null}
 
@@ -747,6 +803,10 @@ function readStoredConfig(schema: SchemaResponse): ExperimentConfig {
     iterations: coerceNumber(stored.iterations, defaults.iterations),
     target_acc: coerceNumber(stored.target_acc, defaults.target_acc),
     deterministic: coerceBoolean(stored.deterministic, defaults.deterministic),
+    checkpoint_interval: coerceNumber(
+      stored.checkpoint_interval,
+      defaults.checkpoint_interval
+    ),
     optimizer: coerceSelect(
       stored.optimizer,
       schema.config_schema.optimizer,
