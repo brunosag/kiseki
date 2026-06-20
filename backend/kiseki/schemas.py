@@ -37,13 +37,13 @@ class OptimizerParamField(BaseModel):
 
 class ExperimentConfig(BaseModel):
     dataset: Literal["mnist"] = "mnist"
-    device: Literal["cpu", "gpu"] = "cpu"
+    device: Literal["cpu", "gpu"] = "gpu"
     seed: int = 42
-    batch_size: int = 1000
+    batch_size: int = 512
     iterations: int = 100000
     target_acc: float = 100.0
     optimizer: Literal["LEEA", "SGD"] = "LEEA"
-    deterministic: bool = True
+    deterministic: bool = False
 
     @field_validator("batch_size", "iterations")
     @classmethod
@@ -111,13 +111,14 @@ CONFIG_SCHEMA: dict[str, ConfigField] = {
     "device": ConfigField(
         type="select",
         label="Device",
+        default="gpu",
         options=[SelectOption(label="CPU", value="cpu"), SelectOption(label="GPU", value="gpu")],
     ),
     "seed": ConfigField(type="number", label="Seed", step=1, default=42),
-    "batch_size": ConfigField(type="number", label="Batch size", step=1, default=1000),
+    "batch_size": ConfigField(type="number", label="Batch size", step=1, default=512),
     "iterations": ConfigField(type="number", label="Iterations", step=1, default=100000),
     "target_acc": ConfigField(type="number", label="Target accuracy", step=0.01, default=100.0),
-    "deterministic": ConfigField(type="boolean", label="Deterministic", default=True),
+    "deterministic": ConfigField(type="boolean", label="Deterministic", default=False),
     "optimizer": ConfigField(
         type="select",
         label="Optimizer",

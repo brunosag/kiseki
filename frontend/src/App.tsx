@@ -72,6 +72,13 @@ const eventTypes = [
 ]
 
 const PLOT_UI_REVISION = "training-telemetry"
+const CONFIG_STORAGE_KEY = "kiseki.config.v1"
+const OPT_PARAMS_STORAGE_KEY = "kiseki.optimizerParams.v1"
+const MARKER_POINT_LIMIT = 20
+const Y_AXIS_SEGMENTS = 10
+const MUTATION_STEP_AXIS_GRANULARITY = 0.001
+const MUTATION_STEP_AXIS_MIN_UPPER_BOUND = 0.001
+const MUTATION_STEP_AXIS_PADDING = 1.05
 
 type ResolvedTheme = "dark" | "light"
 
@@ -125,10 +132,10 @@ export function App() {
   const plotPalette = plotPalettes[resolvedTheme]
   const [schema, setSchema] = useState<SchemaResponse>(fallbackSchema)
   const [config, setConfig] = useState<ExperimentConfig>(() =>
-    configDefaults(fallbackSchema)
+    readStoredConfig(fallbackSchema)
   )
   const [optParams, setOptParams] = useState<OptimizerParams>(() =>
-    optimizerParamDefaults(fallbackSchema)
+    readStoredOptimizerParams(fallbackSchema)
   )
   const [status, setStatus] = useState<ExperimentStatus>(defaultStatus)
 
@@ -146,8 +153,8 @@ export function App() {
       }
 
       setSchema(nextSchema)
-      setConfig(configDefaults(nextSchema))
-      setOptParams(optimizerParamDefaults(nextSchema))
+      setConfig(readStoredConfig(nextSchema))
+      setOptParams(readStoredOptimizerParams(nextSchema))
       setStatus(nextStatus)
     }
 
@@ -157,6 +164,14 @@ export function App() {
       ignore = true
     }
   }, [])
+
+  useEffect(() => {
+    writeStorage(CONFIG_STORAGE_KEY, config)
+  }, [config])
+
+  useEffect(() => {
+    writeStorage(OPT_PARAMS_STORAGE_KEY, optParams)
+  }, [optParams])
 
   useEffect(() => {
     const source = new EventSource(apiUrl("/api/experiments/events"))
@@ -188,11 +203,31 @@ export function App() {
   const hasMutationStepHistory = mutationStepHistory.length > 0
   const hasCurrentMutationStep =
     typeof status.current_mutation_step === "number"
+  const stepAxisUpperBound = nextStepAxisUpperBound(status.current_step)
+  const lossAxisUpperBound = lossAxisUpperBoundFor(
+    status.history.loss,
+    status.current_loss
+  )
+  const lossTickValues = useMemo(
+    () => axisTickValues(lossAxisUpperBound, Y_AXIS_SEGMENTS),
+    [lossAxisUpperBound]
+  )
+  const mutationStepAxisUpperBound = mutationStepAxisUpperBoundFor(
+    mutationStepHistory.map((point) => point.value),
+    status.current_mutation_step
+  )
+  const mutationStepTickValues = useMemo(
+    () => axisTickValues(mutationStepAxisUpperBound, Y_AXIS_SEGMENTS),
+    [mutationStepAxisUpperBound]
+  )
 
   const plotData = useMemo<Data[]>(() => {
+    const lossPointCount = status.history.loss.length
+    const accuracyPointCount = status.history.acc.length
+
     const lossTrace: Data = {
       type: "scatter",
-      mode: "lines",
+      mode: traceMode(lossPointCount),
       name: "Loss",
       uid: "loss",
       x: status.history.loss.map((_, index) => index + 1),
@@ -205,11 +240,12 @@ export function App() {
       },
       hovertemplate: "<b>Loss</b><br>Step %{x}<br>%{y:.4f}<extra></extra>",
       line: { color: plotPalette.loss, width: 1.5 },
+      marker: { color: plotPalette.loss, size: 5 },
     }
 
     const accuracyTrace: Data = {
       type: "scatter",
-      mode: "lines",
+      mode: accuracyTraceMode(accuracyPointCount),
       name: "Accuracy",
       uid: "accuracy",
       x: status.history.acc.map((point) => point.i),
@@ -224,6 +260,7 @@ export function App() {
         "<b>Accuracy</b><br>Step %{x}<br>%{y:.2f}%<extra></extra>",
       yaxis: "y2",
       line: { color: plotPalette.accuracy, width: 1.5 },
+      marker: { color: plotPalette.accuracy, size: 5 },
     }
 
     if (!mutationStepHistory.length) {
@@ -266,7 +303,7 @@ export function App() {
     () => ({
       autosize: true,
       height: 420,
-      uirevision: PLOT_UI_REVISION,
+      uirevision: `${PLOT_UI_REVISION}-${stepAxisUpperBound}-${lossAxisUpperBound}-${mutationStepAxisUpperBound}`,
       margin: { l: 52, r: hasMutationStepHistory ? 116 : 58, t: 34, b: 48 },
       xaxis: {
         color: plotPalette.text,
@@ -274,6 +311,9 @@ export function App() {
         linecolor: plotPalette.axis,
         tickfont: { color: plotPalette.muted },
         title: { text: "Step", font: { color: plotPalette.muted } },
+        range: [0, stepAxisUpperBound],
+        tickmode: "auto",
+        nticks: 12,
         fixedrange: false,
         gridcolor: plotPalette.grid,
         zerolinecolor: plotPalette.axis,
@@ -283,8 +323,13 @@ export function App() {
         linecolor: plotPalette.axis,
         tickfont: { color: plotPalette.muted },
         title: { text: "Loss", font: { color: plotPalette.muted } },
+        range: [0, lossAxisUpperBound],
+        tickmode: "array",
+        tickvals: lossTickValues,
+        tickformat: ".2f",
         fixedrange: false,
         gridcolor: plotPalette.grid,
+        showgrid: true,
         zeroline: false,
       },
       yaxis2: {
@@ -292,6 +337,9 @@ export function App() {
         linecolor: plotPalette.axis,
         tickfont: { color: plotPalette.muted },
         title: { text: "Accuracy (%)", font: { color: plotPalette.muted } },
+        range: [0, 100],
+        tick0: 0,
+        dtick: 100 / Y_AXIS_SEGMENTS,
         fixedrange: false,
         overlaying: "y",
         side: "right",
@@ -308,7 +356,10 @@ export function App() {
                 text: "Mutation step",
                 font: { color: plotPalette.muted },
               },
-              tickformat: ".2g",
+              range: [0, mutationStepAxisUpperBound],
+              tickmode: "array",
+              tickvals: mutationStepTickValues,
+              tickformat: ".3f",
               fixedrange: false,
               overlaying: "y",
               side: "right",
@@ -342,7 +393,15 @@ export function App() {
       plot_bgcolor: "transparent",
       dragmode: false,
     }),
-    [hasMutationStepHistory, plotPalette]
+    [
+      hasMutationStepHistory,
+      lossAxisUpperBound,
+      lossTickValues,
+      mutationStepAxisUpperBound,
+      mutationStepTickValues,
+      plotPalette,
+      stepAxisUpperBound,
+    ]
   )
 
   async function startExperiment() {
@@ -562,6 +621,228 @@ function readResolvedTheme(): ResolvedTheme {
   }
 
   return document.documentElement.classList.contains("dark") ? "dark" : "light"
+}
+
+function traceMode(pointCount: number): "lines" | "lines+markers" {
+  return pointCount > 0 && pointCount <= MARKER_POINT_LIMIT
+    ? "lines+markers"
+    : "lines"
+}
+
+function accuracyTraceMode(
+  pointCount: number
+): "lines" | "lines+markers" | "markers" {
+  if (pointCount === 1) {
+    return "markers"
+  }
+
+  return traceMode(pointCount)
+}
+
+function nextStepAxisUpperBound(step: number): number {
+  const safeStep = Number.isFinite(step) && step > 0 ? step : 0
+  return (Math.floor(safeStep / 10) + 1) * 10
+}
+
+function lossAxisUpperBoundFor(losses: number[], currentLoss: number): number {
+  return numericAxisUpperBoundFor(losses, currentLoss)
+}
+
+function mutationStepAxisUpperBoundFor(
+  values: number[],
+  currentValue: number | null | undefined
+): number {
+  const maxValue = maxFiniteAxisValue(values, currentValue)
+
+  if (maxValue <= 0) {
+    return MUTATION_STEP_AXIS_MIN_UPPER_BOUND
+  }
+
+  return roundUpToStep(
+    maxValue * MUTATION_STEP_AXIS_PADDING,
+    MUTATION_STEP_AXIS_GRANULARITY
+  )
+}
+
+function numericAxisUpperBoundFor(
+  values: number[],
+  currentValue: number | null | undefined
+): number {
+  const maxValue = maxFiniteAxisValue(values, currentValue)
+
+  if (maxValue <= 0) {
+    return 1
+  }
+
+  return niceAxisUpperBound(maxValue)
+}
+
+function maxFiniteAxisValue(
+  values: number[],
+  currentValue: number | null | undefined
+): number {
+  const finiteValues = values.filter((value) => Number.isFinite(value))
+  const safeCurrentValue =
+    typeof currentValue === "number" && Number.isFinite(currentValue)
+      ? currentValue
+      : 0
+
+  return Math.max(0, safeCurrentValue, ...finiteValues)
+}
+
+function niceAxisUpperBound(value: number): number {
+  const magnitude = 10 ** Math.floor(Math.log10(value))
+  const normalized = value / magnitude
+
+  if (normalized <= 1) {
+    return magnitude
+  }
+
+  if (normalized <= 2) {
+    return 2 * magnitude
+  }
+
+  if (normalized <= 2.5) {
+    return 2.5 * magnitude
+  }
+
+  if (normalized <= 5) {
+    return 5 * magnitude
+  }
+
+  return 10 * magnitude
+}
+
+function axisTickValues(upperBound: number, segments: number): number[] {
+  return Array.from({ length: segments + 1 }, (_, index) =>
+    Number(((upperBound * index) / segments).toPrecision(12))
+  )
+}
+
+function roundUpToStep(value: number, step: number): number {
+  return Number((Math.ceil(value / step) * step).toPrecision(12))
+}
+
+function readStoredConfig(schema: SchemaResponse): ExperimentConfig {
+  const defaults = configDefaults(schema)
+  const stored = readStorage(CONFIG_STORAGE_KEY)
+
+  if (!isRecord(stored)) {
+    return defaults
+  }
+
+  return {
+    dataset: coerceSelect(
+      stored.dataset,
+      schema.config_schema.dataset,
+      defaults.dataset
+    ) as ExperimentConfig["dataset"],
+    device: coerceSelect(
+      stored.device,
+      schema.config_schema.device,
+      defaults.device
+    ) as ExperimentConfig["device"],
+    seed: coerceNumber(stored.seed, defaults.seed),
+    batch_size: coerceNumber(stored.batch_size, defaults.batch_size),
+    iterations: coerceNumber(stored.iterations, defaults.iterations),
+    target_acc: coerceNumber(stored.target_acc, defaults.target_acc),
+    deterministic: coerceBoolean(stored.deterministic, defaults.deterministic),
+    optimizer: coerceSelect(
+      stored.optimizer,
+      schema.config_schema.optimizer,
+      defaults.optimizer
+    ) as ExperimentConfig["optimizer"],
+  }
+}
+
+function readStoredOptimizerParams(schema: SchemaResponse): OptimizerParams {
+  const defaults = optimizerParamDefaults(schema)
+  const stored = readStorage(OPT_PARAMS_STORAGE_KEY)
+
+  if (!isRecord(stored)) {
+    return defaults
+  }
+
+  return Object.fromEntries(
+    Object.entries(defaults).map(([optimizer, params]) => {
+      const storedParams = stored[optimizer]
+
+      if (!isRecord(storedParams)) {
+        return [optimizer, params]
+      }
+
+      return [
+        optimizer,
+        Object.fromEntries(
+          Object.entries(params).map(([key, defaultValue]) => [
+            key,
+            coerceNumber(storedParams[key], defaultValue),
+          ])
+        ),
+      ]
+    })
+  )
+}
+
+function coerceSelect(
+  value: unknown,
+  field: ConfigField,
+  fallback: string
+): string {
+  if (typeof value !== "string") {
+    return fallback
+  }
+
+  const allowedValues = field.options?.map((option) => option.value)
+  if (allowedValues?.length && !allowedValues.includes(value)) {
+    return fallback
+  }
+
+  return value
+}
+
+function coerceNumber(value: unknown, fallback: number): number {
+  const numberValue =
+    typeof value === "number"
+      ? value
+      : typeof value === "string"
+        ? Number(value)
+        : NaN
+
+  return Number.isFinite(numberValue) ? numberValue : fallback
+}
+
+function coerceBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback
+}
+
+function readStorage(key: string): unknown {
+  if (typeof window === "undefined") {
+    return null
+  }
+
+  try {
+    const rawValue = window.localStorage.getItem(key)
+    return rawValue ? JSON.parse(rawValue) : null
+  } catch {
+    return null
+  }
+}
+
+function writeStorage(key: string, value: unknown) {
+  if (typeof window === "undefined") {
+    return
+  }
+
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // Ignore storage quota and privacy-mode failures.
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
 }
 
 type ConfigControlProps<K extends keyof ExperimentConfig> = {

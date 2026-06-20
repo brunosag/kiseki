@@ -82,6 +82,7 @@ export const fallbackSchema: SchemaResponse = {
     device: {
       type: "select",
       label: "Device",
+      default: "gpu",
       options: [
         { label: "CPU", value: "cpu" },
         { label: "GPU", value: "gpu" },
@@ -91,7 +92,7 @@ export const fallbackSchema: SchemaResponse = {
     batch_size: {
       type: "number",
       step: 1,
-      default: 1000,
+      default: 512,
       label: "Batch size",
     },
     iterations: {
@@ -108,7 +109,7 @@ export const fallbackSchema: SchemaResponse = {
     },
     deterministic: {
       type: "boolean",
-      default: true,
+      default: false,
       label: "Deterministic",
     },
     optimizer: {
@@ -222,14 +223,14 @@ export function apiUrl(path: string): string {
 
 export function configDefaults(schema: SchemaResponse): ExperimentConfig {
   return {
-    dataset: firstOption(schema.config_schema.dataset, "mnist") as "mnist",
-    device: firstOption(schema.config_schema.device, "cpu") as "cpu" | "gpu",
+    dataset: selectDefault(schema.config_schema.dataset, "mnist") as "mnist",
+    device: selectDefault(schema.config_schema.device, "gpu") as "cpu" | "gpu",
     seed: numberDefault(schema.config_schema.seed, 42),
-    batch_size: numberDefault(schema.config_schema.batch_size, 1000),
+    batch_size: numberDefault(schema.config_schema.batch_size, 512),
     iterations: numberDefault(schema.config_schema.iterations, 100000),
     target_acc: numberDefault(schema.config_schema.target_acc, 100.0),
-    deterministic: booleanDefault(schema.config_schema.deterministic, true),
-    optimizer: firstOption(schema.config_schema.optimizer, "LEEA") as
+    deterministic: booleanDefault(schema.config_schema.deterministic, false),
+    optimizer: selectDefault(schema.config_schema.optimizer, "LEEA") as
       | "LEEA"
       | "SGD",
   }
@@ -244,7 +245,15 @@ export function optimizerParamDefaults(schema: SchemaResponse): OptimizerParams 
   )
 }
 
-function firstOption(field: ConfigField, fallback: string): string {
+function selectDefault(field: ConfigField, fallback: string): string {
+  const options = field.options?.map((option) => option.value)
+
+  if (typeof field.default === "string") {
+    if (!options?.length || options.includes(field.default)) {
+      return field.default
+    }
+  }
+
   return field.options?.[0]?.value ?? fallback
 }
 
