@@ -621,7 +621,7 @@ export function App() {
               />
               <Metric
                 label="Last iteration"
-                value={formatDuration(status.last_iteration_seconds)}
+                value={formatSeconds(status.last_iteration_seconds)}
               />
               <Metric label="Loss" value={status.current_loss.toFixed(4)} />
               <Metric
@@ -1139,6 +1139,12 @@ function formatMutationStep(value: number): string {
   return value.toFixed(4)
 }
 
+function formatSeconds(seconds: number): string {
+  const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 0
+
+  return `${safeSeconds.toFixed(3)}s`
+}
+
 function formatDuration(seconds: number): string {
   const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 0
 
@@ -1151,6 +1157,24 @@ function formatDuration(seconds: number): string {
   }
 
   const totalSeconds = Math.round(safeSeconds)
+  const hours = Math.floor(totalSeconds / 3600)
+
+  if (hours > 0) {
+    const minutes = Math.floor((totalSeconds % 3600) / 60)
+    const remainingSeconds = totalSeconds % 60
+    const parts = [`${hours}h`]
+
+    if (minutes > 0) {
+      parts.push(`${minutes}m`)
+    }
+
+    if (remainingSeconds > 0) {
+      parts.push(`${remainingSeconds}s`)
+    }
+
+    return parts.join(" ")
+  }
+
   const minutes = Math.floor(totalSeconds / 60)
   const remainingSeconds = (totalSeconds % 60)
     .toString()
