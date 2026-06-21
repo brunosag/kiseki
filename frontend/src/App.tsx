@@ -112,14 +112,13 @@ const Y_AXIS_SEGMENTS = 10
 const MUTATION_STEP_AXIS_MIN_UPPER_BOUND = 0.001
 const MUTATION_STEP_AXIS_PADDING = 1.05
 const MUTATION_STEP_AXIS_SEGMENTS = 8
-const MUTATION_STEP_TICK_MAX_DECIMALS = 3
-const MUTATION_STEP_PLOT_DOMAIN_END = 0.88
+const MUTATION_STEP_TICK_DECIMALS = 2
+const MUTATION_STEP_PLOT_DOMAIN_END = 0.925
 
 type ResolvedTheme = "dark" | "light"
 
 type PlotPalette = {
   accuracy: string
-  axis: string
   grid: string
   hoverBackground: string
   hoverBorder: string
@@ -134,37 +133,35 @@ type MultiAxisLayout = Partial<Layout> & {
   yaxis3?: Record<string, unknown>
 }
 
-const plotPalettes: Record<ResolvedTheme, PlotPalette> = {
+const fallbackPlotPalettes: Record<ResolvedTheme, PlotPalette> = {
   light: {
     accuracy: "#2563eb",
-    axis: "#d4d4d8",
-    grid: "rgba(24, 24, 27, 0.08)",
+    grid: "rgba(23, 23, 23, 0.045)",
     hoverBackground: "#ffffff",
-    hoverBorder: "#e4e4e7",
-    hoverText: "#18181b",
-    loss: "#18181b",
-    mutationStep: "#71717a",
-    muted: "#71717a",
-    text: "#18181b",
+    hoverBorder: "#e5e5e5",
+    hoverText: "#171717",
+    loss: "#171717",
+    mutationStep: "#737373",
+    muted: "rgba(82, 82, 82, 0.62)",
+    text: "#171717",
   },
   dark: {
     accuracy: "#38bdf8",
-    axis: "#52525b",
-    grid: "rgba(250, 250, 250, 0.08)",
-    hoverBackground: "#27272a",
-    hoverBorder: "#3f3f46",
+    grid: "rgba(250, 250, 250, 0.05)",
+    hoverBackground: "#262626",
+    hoverBorder: "#404040",
     hoverText: "#fafafa",
     loss: "#fafafa",
-    mutationStep: "#a1a1aa",
-    muted: "#a1a1aa",
-    text: "#e4e4e7",
+    mutationStep: "#a3a3a3",
+    muted: "rgba(229, 229, 229, 0.52)",
+    text: "#e5e5e5",
   },
 }
 
 export function App() {
   const { theme } = useTheme()
   const resolvedTheme = useResolvedTheme(theme)
-  const plotPalette = plotPalettes[resolvedTheme]
+  const plotPalette = usePlotPalette(resolvedTheme)
   const [schema, setSchema] = useState<SchemaResponse>(fallbackSchema)
   const [config, setConfig] = useState<ExperimentConfig>(() =>
     readStoredConfig(fallbackSchema)
@@ -300,11 +297,15 @@ export function App() {
   )
   const mutationStepTickValues = useMemo(
     () =>
-      niceTickValues(mutationStepAxisUpperBound, MUTATION_STEP_AXIS_SEGMENTS),
+      fixedPrecisionTickValues(
+        mutationStepAxisUpperBound,
+        MUTATION_STEP_AXIS_SEGMENTS,
+        MUTATION_STEP_TICK_DECIMALS
+      ),
     [mutationStepAxisUpperBound]
   )
   const mutationStepTickText = useMemo(
-    () => roundedTickText(mutationStepTickValues),
+    () => fixedTickText(mutationStepTickValues, MUTATION_STEP_TICK_DECIMALS),
     [mutationStepTickValues]
   )
 
@@ -404,41 +405,56 @@ export function App() {
       autosize: true,
       height: 420,
       uirevision: `${PLOT_UI_REVISION}-${stepAxisUpperBound}-${lossAxisUpperBound}-${mutationStepAxisUpperBound}`,
-      margin: { l: 52, r: showMutationStepAxis ? 116 : 58, t: 42, b: 48 },
+      margin: { l: 52, r: showMutationStepAxis ? 76 : 46, t: 42, b: 48 },
       xaxis: {
-        color: plotPalette.text,
+        color: plotPalette.muted,
         ...(showMutationStepAxis
           ? { domain: [0, MUTATION_STEP_PLOT_DOMAIN_END] }
           : {}),
-        linecolor: plotPalette.axis,
+        automargin: true,
         tickfont: { color: plotPalette.muted },
+        ticks: "",
         title: { text: "Step", font: { color: plotPalette.muted } },
         range: [0, stepAxisUpperBound],
         tickmode: "auto",
         nticks: 12,
         fixedrange: true,
-        gridcolor: plotPalette.grid,
-        zerolinecolor: plotPalette.axis,
+        showgrid: false,
+        showline: false,
+        zeroline: false,
       },
       yaxis: {
-        color: plotPalette.text,
-        linecolor: plotPalette.axis,
+        color: plotPalette.muted,
+        automargin: true,
         tickfont: { color: plotPalette.muted },
-        title: { text: "Loss", font: { color: plotPalette.muted } },
+        ticks: "",
+        title: {
+          text: "Loss",
+          font: { color: plotPalette.muted },
+          standoff: 18,
+        },
         range: [0, lossAxisUpperBound],
         tickmode: "array",
         tickvals: lossTickValues,
-        tickformat: ".2f",
+        tickformat: ".1f",
         fixedrange: true,
         gridcolor: plotPalette.grid,
+        gridwidth: 1,
         showgrid: true,
+        showline: false,
+        mirror: false,
         zeroline: false,
       },
       yaxis2: {
-        color: plotPalette.text,
-        linecolor: plotPalette.axis,
+        color: plotPalette.muted,
+        automargin: true,
         tickfont: { color: plotPalette.muted },
-        title: { text: "Accuracy (%)", font: { color: plotPalette.muted } },
+        ticks: "",
+        title: {
+          text: "Accuracy (%)",
+          font: { color: plotPalette.muted },
+          standoff: 14,
+        },
         range: [0, 100],
         tick0: 0,
         dtick: 100 / Y_AXIS_SEGMENTS,
@@ -446,17 +462,21 @@ export function App() {
         overlaying: "y",
         side: "right",
         showgrid: false,
+        showline: false,
+        mirror: false,
         zeroline: false,
       },
       ...(showMutationStepAxis
         ? {
             yaxis3: {
-              color: plotPalette.text,
-              linecolor: plotPalette.axis,
+              color: plotPalette.muted,
+              automargin: true,
               tickfont: { color: plotPalette.muted },
+              ticks: "",
               title: {
                 text: "Mutation step",
                 font: { color: plotPalette.muted },
+                standoff: 14,
               },
               range: [0, mutationStepAxisUpperBound],
               tickmode: "array",
@@ -466,8 +486,10 @@ export function App() {
               overlaying: "y",
               side: "right",
               anchor: "free",
-              position: 0.98,
+              position: 1,
               showgrid: false,
+              showline: false,
+              mirror: false,
               zeroline: false,
             },
           }
@@ -699,7 +721,7 @@ export function App() {
                 showMutationStepAxis ? "xl:grid-cols-6" : "xl:grid-cols-5"
               )}
             >
-              <Metric label="Step" value={status.current_step.toString()} />
+              <Metric label="Step" value={formatInteger(status.current_step)} />
               <Metric
                 label="Total elapsed"
                 value={formatDuration(status.total_elapsed_seconds)}
@@ -1053,6 +1075,52 @@ function readResolvedTheme(): ResolvedTheme {
   return document.documentElement.classList.contains("dark") ? "dark" : "light"
 }
 
+function usePlotPalette(resolvedTheme: ResolvedTheme): PlotPalette {
+  return useMemo(() => readPlotPalette(resolvedTheme), [resolvedTheme])
+}
+
+function readPlotPalette(resolvedTheme: ResolvedTheme): PlotPalette {
+  const fallback = fallbackPlotPalettes[resolvedTheme]
+
+  if (typeof document === "undefined") {
+    return fallback
+  }
+
+  const styles = getComputedStyle(document.documentElement)
+
+  return {
+    accuracy: readCssColor(styles, "--plot-accuracy", fallback.accuracy),
+    grid: readCssColor(styles, "--plot-grid", fallback.grid),
+    hoverBackground: readCssColor(
+      styles,
+      "--plot-hover-background",
+      fallback.hoverBackground
+    ),
+    hoverBorder: readCssColor(
+      styles,
+      "--plot-hover-border",
+      fallback.hoverBorder
+    ),
+    hoverText: readCssColor(styles, "--plot-hover-text", fallback.hoverText),
+    loss: readCssColor(styles, "--plot-loss", fallback.loss),
+    mutationStep: readCssColor(
+      styles,
+      "--plot-mutation-step",
+      fallback.mutationStep
+    ),
+    muted: readCssColor(styles, "--plot-muted", fallback.muted),
+    text: readCssColor(styles, "--plot-text", fallback.text),
+  }
+}
+
+function readCssColor(
+  styles: CSSStyleDeclaration,
+  propertyName: string,
+  fallback: string
+): string {
+  return styles.getPropertyValue(propertyName).trim() || fallback
+}
+
 function selectionFromCheckpoint(
   checkpoint: CheckpointSummary | null
 ): CheckpointSelection | null {
@@ -1313,26 +1381,46 @@ function axisTickValues(upperBound: number, segments: number): number[] {
   )
 }
 
-function niceTickValues(
+function fixedPrecisionTickValues(
   upperBound: number,
-  preferredSegments: number
+  preferredSegments: number,
+  decimals: number
 ): number[] {
   const safeUpperBound =
     Number.isFinite(upperBound) && upperBound > 0 ? upperBound : 1
   const rawStep = safeUpperBound / preferredSegments
-  const tickStep = niceStepSize(rawStep)
-  const tickCount = Math.ceil(safeUpperBound / tickStep)
+  const minimumDistinctStep = 10 ** -decimals
+  const tickStep = Math.max(niceStepSize(rawStep), minimumDistinctStep)
+  const tickCount = Math.floor(safeUpperBound / tickStep)
   const tickValues = Array.from({ length: tickCount + 1 }, (_, index) =>
     Number((tickStep * index).toPrecision(12))
   ).filter((value) => value <= safeUpperBound + Number.EPSILON)
   const roundedUpperBound = Number(safeUpperBound.toPrecision(12))
   const lastTick = tickValues[tickValues.length - 1] ?? 0
 
-  if (Math.abs(lastTick - roundedUpperBound) > roundedUpperBound * 1e-9) {
+  if (
+    formatFixedTick(lastTick, decimals) !==
+    formatFixedTick(roundedUpperBound, decimals)
+  ) {
     tickValues.push(roundedUpperBound)
   }
 
-  return tickValues
+  return uniqueFixedTickValues(tickValues, decimals)
+}
+
+function uniqueFixedTickValues(values: number[], decimals: number): number[] {
+  const labels = new Set<string>()
+
+  return values.filter((value) => {
+    const label = formatFixedTick(value, decimals)
+
+    if (labels.has(label)) {
+      return false
+    }
+
+    labels.add(label)
+    return true
+  })
 }
 
 function niceStepSize(value: number): number {
@@ -1358,34 +1446,11 @@ function niceStepSize(value: number): number {
   return 10 * magnitude
 }
 
-function roundedTickText(values: number[]): string[] {
-  const decimals = Math.min(
-    MUTATION_STEP_TICK_MAX_DECIMALS,
-    maxDecimalPlacesForValues(values)
-  )
-
-  return values.map((value) => formatRoundedTick(value, decimals))
+function fixedTickText(values: number[], decimals: number): string[] {
+  return values.map((value) => formatFixedTick(value, decimals))
 }
 
-function maxDecimalPlacesForValues(values: number[]): number {
-  return Math.max(0, ...values.map(decimalPlacesForRoundedValue))
-}
-
-function decimalPlacesForRoundedValue(value: number): number {
-  if (!Number.isFinite(value)) {
-    return 0
-  }
-
-  const text = Math.abs(value)
-    .toFixed(MUTATION_STEP_TICK_MAX_DECIMALS)
-    .replace(/0+$/, "")
-    .replace(/\.$/, "")
-  const decimalPointIndex = text.indexOf(".")
-
-  return decimalPointIndex === -1 ? 0 : text.length - decimalPointIndex - 1
-}
-
-function formatRoundedTick(value: number, decimals: number): string {
+function formatFixedTick(value: number, decimals: number): string {
   const normalizedValue = Object.is(value, -0) ? 0 : value
   return normalizedValue.toFixed(decimals)
 }
@@ -1656,9 +1721,9 @@ function Metric({
   detail?: string
 }) {
   return (
-    <div className="min-w-0 rounded-xl border bg-input px-4 py-3">
+    <div className="min-w-0 rounded-xl border bg-input/30 px-4 py-3">
       <p className="text-sm text-muted-foreground/80">{label}</p>
-      <p className="flex min-w-0 items-baseline gap-2">
+      <p className="flex min-w-0 items-baseline gap-1.5">
         <span className="truncate text-2xl tabular-nums">{value}</span>
         {detail ? (
           <span className="truncate text-xs text-muted-foreground/60">
