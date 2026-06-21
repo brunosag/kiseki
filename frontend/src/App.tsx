@@ -2,7 +2,6 @@ import { useEffect, useMemo, useState } from "react"
 import ReactPlotly from "react-plotly.js"
 import katex from "katex"
 import {
-  Check,
   FolderOpen,
   Moon,
   Pause,
@@ -17,6 +16,7 @@ import type { Data, Layout } from "plotly.js"
 
 import "katex/dist/katex.min.css"
 
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -572,6 +572,7 @@ export function App() {
           <CheckpointPicker
             currentSelection={currentCheckpointSelection}
             disabled={isRunning}
+            schema={schema}
             onLoad={loadCheckpoint}
           />
           {showNewExperiment ? (
@@ -738,12 +739,14 @@ export function App() {
 type CheckpointPickerProps = {
   currentSelection: CheckpointSelection | null
   disabled: boolean
+  schema: SchemaResponse
   onLoad: (checkpoint: CheckpointSummary) => Promise<void>
 }
 
 function CheckpointPicker({
   currentSelection,
   disabled,
+  schema,
   onLoad,
 }: CheckpointPickerProps) {
   const [open, setOpen] = useState(false)
@@ -862,15 +865,20 @@ function CheckpointPicker({
             <div className="grid gap-2">
               {checkpoints.map((checkpoint) => {
                 const selected = sameCheckpoint(checkpoint, pendingSelection)
+                const optimizerParams = optimizerParamEntries(
+                  checkpoint,
+                  schema
+                )
 
                 return (
                   <button
+                    aria-label={`Select ${checkpoint.kind} checkpoint for ${checkpoint.optimizer} ${checkpoint.dataset}, seed ${checkpoint.seed}, step ${checkpoint.step}`}
                     aria-pressed={selected}
                     className={cn(
                       "rounded-lg border p-4 text-left transition-colors hover:bg-muted/60 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
                       selected
                         ? "border-primary bg-primary/5"
-                        : "border-border bg-popover"
+                        : "border-border bg-background"
                     )}
                     key={`${checkpoint.run_id}-${checkpoint.kind}`}
                     type="button"
@@ -880,46 +888,62 @@ function CheckpointPicker({
                       <div className="min-w-0">
                         <div className="flex min-w-0 items-center gap-2">
                           <span className="truncate font-medium">
-                            {checkpoint.run_id}
-                          </span>
-                          <span className="shrink-0 rounded-md border px-2 py-0.5 text-xs tracking-normal text-muted-foreground uppercase">
-                            {checkpoint.kind}
+                            {checkpoint.optimizer} ·{" "}
+                            {formatDatasetName(checkpoint.dataset)}
                           </span>
                         </div>
-                        <p className="mt-1 text-sm text-muted-foreground">
-                          {checkpoint.optimizer} on{" "}
-                          {formatCheckpointDevice(checkpoint.device)}
+                        <p className="text-xs text-muted-foreground/80">
+                          Seed {checkpoint.seed} · Batch size{" "}
+                          {formatInteger(checkpoint.config.batch_size)}
                         </p>
                       </div>
-                      {selected ? (
-                        <Check className="mt-1 size-4 text-primary" />
-                      ) : null}
+                      <div className="flex shrink-0 items-center gap-2">
+                        <span className="text-sm text-muted-foreground/80">
+                          {formatCheckpointDate(checkpoint.saved_at)}
+                        </span>
+                        <Badge
+                          className="tracking-tight text-foreground/70 uppercase"
+                          variant="outline"
+                        >
+                          {checkpoint.kind}
+                        </Badge>
+                      </div>
                     </div>
 
-                    <div className="mt-3 flex flex-wrap justify-between gap-x-6 gap-y-3 text-sm">
-                      <CheckpointFact
-                        label="Step"
-                        value={checkpoint.step.toString()}
-                      />
-                      <CheckpointFact
+                    <div className="mt-4 flex flex-wrap items-start gap-x-16 gap-y-3">
+                      <CheckpointMetric
                         label="Accuracy"
                         value={formatOptionalPercent(checkpoint.accuracy)}
                       />
-                      <CheckpointFact
+                      <CheckpointMetric
+                        label="Step"
+                        value={formatInteger(checkpoint.step)}
+                      />
+                      <CheckpointMetric
                         label="Elapsed"
                         value={formatOptionalDuration(
                           checkpoint.total_elapsed_seconds
                         )}
                       />
-                      <CheckpointFact
-                        label="Seed"
-                        value={checkpoint.seed.toString()}
-                      />
-                      <CheckpointFact
-                        label="Saved"
-                        value={formatCheckpointDate(checkpoint.saved_at)}
-                      />
                     </div>
+
+                    {optimizerParams.length > 0 ? (
+                      <div className="mt-5 flex flex-wrap gap-x-8 gap-y-2 text-sm">
+                        {optimizerParams.map(([key, label, value]) => (
+                          <span
+                            className="inline-flex min-w-0 items-baseline gap-1.5"
+                            key={key}
+                          >
+                            <span className="shrink-0 text-muted-foreground">
+                              <MathLabel math={label} />
+                            </span>
+                            <span className="truncate text-foreground/90">
+                              {formatParamValue(value)}
+                            </span>
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
                   </button>
                 )
               })}
@@ -940,11 +964,11 @@ function CheckpointPicker({
   )
 }
 
-function CheckpointFact({ label, value }: { label: string; value: string }) {
+function CheckpointMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div>
+    <div className="min-w-0">
+      <div className="truncate text-lg leading-tight font-medium">{value}</div>
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="truncate">{value}</div>
     </div>
   )
 }
@@ -1080,24 +1104,62 @@ function formatOptionalDuration(seconds: number | null | undefined): string {
   return formatDuration(seconds)
 }
 
+function formatDatasetName(dataset: string): string {
+  return dataset.toUpperCase()
+}
+
+function formatInteger(value: number): string {
+  return new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: 0,
+  }).format(value)
+}
+
+function optimizerParamEntries(
+  checkpoint: CheckpointSummary,
+  schema: SchemaResponse
+): [string, string, number][] {
+  const params = checkpoint.optimizer_params[checkpoint.optimizer] ?? {}
+  const fields = schema.optimizers_schema[checkpoint.optimizer] ?? []
+  const fieldKeys = new Set(fields.map((field) => field.key))
+  const schemaEntries: [string, string, number][] = fields.flatMap((field) => {
+    const value = params[field.key]
+    return Number.isFinite(value) ? [[field.key, field.label, value]] : []
+  })
+  const extraEntries: [string, string, number][] = Object.entries(params)
+    .filter(([key, value]) => !fieldKeys.has(key) && Number.isFinite(value))
+    .map(([key, value]) => [key, key, value])
+
+  return [...schemaEntries, ...extraEntries]
+}
+
+function formatParamValue(value: number): string {
+  if (Number.isInteger(value)) {
+    return formatInteger(value)
+  }
+
+  return new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: 6,
+  }).format(value)
+}
+
 function formatCheckpointDate(savedAt: string): string {
   const date = new Date(savedAt)
   if (Number.isNaN(date.getTime())) {
     return savedAt
   }
-
-  return date.toLocaleString(undefined, {
-    dateStyle: "medium",
+  const options: Intl.DateTimeFormatOptions = {
+    day: "numeric",
+    hour: "2-digit",
     hour12: false,
-    timeStyle: "short",
-  })
-}
+    minute: "2-digit",
+    month: "short",
+  }
 
-function formatCheckpointDevice(device: string): "GPU" | "CPU" {
-  const normalizedDevice = device.toLowerCase()
-  return normalizedDevice === "cuda" || normalizedDevice === "gpu"
-    ? "GPU"
-    : "CPU"
+  if (date.getFullYear() !== new Date().getFullYear()) {
+    options.year = "numeric"
+  }
+
+  return date.toLocaleString(undefined, options)
 }
 
 function traceMode(pointCount: number): "lines" | "lines+markers" {
