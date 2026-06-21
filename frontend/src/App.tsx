@@ -10,7 +10,7 @@ import {
   RotateCcw,
   Sun,
 } from "lucide-react"
-import type { ComponentType } from "react"
+import type { ChangeEvent, ComponentType } from "react"
 import type { PlotParams } from "react-plotly.js"
 import type { Data, Layout } from "plotly.js"
 
@@ -30,8 +30,12 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupInput,
+} from "@/components/ui/input-group"
 import { Label } from "@/components/ui/label"
-import { Separator } from "@/components/ui/separator"
 import {
   Select,
   SelectContent,
@@ -69,15 +73,21 @@ const Plot = (
 
 const configOrder: (keyof ExperimentConfig)[] = [
   "dataset",
+  "optimizer",
   "device",
   "seed",
   "batch_size",
   "iterations",
   "checkpoint_interval",
   "target_acc",
-  "optimizer",
   "deterministic",
 ]
+
+const runtimeEditableConfigKeys = new Set<keyof ExperimentConfig>([
+  "iterations",
+  "target_acc",
+  "checkpoint_interval",
+])
 
 const eventTypes = [
   "status",
@@ -128,7 +138,7 @@ const plotPalettes: Record<ResolvedTheme, PlotPalette> = {
   light: {
     accuracy: "#2563eb",
     axis: "#d4d4d8",
-    grid: "#e4e4e7",
+    grid: "rgba(24, 24, 27, 0.08)",
     hoverBackground: "#ffffff",
     hoverBorder: "#e4e4e7",
     hoverText: "#18181b",
@@ -140,7 +150,7 @@ const plotPalettes: Record<ResolvedTheme, PlotPalette> = {
   dark: {
     accuracy: "#38bdf8",
     axis: "#52525b",
-    grid: "#3f3f46",
+    grid: "rgba(250, 250, 250, 0.08)",
     hoverBackground: "#27272a",
     hoverBorder: "#3f3f46",
     hoverText: "#fafafa",
@@ -233,19 +243,19 @@ export function App() {
   const isPaused = status.is_paused
   const isRunActive = isRunning || isPaused
   const controlsDisabled = isRunActive
+  const bestAccuracyStep = useMemo(
+    () =>
+      bestAccuracyStepFor(
+        status.history.acc,
+        status.best_acc,
+        status.best_checkpoint_step
+      ),
+    [status.best_acc, status.best_checkpoint_step, status.history.acc]
+  )
   const currentCheckpointSelection = useMemo(
     () =>
       selectionFromCheckpoint(loadedCheckpoint) ?? selectionFromStatus(status),
-    [
-      loadedCheckpoint,
-      status.best_checkpoint_path,
-      status.best_checkpoint_saved_at,
-      status.best_checkpoint_step,
-      status.checkpoint_path,
-      status.last_checkpoint_saved_at,
-      status.last_checkpoint_step,
-      status.run_id,
-    ]
+    [loadedCheckpoint, status]
   )
   const showNewExperiment =
     currentCheckpointSelection !== null ||
@@ -465,7 +475,7 @@ export function App() {
       legend: {
         orientation: "h",
         x: 0.5,
-        y: 1.04,
+        y: 1.0,
         xanchor: "center",
         yanchor: "bottom",
         uirevision: PLOT_UI_REVISION,
@@ -522,6 +532,12 @@ export function App() {
   async function resumeExperiment() {
     const response = await fetch(apiUrl("/api/experiments/resume"), {
       method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        iterations: config.iterations,
+        target_acc: config.target_acc,
+        checkpoint_interval: config.checkpoint_interval,
+      }),
     })
     if (response.ok) {
       setStatus(await response.json())
@@ -595,8 +611,7 @@ export function App() {
               <CardTitle className="text-xl">Configuration</CardTitle>
             </CardHeader>
             <CardContent>
-              <Separator />
-              <div className="mt-4 flex flex-col gap-2">
+              <div className="flex flex-col gap-2">
                 {configOrder.map((key) => {
                   const field = schema.config_schema[key]
                   return (
@@ -605,17 +620,20 @@ export function App() {
                       fieldKey={key}
                       field={field}
                       value={config[key]}
-                      disabled={controlsDisabled}
+                      disabled={
+                        runtimeEditableConfigKeys.has(key)
+                          ? isRunning
+                          : controlsDisabled
+                      }
                       onChange={(value) => updateConfig(key, value)}
                     />
                   )
                 })}
               </div>
 
-              <div className="mt-6 rounded-lg border p-4">
-                <h4 className="mb-4 pb-1">{config.optimizer} parameters</h4>
-                <Separator />
-                <div className="mt-4 grid grid-cols-[max-content_auto_1fr] items-center gap-x-3 gap-y-2">
+              <div className="mt-6 flex flex-col gap-3 rounded-lg border p-4">
+                <h4 className="font-medium">{config.optimizer} parameters</h4>
+                <div className="mt-2 grid grid-cols-[max-content_auto_1fr] items-center gap-x-3 gap-y-2">
                   {activeOptimizerSchema.map((param) => (
                     <div className="contents" key={param.key}>
                       <span className="text-lg">
@@ -675,10 +693,9 @@ export function App() {
             <CardTitle className="text-xl">Metrics</CardTitle>
           </CardHeader>
           <CardContent>
-            <Separator />
             <div
               className={cn(
-                "mt-4 grid grid-cols-1 gap-4 sm:grid-cols-2",
+                "grid gap-x-4 gap-y-5 rounded-lg sm:grid-cols-3",
                 showMutationStepAxis ? "xl:grid-cols-6" : "xl:grid-cols-5"
               )}
             >
@@ -695,6 +712,11 @@ export function App() {
               <Metric
                 label="Best accuracy"
                 value={`${status.best_acc.toFixed(2)}%`}
+                detail={
+                  bestAccuracyStep
+                    ? `at ${formatInteger(bestAccuracyStep)}`
+                    : undefined
+                }
               />
               {showMutationStepAxis ? (
                 <Metric
@@ -714,7 +736,7 @@ export function App() {
               </div>
             ) : null}
 
-            <div className="mt-4 w-full">
+            <div className="mt-6 w-full">
               <Plot
                 className="w-full"
                 data={plotData}
@@ -762,9 +784,6 @@ function CheckpointPicker({
     }
 
     let ignore = false
-    setPendingSelection(currentSelection)
-    setIsLoading(true)
-    setError(null)
 
     fetchCheckpoints()
       .then((nextCheckpoints) => {
@@ -791,7 +810,7 @@ function CheckpointPicker({
     return () => {
       ignore = true
     }
-  }, [currentSelection, open])
+  }, [open])
 
   const pendingCheckpoint = pendingSelection
     ? (checkpoints.find((checkpoint) =>
@@ -825,8 +844,18 @@ function CheckpointPicker({
     }
   }
 
+  function handleOpenChange(nextOpen: boolean) {
+    if (nextOpen) {
+      setPendingSelection(currentSelection)
+      setIsLoading(true)
+      setError(null)
+    }
+
+    setOpen(nextOpen)
+  }
+
   return (
-    <Dialog open={open} onOpenChange={setOpen}>
+    <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
         <Button
           className="max-w-[18rem] justify-start"
@@ -1102,6 +1131,21 @@ function formatOptionalDuration(seconds: number | null | undefined): string {
   }
 
   return formatDuration(seconds)
+}
+
+function bestAccuracyStepFor(
+  points: { i: number; value: number }[],
+  bestAccuracy: number,
+  fallbackStep: number | null | undefined
+): number | null {
+  if (points.length > 0 && Number.isFinite(bestAccuracy)) {
+    const bestPoint = points.find((point) => point.value === bestAccuracy)
+    if (bestPoint) {
+      return bestPoint.i
+    }
+  }
+
+  return fallbackStep ?? null
 }
 
 function formatDatasetName(dataset: string): string {
@@ -1553,27 +1597,75 @@ function ConfigControl<K extends keyof ExperimentConfig>({
           </SelectContent>
         </Select>
       ) : (
-        <Input
-          className="h-8 w-40"
-          type="number"
+        <NumberConfigInput
+          fieldKey={fieldKey}
           step={field.step ?? 1}
           disabled={disabled}
           value={Number(value)}
-          onChange={(event) =>
-            onChange(Number(event.currentTarget.value) as ExperimentConfig[K])
-          }
-          name={fieldKey}
+          onChange={(nextValue) => onChange(nextValue as ExperimentConfig[K])}
         />
       )}
     </div>
   )
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+type NumberConfigInputProps<K extends keyof ExperimentConfig> = {
+  fieldKey: K
+  step: number
+  disabled: boolean
+  value: number
+  onChange: (value: number) => void
+}
+
+function NumberConfigInput<K extends keyof ExperimentConfig>({
+  fieldKey,
+  step,
+  disabled,
+  value,
+  onChange,
+}: NumberConfigInputProps<K>) {
+  const inputProps = {
+    type: "number",
+    step,
+    disabled,
+    value,
+    name: fieldKey,
+    onChange: (event: ChangeEvent<HTMLInputElement>) =>
+      onChange(Number(event.currentTarget.value)),
+  }
+
+  if (fieldKey === "target_acc") {
+    return (
+      <InputGroup className="w-40">
+        <InputGroupInput {...inputProps} />
+        <InputGroupAddon align="inline-end">%</InputGroupAddon>
+      </InputGroup>
+    )
+  }
+
+  return <Input className="h-8 w-40" {...inputProps} />
+}
+
+function Metric({
+  label,
+  value,
+  detail,
+}: {
+  label: string
+  value: string
+  detail?: string
+}) {
   return (
-    <div className="rounded-lg border p-4">
-      <p className="text-sm text-muted-foreground">{label}</p>
-      <p className="text-2xl">{value}</p>
+    <div className="min-w-0 rounded-xl border bg-input px-4 py-3">
+      <p className="text-sm text-muted-foreground/80">{label}</p>
+      <p className="flex min-w-0 items-baseline gap-2">
+        <span className="truncate text-2xl tabular-nums">{value}</span>
+        {detail ? (
+          <span className="truncate text-xs text-muted-foreground/60">
+            {detail}
+          </span>
+        ) : null}
+      </p>
     </div>
   )
 }
@@ -1594,16 +1686,12 @@ function formatSeconds(seconds: number): string {
 
 function formatDuration(seconds: number): string {
   const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 0
-
-  if (safeSeconds < 1) {
-    return `${Math.round(safeSeconds * 1000)}ms`
-  }
-
-  if (safeSeconds < 60) {
-    return `${safeSeconds.toFixed(2)}s`
-  }
-
   const totalSeconds = Math.round(safeSeconds)
+
+  if (totalSeconds < 60) {
+    return `${totalSeconds}s`
+  }
+
   const hours = Math.floor(totalSeconds / 3600)
 
   if (hours > 0) {

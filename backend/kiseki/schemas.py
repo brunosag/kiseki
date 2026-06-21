@@ -82,6 +82,33 @@ class StartExperimentRequest(BaseModel):
     checkpoint: CheckpointSelection | None = None
 
 
+class ExperimentControlsUpdate(BaseModel):
+    iterations: int | None = None
+    target_acc: float | None = None
+    checkpoint_interval: int | None = None
+
+    @field_validator("iterations")
+    @classmethod
+    def require_positive_iterations(cls, value: int | None) -> int | None:
+        if value is not None and value <= 0:
+            raise ValueError("must be positive")
+        return value
+
+    @field_validator("checkpoint_interval")
+    @classmethod
+    def require_nonnegative_checkpoint_interval(cls, value: int | None) -> int | None:
+        if value is not None and value < 0:
+            raise ValueError("must be non-negative")
+        return value
+
+    @field_validator("target_acc")
+    @classmethod
+    def require_target_accuracy_range(cls, value: float | None) -> float | None:
+        if value is not None and not 0.0 <= value <= 100.0:
+            raise ValueError("must be between 0 and 100")
+        return value
+
+
 class CheckpointSummary(BaseModel):
     run_id: str
     kind: CheckpointKind

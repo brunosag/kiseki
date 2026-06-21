@@ -7,6 +7,7 @@ from .experiment import ExperimentManager
 from .schemas import (
     CheckpointSelection,
     CheckpointSummary,
+    ExperimentControlsUpdate,
     ExperimentStatus,
     SchemaResponse,
     StartExperimentRequest,
@@ -71,9 +72,9 @@ def create_app(manager: ExperimentManager | None = None) -> FastAPI:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/api/experiments/resume", response_model=ExperimentStatus)
-    def resume_experiment() -> ExperimentStatus:
+    def resume_experiment(update: ExperimentControlsUpdate | None = None) -> ExperimentStatus:
         try:
-            return experiment_manager.resume()
+            return experiment_manager.resume(update)
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 

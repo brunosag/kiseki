@@ -388,6 +388,66 @@ def test_api_start_status_stop_flow(tmp_path) -> None:
     wait_for_status(client, lambda status: not status["is_running"])
 
 
+def test_api_applies_paused_nontrajectory_controls_on_resume(tmp_path, monkeypatch) -> None:
+    def build_slow_runner(optimizer_name, model, raw_params, *, device, seed, **kwargs):
+        assert optimizer_name == "SGD"
+        return SlowSGDRunner(model, SGDConfig(eta=float(raw_params.get(ETA, 0.01))))
+
+    def evaluate_fixed(model, loader, device) -> float:
+        return 10.0
+
+    monkeypatch.setattr(experiment, "build_optimizer_runner", build_slow_runner)
+    monkeypatch.setattr(experiment, "evaluate", evaluate_fixed)
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=CheckpointSaver(tmp_path),
+    )
+    client = TestClient(create_app(manager))
+
+    payload = {
+        "config": {
+            "dataset": "mnist",
+            "device": "cpu",
+            "seed": 3,
+            "batch_size": 4,
+            "iterations": 100,
+            "target_acc": 100.0,
+            "optimizer": "SGD",
+            "checkpoint_interval": 0,
+        },
+        "opt_params": {"SGD": {ETA: 0.01}},
+    }
+
+    response = client.post("/api/experiments/start", json=payload)
+    assert response.status_code == 200
+    wait_for_status(client, lambda status: status["current_step"] >= 1)
+
+    pause_response = client.post("/api/experiments/pause")
+    assert pause_response.status_code == 200
+    paused = wait_for_status(client, lambda status: status["is_paused"])
+    updated_iterations = paused["current_step"] + 5
+
+    resume_response = client.post(
+        "/api/experiments/resume",
+        json={
+            "iterations": updated_iterations,
+            "target_acc": 95.0,
+            "checkpoint_interval": 1,
+        },
+    )
+
+    assert resume_response.status_code == 200
+    status = wait_for_status(client, lambda status: not status["is_running"])
+    run_id = status["run_id"]
+    assert status["current_step"] == updated_iterations
+    assert status["last_checkpoint_step"] is not None
+
+    checkpoint = manager.checkpoint_saver.load_latest(run_id)
+    assert checkpoint["config"]["iterations"] == updated_iterations
+    assert checkpoint["config"]["target_acc"] == 95.0
+    assert checkpoint["config"]["checkpoint_interval"] == 1
+
+
 def test_api_interval_checkpoint_and_checkpoint_interval_zero(tmp_path) -> None:
     manager = ExperimentManager(
         data_loader_factory=SyntheticLoaderFactory(),

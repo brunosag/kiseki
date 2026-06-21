@@ -31,6 +31,7 @@ from .schemas import (
     CheckpointSelection,
     CheckpointSummary,
     ExperimentConfig,
+    ExperimentControlsUpdate,
     ExperimentStatus,
     MutationStepPoint,
     StartExperimentRequest,
@@ -164,7 +165,7 @@ class ExperimentManager:
         self._publish("pause_requested", status)
         return status
 
-    def resume(self) -> ExperimentStatus:
+    def resume(self, update: ExperimentControlsUpdate | None = None) -> ExperimentStatus:
         with self.lock:
             if self._status.is_running:
                 raise RuntimeError("An experiment is already running")
@@ -181,7 +182,7 @@ class ExperimentManager:
             self._status.error = None
             self.worker = threading.Thread(
                 target=self._resume_run,
-                args=(run_id, checkpoint_kind),
+                args=(run_id, checkpoint_kind, update),
                 daemon=True,
             )
             self.worker.start()
@@ -245,10 +246,19 @@ class ExperimentManager:
             with self.lock:
                 self.subscribers.discard(queue)
 
-    def _resume_run(self, run_id: str, kind: CheckpointKind = "latest") -> None:
+    def _resume_run(
+        self,
+        run_id: str,
+        kind: CheckpointKind = "latest",
+        update: ExperimentControlsUpdate | None = None,
+    ) -> None:
         try:
             checkpoint = self.checkpoint_saver.load(run_id, kind, map_location="cpu")
             config = ExperimentConfig.model_validate(checkpoint["config"])
+            if update is not None:
+                config = config.model_copy(
+                    update=update.model_dump(exclude_none=True, exclude_unset=True)
+                )
             request = StartExperimentRequest(
                 config=config,
                 opt_params=checkpoint.get("optimizer_params", {}),
