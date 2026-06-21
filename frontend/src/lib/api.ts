@@ -362,6 +362,15 @@ export async function loadCheckpointStatus(
   return response.json()
 }
 
+export async function deleteCheckpointRun(runId: string): Promise<void> {
+  const response = await fetch(apiUrl(`/api/checkpoints/${encodeURIComponent(runId)}`), {
+    method: "DELETE",
+  })
+  if (!response.ok) {
+    throw new Error("Failed to delete checkpoint")
+  }
+}
+
 export async function resetExperimentStatus(): Promise<ExperimentStatus> {
   const response = await fetch(apiUrl("/api/experiments/reset"), {
     method: "POST",

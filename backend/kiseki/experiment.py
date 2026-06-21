@@ -72,6 +72,15 @@ class ExperimentManager:
     def checkpoints(self) -> list[CheckpointSummary]:
         return self.checkpoint_saver.list_summaries()
 
+    def delete_checkpoint(self, run_id: str) -> None:
+        with self.lock:
+            if self._status.is_running:
+                raise RuntimeError("A checkpoint cannot be deleted while an experiment is running")
+            if self._status.is_paused and self._status.run_id == run_id:
+                raise RuntimeError("Stop or resume the paused experiment before deleting it")
+
+        self.checkpoint_saver.delete_run(run_id)
+
     def load_checkpoint(self, selection: CheckpointSelection) -> ExperimentStatus:
         with self.lock:
             if self._status.is_running:
@@ -396,7 +405,6 @@ class ExperimentManager:
                         )
                         self._publish("validation", status)
 
-                    save_best = is_best_checkpoint(status, checkpoint_accuracy)
                     status = self._save_checkpoint(
                         model=model,
                         runner=runner,
@@ -406,7 +414,6 @@ class ExperimentManager:
                         opt_params=request.opt_params,
                         device=device,
                         checkpoint_accuracy=checkpoint_accuracy,
-                        save_best=save_best,
                     )
                     self._publish("checkpoint", status)
                     if checkpoint_accuracy >= config.target_acc:
@@ -421,7 +428,21 @@ class ExperimentManager:
                     break
 
                 if self.pause_event.is_set():
-                    self._save_checkpoint(
+                    pause_accuracy = checkpoint_accuracy
+                    if pause_accuracy is None:
+                        pause_accuracy = current_step_accuracy(status, step)
+
+                    if pause_accuracy is None:
+                        pause_accuracy = evaluate(model, val_loader, device)
+                        status = self._update_accuracy(
+                            step,
+                            pause_accuracy,
+                            elapsed_seconds=elapsed_offset + time.perf_counter() - started_at,
+                            mutation_step=current_mutation_step(runner),
+                        )
+                        self._publish("validation", status)
+
+                    status = self._save_checkpoint(
                         model=model,
                         runner=runner,
                         train_batches=train_batches,
@@ -429,9 +450,9 @@ class ExperimentManager:
                         config=config,
                         opt_params=request.opt_params,
                         device=device,
-                        checkpoint_accuracy=None,
-                        save_best=False,
+                        checkpoint_accuracy=pause_accuracy,
                     )
+                    self._publish("checkpoint", status)
                     status = self._set_paused(
                         elapsed_seconds=elapsed_offset + time.perf_counter() - started_at,
                     )
@@ -463,15 +484,40 @@ class ExperimentManager:
         opt_params: dict[str, dict[str, float]],
         device: torch.device,
         checkpoint_accuracy: float | None,
-        save_best: bool,
     ) -> ExperimentStatus:
         saved_at = utc_now_iso()
         checkpoint_path = self.checkpoint_saver.latest_pt_path(run_id)
-        best_checkpoint_path = self.checkpoint_saver.best_pt_path(run_id) if save_best else None
+        previous_status = self.status()
+        best_checkpoint_acc = previous_status.best_checkpoint_acc
+        best_checkpoint_step = previous_status.best_checkpoint_step
+        best_checkpoint_saved_at = previous_status.best_checkpoint_saved_at
+        best_checkpoint_path = (
+            Path(previous_status.best_checkpoint_path)
+            if previous_status.best_checkpoint_path
+            else None
+        )
+        delete_hidden_best = False
+
+        if checkpoint_accuracy is not None:
+            if is_best_checkpoint(previous_status, checkpoint_accuracy):
+                best_checkpoint_acc = checkpoint_accuracy
+                best_checkpoint_step = previous_status.current_step
+                best_checkpoint_saved_at = saved_at
+                best_checkpoint_path = checkpoint_path
+                delete_hidden_best = True
+            else:
+                if not self.checkpoint_saver.has_best(run_id):
+                    self.checkpoint_saver.promote_latest_to_best(run_id)
+                if self.checkpoint_saver.has_best(run_id):
+                    best_checkpoint_path = self.checkpoint_saver.best_pt_path(run_id)
+
         status = self._record_checkpoint(
             saved_at=saved_at,
             checkpoint_path=checkpoint_path,
             checkpoint_accuracy=checkpoint_accuracy,
+            best_checkpoint_acc=best_checkpoint_acc,
+            best_checkpoint_step=best_checkpoint_step,
+            best_checkpoint_saved_at=best_checkpoint_saved_at,
             best_checkpoint_path=best_checkpoint_path,
         )
         optimizer_state = runner_state_dict(runner)
@@ -493,22 +539,8 @@ class ExperimentManager:
             saved_at=saved_at,
             compatibility_warnings=compatibility_warnings,
         )
-        if save_best:
-            self.checkpoint_saver.save(
-                model=model,
-                status=status,
-                config=config,
-                optimizer=config.optimizer,
-                run_id=run_id,
-                optimizer_params=opt_params,
-                optimizer_state=optimizer_state,
-                loader_state=loader_state,
-                rng_state=rng_state,
-                runtime_manifest=runtime_manifest,
-                saved_at=saved_at,
-                compatibility_warnings=compatibility_warnings,
-                kind="best",
-            )
+        if delete_hidden_best:
+            self.checkpoint_saver.delete_best(run_id)
         return status
 
     def _update_step(
@@ -603,6 +635,9 @@ class ExperimentManager:
         saved_at: str,
         checkpoint_path: Path,
         checkpoint_accuracy: float | None,
+        best_checkpoint_acc: float | None,
+        best_checkpoint_step: int | None,
+        best_checkpoint_saved_at: str | None,
         best_checkpoint_path: Path | None,
     ) -> ExperimentStatus:
         with self.lock:
@@ -610,11 +645,12 @@ class ExperimentManager:
             self._status.last_checkpoint_acc = checkpoint_accuracy
             self._status.last_checkpoint_saved_at = saved_at
             self._status.checkpoint_path = str(checkpoint_path)
-            if best_checkpoint_path is not None:
-                self._status.best_checkpoint_acc = checkpoint_accuracy
-                self._status.best_checkpoint_step = self._status.current_step
-                self._status.best_checkpoint_saved_at = saved_at
-                self._status.best_checkpoint_path = str(best_checkpoint_path)
+            self._status.best_checkpoint_acc = best_checkpoint_acc
+            self._status.best_checkpoint_step = best_checkpoint_step
+            self._status.best_checkpoint_saved_at = best_checkpoint_saved_at
+            self._status.best_checkpoint_path = (
+                str(best_checkpoint_path) if best_checkpoint_path is not None else None
+            )
             return self._status.model_copy(deep=True)
 
     def _set_paused(self, *, elapsed_seconds: float | None = None) -> ExperimentStatus:
@@ -689,6 +725,13 @@ def is_best_checkpoint(status: ExperimentStatus, checkpoint_accuracy: float | No
     if checkpoint_accuracy is None:
         return False
     return status.best_checkpoint_acc is None or checkpoint_accuracy > status.best_checkpoint_acc
+
+
+def current_step_accuracy(status: ExperimentStatus, step: int) -> float | None:
+    for point in reversed(status.history.acc):
+        if point.i == step:
+            return point.value
+    return None
 
 
 def resolve_device(requested: str) -> torch.device:

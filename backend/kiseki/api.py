@@ -35,6 +35,15 @@ def create_app(manager: ExperimentManager | None = None) -> FastAPI:
     def list_checkpoints() -> list[CheckpointSummary]:
         return experiment_manager.checkpoints()
 
+    @app.delete("/api/checkpoints/{run_id}", status_code=204)
+    def delete_checkpoint(run_id: str) -> None:
+        try:
+            experiment_manager.delete_checkpoint(run_id)
+        except CheckpointNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.post("/api/checkpoints/load", response_model=ExperimentStatus)
     def load_checkpoint(selection: CheckpointSelection) -> ExperimentStatus:
         try:

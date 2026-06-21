@@ -1,6 +1,7 @@
 import json
 import platform
 import random
+import shutil
 import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -14,7 +15,6 @@ from torch import nn
 from .schemas import CheckpointKind, CheckpointSummary, ExperimentConfig, ExperimentStatus
 
 CHECKPOINT_SCHEMA_VERSION = 1
-CHECKPOINT_KINDS: tuple[CheckpointKind, ...] = ("latest", "best")
 
 
 class CheckpointNotFoundError(FileNotFoundError):
@@ -71,7 +71,10 @@ class CheckpointSaver:
     def load_metadata(self, run_id: str, kind: CheckpointKind = "latest") -> dict[str, Any]:
         return json.loads(self.metadata_path(run_id, kind).read_text(encoding="utf-8"))
 
-    def list_summaries(self) -> list[CheckpointSummary]:
+    def list_summaries(
+        self,
+        kinds: tuple[CheckpointKind, ...] = ("latest",),
+    ) -> list[CheckpointSummary]:
         summaries: list[CheckpointSummary] = []
         if not self.directory.exists():
             return summaries
@@ -81,7 +84,7 @@ class CheckpointSaver:
                 continue
 
             run_id = run_directory.name
-            for kind in CHECKPOINT_KINDS:
+            for kind in kinds:
                 pt_path = self.pt_path(run_id, kind)
                 metadata_path = self.metadata_path(run_id, kind)
                 if not pt_path.exists() or not metadata_path.exists():
@@ -98,6 +101,73 @@ class CheckpointSaver:
         return sorted(
             summaries, key=lambda summary: saved_at_sort_key(summary.saved_at), reverse=True
         )
+
+    def has_latest(self, run_id: str) -> bool:
+        return self.latest_pt_path(run_id).exists() and self.latest_metadata_path(run_id).exists()
+
+    def has_best(self, run_id: str) -> bool:
+        return self.best_pt_path(run_id).exists() and self.best_metadata_path(run_id).exists()
+
+    def delete_best(self, run_id: str) -> None:
+        self.best_pt_path(run_id).unlink(missing_ok=True)
+        self.best_metadata_path(run_id).unlink(missing_ok=True)
+
+    def promote_latest_to_best(self, run_id: str) -> bool:
+        if not self.has_latest(run_id):
+            return False
+
+        payload = self.load_latest(run_id, map_location="cpu")
+        metadata = self.load_latest_metadata(run_id)
+        saved_at = str(metadata.get("saved_at") or payload.get("saved_at") or utc_now_iso())
+        step = int(metadata["step"])
+        best_pt_path = self.best_pt_path(run_id)
+        best_metadata_path = self.best_metadata_path(run_id)
+        best_accuracy = metadata.get("last_checkpoint_acc")
+        if best_accuracy is None:
+            best_accuracy = metadata.get("best_checkpoint_acc", metadata.get("best_acc"))
+
+        metadata = {
+            **metadata,
+            "checkpoint": best_pt_path.name,
+            "checkpoint_path": str(best_pt_path),
+            "best_checkpoint_acc": best_accuracy,
+            "best_checkpoint_step": step,
+            "best_checkpoint_saved_at": saved_at,
+            "best_checkpoint_path": str(best_pt_path),
+        }
+
+        status_payload = payload.get("status")
+        if isinstance(status_payload, dict):
+            status = ExperimentStatus.model_validate(status_payload)
+            status.best_checkpoint_acc = best_accuracy
+            status.best_checkpoint_step = step
+            status.best_checkpoint_saved_at = saved_at
+            status.best_checkpoint_path = str(best_pt_path)
+            payload["status"] = status.model_dump()
+
+        payload["metadata"] = metadata
+        best_pt_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(payload, best_pt_path)
+        best_metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+        return True
+
+    def delete_run(self, run_id: str) -> None:
+        run_directory = self._safe_run_directory(run_id)
+        if not run_directory.exists() or not run_directory.is_dir():
+            raise CheckpointNotFoundError(f"Checkpoint run {run_id!r} was not found")
+
+        shutil.rmtree(run_directory)
+
+    def _safe_run_directory(self, run_id: str) -> Path:
+        run_directory = self.run_directory(run_id)
+        base_directory = self.directory.resolve(strict=False)
+        resolved_run_directory = run_directory.resolve(strict=False)
+        if (
+            resolved_run_directory == base_directory
+            or not resolved_run_directory.is_relative_to(base_directory)
+        ):
+            raise CheckpointNotFoundError(f"Checkpoint run {run_id!r} was not found")
+        return run_directory
 
     def _metadata_with_payload_elapsed(
         self,

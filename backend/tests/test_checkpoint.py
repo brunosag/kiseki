@@ -167,3 +167,45 @@ def test_checkpoint_listing_reads_elapsed_from_legacy_payload_metadata(tmp_path)
     summaries = saver.list_summaries()
 
     assert summaries[0].total_elapsed_seconds == 12.5
+
+
+def test_checkpoint_saver_lists_latest_only_and_promotes_latest_to_best(tmp_path) -> None:
+    saver = CheckpointSaver(tmp_path)
+    model = CNN2C2DMNIST()
+    config = ExperimentConfig(device="cpu", optimizer="SGD")
+    first_saved_at = "2026-06-20T00:00:00+00:00"
+    status = ExperimentStatus(
+        run_id="run-1",
+        optimizer="SGD",
+        current_step=2,
+        best_acc=10.0,
+        last_checkpoint_step=2,
+        last_checkpoint_acc=10.0,
+        last_checkpoint_saved_at=first_saved_at,
+        checkpoint_path=str(saver.latest_pt_path("run-1")),
+        best_checkpoint_acc=10.0,
+        best_checkpoint_step=2,
+        best_checkpoint_saved_at=first_saved_at,
+        best_checkpoint_path=str(saver.latest_pt_path("run-1")),
+    )
+
+    saver.save(
+        model=model,
+        status=status,
+        config=config,
+        optimizer="SGD",
+        run_id="run-1",
+        saved_at=first_saved_at,
+    )
+
+    assert saver.promote_latest_to_best("run-1") is True
+    best_metadata = saver.load_best_metadata("run-1")
+    assert best_metadata["checkpoint"] == "best.pt"
+    assert best_metadata["checkpoint_path"] == str(tmp_path / "run-1" / "best.pt")
+    assert best_metadata["best_checkpoint_acc"] == 10.0
+    assert best_metadata["best_checkpoint_step"] == 2
+    assert best_metadata["best_checkpoint_saved_at"] == first_saved_at
+
+    summaries = saver.list_summaries()
+
+    assert [(summary.run_id, summary.kind) for summary in summaries] == [("run-1", "latest")]

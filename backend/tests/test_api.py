@@ -94,7 +94,7 @@ def save_api_checkpoint(
     )
 
 
-def test_api_lists_complete_checkpoints_sorted_newest_first(tmp_path) -> None:
+def test_api_lists_only_complete_latest_checkpoints_sorted_newest_first(tmp_path) -> None:
     saver = CheckpointSaver(tmp_path)
     save_api_checkpoint(
         saver,
@@ -110,7 +110,7 @@ def test_api_lists_complete_checkpoints_sorted_newest_first(tmp_path) -> None:
     )
     save_api_checkpoint(
         saver,
-        run_id="best-run",
+        run_id="hidden-best-run",
         saved_at="2026-06-20T12:01:00+00:00",
         step=3,
         kind="best",
@@ -131,7 +131,6 @@ def test_api_lists_complete_checkpoints_sorted_newest_first(tmp_path) -> None:
     checkpoints = response.json()
     assert [(item["run_id"], item["kind"]) for item in checkpoints] == [
         ("new-run", "latest"),
-        ("best-run", "best"),
         ("old-run", "latest"),
     ]
     assert checkpoints[0]["saved_at"] == "2026-06-20T12:02:00+00:00"
@@ -147,6 +146,83 @@ def test_api_lists_complete_checkpoints_sorted_newest_first(tmp_path) -> None:
     assert checkpoints[0]["reproducibility_status"].startswith("best-effort")
     assert checkpoints[0]["config"]["iterations"] == 6
     assert checkpoints[0]["optimizer_params"] == {"SGD": {ETA: 0.02}}
+
+
+def test_api_delete_checkpoint_run_removes_latest_and_hidden_best(tmp_path) -> None:
+    saver = CheckpointSaver(tmp_path)
+    save_api_checkpoint(
+        saver,
+        run_id="delete-run",
+        saved_at="2026-06-20T12:00:00+00:00",
+        step=2,
+    )
+    save_api_checkpoint(
+        saver,
+        run_id="delete-run",
+        saved_at="2026-06-20T12:01:00+00:00",
+        step=3,
+        kind="best",
+    )
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=saver,
+    )
+    client = TestClient(create_app(manager))
+
+    response = client.delete("/api/checkpoints/delete-run")
+
+    assert response.status_code == 204
+    assert not (tmp_path / "delete-run").exists()
+    assert client.get("/api/checkpoints").json() == []
+
+
+def test_api_delete_checkpoint_run_rejects_missing_running_and_paused_current(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    def build_slow_runner(optimizer_name, model, raw_params, *, device, seed, **kwargs):
+        assert optimizer_name == "SGD"
+        return SlowSGDRunner(model, SGDConfig(eta=float(raw_params.get(ETA, 0.01))))
+
+    saver = CheckpointSaver(tmp_path)
+    save_api_checkpoint(
+        saver,
+        run_id="delete-run",
+        saved_at="2026-06-20T12:00:00+00:00",
+        step=2,
+    )
+    monkeypatch.setattr(experiment, "build_optimizer_runner", build_slow_runner)
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=saver,
+    )
+    client = TestClient(create_app(manager))
+
+    assert client.delete("/api/checkpoints/missing-run").status_code == 404
+
+    payload = {
+        "config": {
+            "dataset": "mnist",
+            "device": "cpu",
+            "seed": 11,
+            "batch_size": 4,
+            "iterations": 100,
+            "target_acc": 100.0,
+            "optimizer": "SGD",
+            "checkpoint_interval": 0,
+        },
+        "opt_params": {"SGD": {ETA: 0.01}},
+    }
+    assert client.post("/api/experiments/start", json=payload).status_code == 200
+    running = wait_for_status(client, lambda status: status["current_step"] >= 1)
+
+    assert client.delete("/api/checkpoints/delete-run").status_code == 409
+
+    assert client.post("/api/experiments/pause").status_code == 200
+    paused = wait_for_status(client, lambda status: status["is_paused"])
+    assert paused["run_id"] == running["run_id"]
+    assert client.delete(f"/api/checkpoints/{paused['run_id']}").status_code == 409
+    assert client.post("/api/experiments/stop").status_code == 200
 
 
 def test_api_start_from_checkpoint_uses_saved_payload(tmp_path) -> None:
@@ -525,16 +601,15 @@ def test_api_best_checkpoint_updates_only_on_strict_checkpoint_accuracy_improvem
     assert status["last_checkpoint_acc"] == 12.0
     assert status["best_checkpoint_step"] == 8
     assert status["best_checkpoint_acc"] == 12.0
-    assert status["best_checkpoint_path"] == str(tmp_path / run_id / "best.pt")
+    assert status["best_checkpoint_path"] == str(tmp_path / run_id / "latest.pt")
 
     latest_metadata = (tmp_path / run_id / "latest.json").read_text(encoding="utf-8")
-    best_metadata = (tmp_path / run_id / "best.json").read_text(encoding="utf-8")
     assert '"checkpoint": "latest.pt"' in latest_metadata
     assert '"step": 8' in latest_metadata
     assert '"last_checkpoint_acc": 12.0' in latest_metadata
-    assert '"checkpoint": "best.pt"' in best_metadata
-    assert '"step": 8' in best_metadata
-    assert '"best_checkpoint_acc": 12.0' in best_metadata
+    assert '"best_checkpoint_path": "' in latest_metadata
+    assert not (tmp_path / run_id / "best.pt").exists()
+    assert not (tmp_path / run_id / "best.json").exists()
 
 
 def test_api_best_checkpoint_ignores_regressions_and_ties(tmp_path, monkeypatch) -> None:
@@ -573,6 +648,7 @@ def test_api_best_checkpoint_ignores_regressions_and_ties(tmp_path, monkeypatch)
     assert status["last_checkpoint_acc"] == 10.0
     assert status["best_checkpoint_step"] == 2
     assert status["best_checkpoint_acc"] == 10.0
+    assert status["best_checkpoint_path"] == str(tmp_path / run_id / "best.pt")
 
     latest_metadata = (tmp_path / run_id / "latest.json").read_text(encoding="utf-8")
     best_metadata = (tmp_path / run_id / "best.json").read_text(encoding="utf-8")
@@ -670,6 +746,57 @@ def test_api_pause_resume_and_stop_clears_paused_state(tmp_path, monkeypatch) ->
     stopped = stop_response.json()
     assert stopped["is_paused"] is False
     assert stopped["is_running"] is False
+
+
+def test_api_pause_evaluates_checkpoint_accuracy_before_saving(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    def build_slow_runner(optimizer_name, model, raw_params, *, device, seed, **kwargs):
+        assert optimizer_name == "SGD"
+        return SlowSGDRunner(model, SGDConfig(eta=float(raw_params.get(ETA, 0.01))))
+
+    def evaluate_fixed(model, loader, device) -> float:
+        return 17.5
+
+    monkeypatch.setattr(experiment, "build_optimizer_runner", build_slow_runner)
+    monkeypatch.setattr(experiment, "evaluate", evaluate_fixed)
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=CheckpointSaver(tmp_path),
+    )
+    client = TestClient(create_app(manager))
+    payload = {
+        "config": {
+            "dataset": "mnist",
+            "device": "cpu",
+            "seed": 11,
+            "batch_size": 4,
+            "iterations": 100,
+            "target_acc": 100.0,
+            "optimizer": "SGD",
+            "checkpoint_interval": 0,
+        },
+        "opt_params": {"SGD": {ETA: 0.01}},
+    }
+
+    assert client.post("/api/experiments/start", json=payload).status_code == 200
+    wait_for_status(client, lambda status: status["current_step"] >= 1)
+    assert client.post("/api/experiments/pause").status_code == 200
+    paused = wait_for_status(client, lambda status: status["is_paused"])
+    run_id = paused["run_id"]
+
+    assert paused["last_checkpoint_step"] == paused["current_step"]
+    assert paused["last_checkpoint_acc"] == 17.5
+    assert paused["best_checkpoint_acc"] == 17.5
+    assert paused["best_checkpoint_step"] == paused["current_step"]
+    assert paused["checkpoint_path"] == str(tmp_path / run_id / "latest.pt")
+    assert paused["best_checkpoint_path"] == str(tmp_path / run_id / "latest.pt")
+    assert not (tmp_path / run_id / "best.pt").exists()
+
+    metadata = manager.checkpoint_saver.load_latest_metadata(run_id)
+    assert metadata["last_checkpoint_acc"] == 17.5
+    assert metadata["best_checkpoint_acc"] == 17.5
 
 
 def test_api_reports_leea_mutation_step(tmp_path) -> None:

@@ -2,6 +2,9 @@ import { useEffect, useMemo, useState } from "react"
 import ReactPlotly from "react-plotly.js"
 import katex from "katex"
 import {
+  ArrowDown,
+  ArrowUpDown,
+  Funnel,
   FolderOpen,
   Moon,
   Pause,
@@ -9,14 +12,24 @@ import {
   Plus,
   RotateCcw,
   Sun,
+  Trash2,
 } from "lucide-react"
-import type { ChangeEvent, ComponentType } from "react"
+import type { ChangeEvent, ComponentType, KeyboardEvent } from "react"
 import type { PlotParams } from "react-plotly.js"
 import type { Data, Layout } from "plotly.js"
 
 import "katex/dist/katex.min.css"
 
-import { Badge } from "@/components/ui/badge"
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -29,6 +42,13 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog"
+import {
+  Empty,
+  EmptyDescription,
+  EmptyHeader,
+  EmptyMedia,
+  EmptyTitle,
+} from "@/components/ui/empty"
 import { Input } from "@/components/ui/input"
 import {
   InputGroup,
@@ -36,6 +56,7 @@ import {
   InputGroupInput,
 } from "@/components/ui/input-group"
 import { Label } from "@/components/ui/label"
+import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Select,
   SelectContent,
@@ -43,10 +64,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select"
+import { Skeleton } from "@/components/ui/skeleton"
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip"
 import { useTheme } from "@/components/theme-provider"
 import {
   apiUrl,
   configDefaults,
+  deleteCheckpointRun,
   defaultStatus,
   fallbackSchema,
   fetchCheckpoints,
@@ -62,6 +90,7 @@ import {
   type ExperimentStatus,
   type OptimizerParams,
   type SchemaResponse,
+  type SelectOption,
 } from "@/lib/api"
 import { cn } from "@/lib/utils"
 
@@ -116,6 +145,10 @@ const MUTATION_STEP_TICK_DECIMALS = 2
 const MUTATION_STEP_PLOT_DOMAIN_END = 0.925
 
 type ResolvedTheme = "dark" | "light"
+type CheckpointSortKey = "saved_at" | "accuracy" | "step" | "elapsed"
+type SortDirection = "asc" | "desc"
+type CheckpointOptimizerFilter = ExperimentConfig["optimizer"] | "all"
+type CheckpointDatasetFilter = ExperimentConfig["dataset"] | "all"
 
 type PlotPalette = {
   accuracy: string
@@ -157,6 +190,8 @@ const fallbackPlotPalettes: Record<ResolvedTheme, PlotPalette> = {
     text: "#e5e5e5",
   },
 }
+
+const LONG_CHECKPOINT_DELETE_SECONDS = 600
 
 export function App() {
   const { theme } = useTheme()
@@ -610,6 +645,7 @@ export function App() {
           <CheckpointPicker
             currentSelection={currentCheckpointSelection}
             disabled={isRunning}
+            pausedRunId={isPaused ? status.run_id : null}
             schema={schema}
             onLoad={loadCheckpoint}
           />
@@ -783,6 +819,7 @@ export function App() {
 type CheckpointPickerProps = {
   currentSelection: CheckpointSelection | null
   disabled: boolean
+  pausedRunId: string | null | undefined
   schema: SchemaResponse
   onLoad: (checkpoint: CheckpointSummary) => Promise<void>
 }
@@ -790,6 +827,7 @@ type CheckpointPickerProps = {
 function CheckpointPicker({
   currentSelection,
   disabled,
+  pausedRunId,
   schema,
   onLoad,
 }: CheckpointPickerProps) {
@@ -799,6 +837,15 @@ function CheckpointPicker({
     useState<CheckpointSelection | null>(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [sortKey, setSortKey] = useState<CheckpointSortKey>("saved_at")
+  const [sortDirection, setSortDirection] = useState<SortDirection>("desc")
+  const [optimizerFilter, setOptimizerFilter] =
+    useState<CheckpointOptimizerFilter>("all")
+  const [datasetFilter, setDatasetFilter] =
+    useState<CheckpointDatasetFilter>("all")
+  const [deletingRunId, setDeletingRunId] = useState<string | null>(null)
+  const [confirmingCheckpoint, setConfirmingCheckpoint] =
+    useState<CheckpointSummary | null>(null)
 
   useEffect(() => {
     if (!open) {
@@ -834,8 +881,38 @@ function CheckpointPicker({
     }
   }, [open])
 
+  const optimizerOptions = useMemo(
+    () =>
+      checkpointOptimizerOptions(
+        checkpoints,
+        schema.config_schema.optimizer.options
+      ),
+    [checkpoints, schema.config_schema.optimizer.options]
+  )
+  const datasetOptions = useMemo(
+    () =>
+      checkpointDatasetOptions(
+        checkpoints,
+        schema.config_schema.dataset.options
+      ),
+    [checkpoints, schema.config_schema.dataset.options]
+  )
+  const visibleCheckpoints = useMemo(
+    () =>
+      sortCheckpoints(
+        checkpoints.filter(
+          (checkpoint) =>
+            (optimizerFilter === "all" ||
+              checkpoint.optimizer === optimizerFilter) &&
+            (datasetFilter === "all" || checkpoint.dataset === datasetFilter)
+        ),
+        sortKey,
+        sortDirection
+      ),
+    [checkpoints, datasetFilter, optimizerFilter, sortDirection, sortKey]
+  )
   const pendingCheckpoint = pendingSelection
-    ? (checkpoints.find((checkpoint) =>
+    ? (visibleCheckpoints.find((checkpoint) =>
         sameCheckpoint(checkpoint, pendingSelection)
       ) ?? null)
     : null
@@ -866,6 +943,64 @@ function CheckpointPicker({
     }
   }
 
+  async function deleteCheckpoint(checkpoint: CheckpointSummary) {
+    if (checkpoint.run_id === pausedRunId) {
+      setError("Stop or resume the paused experiment before deleting it")
+      return
+    }
+
+    setDeletingRunId(checkpoint.run_id)
+    setError(null)
+    try {
+      await deleteCheckpointRun(checkpoint.run_id)
+      setCheckpoints((current) =>
+        current.filter((item) => item.run_id !== checkpoint.run_id)
+      )
+      setPendingSelection((current) =>
+        current?.run_id === checkpoint.run_id ? null : current
+      )
+      setConfirmingCheckpoint(null)
+    } catch {
+      setError("Failed to delete checkpoint")
+    } finally {
+      setDeletingRunId(null)
+    }
+  }
+
+  function requestDeleteCheckpoint(checkpoint: CheckpointSummary) {
+    if (checkpoint.run_id === pausedRunId) {
+      setError("Stop or resume the paused experiment before deleting it")
+      return
+    }
+
+    if (
+      (checkpoint.total_elapsed_seconds ?? 0) > LONG_CHECKPOINT_DELETE_SECONDS
+    ) {
+      setConfirmingCheckpoint(checkpoint)
+      return
+    }
+
+    void deleteCheckpoint(checkpoint)
+  }
+
+  function toggleSortDirection() {
+    setSortDirection((current) => (current === "desc" ? "asc" : "desc"))
+  }
+
+  function handleCheckpointRowKeyDown(
+    event: KeyboardEvent<HTMLDivElement>,
+    checkpoint: CheckpointSummary
+  ) {
+    if (event.target !== event.currentTarget) {
+      return
+    }
+
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault()
+      togglePendingSelection(checkpoint)
+    }
+  }
+
   function handleOpenChange(nextOpen: boolean) {
     if (nextOpen) {
       setPendingSelection(currentSelection)
@@ -876,142 +1011,391 @@ function CheckpointPicker({
     setOpen(nextOpen)
   }
 
-  return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogTrigger asChild>
-        <Button
-          className="max-w-[18rem] justify-start"
-          disabled={disabled}
-          variant="outline"
-        >
-          <FolderOpen className="size-4" />
-          <span className="truncate">{buttonLabel}</span>
-        </Button>
-      </DialogTrigger>
-      <DialogContent className="sm:max-w-2xl">
-        <DialogHeader>
-          <DialogTitle>Checkpoints</DialogTitle>
-          <DialogDescription className="sr-only">
-            Select a checkpoint to load into the paused experiment view.
-          </DialogDescription>
-        </DialogHeader>
+  const hasCheckpoints = checkpoints.length > 0
+  const hasVisibleCheckpoints = visibleCheckpoints.length > 0
+  const deleteConfirmationName = confirmingCheckpoint
+    ? checkpointDisplayName(confirmingCheckpoint)
+    : "this checkpoint"
 
-        <div className="max-h-[min(60vh,32rem)] overflow-y-auto pr-1">
-          {isLoading ? (
-            <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-              Loading checkpoints
+  return (
+    <>
+      <Dialog open={open} onOpenChange={handleOpenChange}>
+        <DialogTrigger asChild>
+          <Button
+            className="max-w-[18rem] justify-start"
+            disabled={disabled}
+            variant="outline"
+          >
+            <FolderOpen className="size-4" />
+            <span className="truncate">{buttonLabel}</span>
+          </Button>
+        </DialogTrigger>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Checkpoints</DialogTitle>
+            <DialogDescription className="sr-only">
+              Select a checkpoint to load into the paused experiment view.
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+            <div className="flex min-w-0 items-center gap-1.5">
+              <ArrowUpDown
+                aria-hidden="true"
+                className="size-4 text-muted-foreground"
+              />
+              <Select
+                value={sortKey}
+                onValueChange={(value) =>
+                  setSortKey(value as CheckpointSortKey)
+                }
+              >
+                <SelectTrigger
+                  aria-label="Sort checkpoints by"
+                  className="h-8 w-32"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent
+                  align="start"
+                  className="w-(--radix-select-trigger-width) min-w-(--radix-select-trigger-width)"
+                  position="popper"
+                >
+                  <SelectItem value="saved_at">Saved date</SelectItem>
+                  <SelectItem value="accuracy">Accuracy</SelectItem>
+                  <SelectItem value="step">Step</SelectItem>
+                  <SelectItem value="elapsed">Elapsed time</SelectItem>
+                </SelectContent>
+              </Select>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    aria-label={`Sort ${sortDirection === "desc" ? "descending" : "ascending"}`}
+                    className="size-8 bg-background"
+                    size="icon"
+                    type="button"
+                    variant="outline"
+                    onClick={toggleSortDirection}
+                  >
+                    <ArrowDown
+                      className={cn(
+                        "size-4 transition-transform",
+                        sortDirection === "asc" ? "rotate-180" : "rotate-0"
+                      )}
+                    />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {sortDirection === "desc" ? "Descending" : "Ascending"}
+                </TooltipContent>
+              </Tooltip>
             </div>
-          ) : null}
+            <div className="flex min-w-0 items-center gap-1.5">
+              <Funnel
+                aria-hidden="true"
+                className="size-4 text-muted-foreground"
+              />
+              <Select
+                value={optimizerFilter}
+                onValueChange={(value) =>
+                  setOptimizerFilter(value as CheckpointOptimizerFilter)
+                }
+              >
+                <SelectTrigger
+                  aria-label="Filter checkpoints by optimizer"
+                  className="h-8 w-32"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent
+                  align="start"
+                  className="w-(--radix-select-trigger-width) min-w-(--radix-select-trigger-width)"
+                  position="popper"
+                >
+                  <SelectItem value="all">All optimizers</SelectItem>
+                  {optimizerOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select
+                value={datasetFilter}
+                onValueChange={(value) =>
+                  setDatasetFilter(value as CheckpointDatasetFilter)
+                }
+              >
+                <SelectTrigger
+                  aria-label="Filter checkpoints by dataset"
+                  className="h-8 w-32"
+                >
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent
+                  align="start"
+                  className="w-(--radix-select-trigger-width) min-w-(--radix-select-trigger-width)"
+                  position="popper"
+                >
+                  <SelectItem value="all">All datasets</SelectItem>
+                  {datasetOptions.map((option) => (
+                    <SelectItem key={option.value} value={option.value}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
           {error ? (
             <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
               {error}
             </div>
           ) : null}
-          {!isLoading && !error && checkpoints.length === 0 ? (
-            <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-              No checkpoints found
-            </div>
-          ) : null}
-          {!isLoading && !error && checkpoints.length > 0 ? (
-            <div className="grid gap-2">
-              {checkpoints.map((checkpoint) => {
-                const selected = sameCheckpoint(checkpoint, pendingSelection)
-                const optimizerParams = optimizerParamEntries(
-                  checkpoint,
-                  schema
-                )
 
-                return (
-                  <button
-                    aria-label={`Select ${checkpoint.kind} checkpoint for ${checkpoint.optimizer} ${checkpoint.dataset}, seed ${checkpoint.seed}, step ${checkpoint.step}`}
-                    aria-pressed={selected}
-                    className={cn(
-                      "rounded-lg border p-4 text-left transition-colors hover:bg-muted/60 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
-                      selected
-                        ? "border-primary bg-primary/5"
-                        : "border-border bg-background"
-                    )}
-                    key={`${checkpoint.run_id}-${checkpoint.kind}`}
-                    type="button"
-                    onClick={() => togglePendingSelection(checkpoint)}
-                  >
-                    <div className="flex items-start justify-between gap-4">
-                      <div className="min-w-0">
-                        <div className="flex min-w-0 items-center gap-2">
-                          <span className="truncate font-medium">
-                            {checkpoint.optimizer} ·{" "}
-                            {formatDatasetName(checkpoint.dataset)}
-                          </span>
+          <ScrollArea className="h-[min(60vh,32rem)] pr-3">
+            {isLoading ? <CheckpointListSkeleton /> : null}
+            {!isLoading && !error && !hasCheckpoints ? (
+              <CheckpointEmpty
+                title="No checkpoints"
+                description="Completed latest checkpoints will appear here."
+              />
+            ) : null}
+            {!isLoading &&
+            !error &&
+            hasCheckpoints &&
+            !hasVisibleCheckpoints ? (
+              <CheckpointEmpty
+                title="No matching checkpoints"
+                description="Change the optimizer or dataset filter."
+              />
+            ) : null}
+            {!isLoading && !error && hasVisibleCheckpoints ? (
+              <div className="grid gap-2">
+                {visibleCheckpoints.map((checkpoint) => {
+                  const selected = sameCheckpoint(checkpoint, pendingSelection)
+                  const optimizerParams = optimizerParamEntries(
+                    checkpoint,
+                    schema
+                  )
+                  const deleteBlocked = checkpoint.run_id === pausedRunId
+                  const isDeleting = deletingRunId === checkpoint.run_id
+
+                  return (
+                    <div
+                      aria-label={`Select checkpoint for ${checkpoint.optimizer} ${checkpoint.dataset}, seed ${checkpoint.seed}, step ${checkpoint.step}`}
+                      aria-pressed={selected}
+                      className={cn(
+                        "cursor-pointer rounded-lg border p-4 text-left transition-colors hover:bg-muted/60 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
+                        selected
+                          ? "border-primary bg-primary/5"
+                          : "border-border bg-background"
+                      )}
+                      key={`${checkpoint.run_id}-${checkpoint.kind}`}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => togglePendingSelection(checkpoint)}
+                      onKeyDown={(event) =>
+                        handleCheckpointRowKeyDown(event, checkpoint)
+                      }
+                    >
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="min-w-0">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <span className="truncate font-medium">
+                              {checkpoint.optimizer} ·{" "}
+                              {formatDatasetName(checkpoint.dataset)}
+                            </span>
+                          </div>
+                          <p className="text-xs text-muted-foreground/80">
+                            Seed {checkpoint.seed} · Batch size{" "}
+                            {formatInteger(checkpoint.config.batch_size)}
+                          </p>
                         </div>
-                        <p className="text-xs text-muted-foreground/80">
-                          Seed {checkpoint.seed} · Batch size{" "}
-                          {formatInteger(checkpoint.config.batch_size)}
-                        </p>
-                      </div>
-                      <div className="flex shrink-0 items-center gap-2">
-                        <span className="text-sm text-muted-foreground/80">
-                          {formatCheckpointDate(checkpoint.saved_at)}
-                        </span>
-                        <Badge
-                          className="tracking-tight text-foreground/70 uppercase"
-                          variant="outline"
-                        >
-                          {checkpoint.kind}
-                        </Badge>
-                      </div>
-                    </div>
-
-                    <div className="mt-4 flex flex-wrap items-start gap-x-16 gap-y-3">
-                      <CheckpointMetric
-                        label="Accuracy"
-                        value={formatOptionalPercent(checkpoint.accuracy)}
-                      />
-                      <CheckpointMetric
-                        label="Step"
-                        value={formatInteger(checkpoint.step)}
-                      />
-                      <CheckpointMetric
-                        label="Elapsed"
-                        value={formatOptionalDuration(
-                          checkpoint.total_elapsed_seconds
-                        )}
-                      />
-                    </div>
-
-                    {optimizerParams.length > 0 ? (
-                      <div className="mt-5 flex flex-wrap gap-x-8 gap-y-2 text-sm">
-                        {optimizerParams.map(([key, label, value]) => (
-                          <span
-                            className="inline-flex min-w-0 items-baseline gap-1.5"
-                            key={key}
-                          >
-                            <span className="shrink-0 text-muted-foreground">
-                              <MathLabel math={label} />
-                            </span>
-                            <span className="truncate text-foreground/90">
-                              {formatParamValue(value)}
-                            </span>
+                        <div className="flex shrink-0 items-center gap-1">
+                          <span className="text-sm text-muted-foreground/80">
+                            {formatCheckpointDate(checkpoint.saved_at)}
                           </span>
-                        ))}
+                          <CheckpointDeleteButton
+                            blocked={deleteBlocked}
+                            deleting={isDeleting}
+                            onDelete={() => requestDeleteCheckpoint(checkpoint)}
+                          />
+                        </div>
                       </div>
-                    ) : null}
-                  </button>
-                )
-              })}
-            </div>
-          ) : null}
-        </div>
 
-        <DialogFooter>
-          <Button variant="outline" onClick={() => setOpen(false)}>
-            Cancel
+                      <div className="mt-4 flex flex-wrap items-start gap-x-12 gap-y-3">
+                        <CheckpointMetric
+                          label="Accuracy"
+                          value={formatOptionalPercent(checkpoint.accuracy)}
+                        />
+                        <CheckpointMetric
+                          label="Step"
+                          value={formatInteger(checkpoint.step)}
+                        />
+                        <CheckpointMetric
+                          label="Elapsed"
+                          value={formatOptionalDuration(
+                            checkpoint.total_elapsed_seconds
+                          )}
+                        />
+                      </div>
+
+                      {optimizerParams.length > 0 ? (
+                        <div className="mt-5 flex flex-wrap gap-x-7 gap-y-2 text-sm">
+                          {optimizerParams.map(([key, label, value]) => (
+                            <span
+                              className="inline-flex min-w-0 items-baseline gap-1.5"
+                              key={key}
+                            >
+                              <span className="shrink-0 text-muted-foreground">
+                                <MathLabel math={label} />
+                              </span>
+                              <span className="truncate text-foreground/90">
+                                {formatParamValue(value)}
+                              </span>
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  )
+                })}
+              </div>
+            ) : null}
+          </ScrollArea>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpen(false)}>
+              Cancel
+            </Button>
+            <Button disabled={!canLoad} onClick={loadPendingCheckpoint}>
+              Load
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <AlertDialog
+        open={confirmingCheckpoint !== null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) {
+            setConfirmingCheckpoint(null)
+          }
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Delete checkpoint?</AlertDialogTitle>
+            <AlertDialogDescription className="text-wrap">
+              Delete {deleteConfirmationName}, including any hidden best
+              checkpoint for this run.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={
+                confirmingCheckpoint !== null &&
+                deletingRunId === confirmingCheckpoint.run_id
+              }
+              variant="destructive"
+              onClick={() => {
+                if (confirmingCheckpoint) {
+                  void deleteCheckpoint(confirmingCheckpoint)
+                }
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </>
+  )
+}
+
+function CheckpointListSkeleton() {
+  return (
+    <div className="grid gap-2">
+      {Array.from({ length: 4 }).map((_, index) => (
+        <div className="rounded-lg border p-4" key={index}>
+          <div className="flex items-start justify-between gap-4">
+            <div className="grid flex-1 gap-2">
+              <Skeleton className="h-5 w-44" />
+              <Skeleton className="h-4 w-36" />
+            </div>
+            <Skeleton className="h-4 w-20" />
+          </div>
+          <div className="mt-4 flex gap-12">
+            <Skeleton className="h-10 w-24" />
+            <Skeleton className="h-10 w-20" />
+            <Skeleton className="h-10 w-24" />
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function CheckpointEmpty({
+  title,
+  description,
+}: {
+  title: string
+  description: string
+}) {
+  return (
+    <Empty className="min-h-64 border">
+      <EmptyHeader>
+        <EmptyMedia variant="icon">
+          <FolderOpen className="size-4" />
+        </EmptyMedia>
+        <EmptyTitle>{title}</EmptyTitle>
+        <EmptyDescription>{description}</EmptyDescription>
+      </EmptyHeader>
+    </Empty>
+  )
+}
+
+function CheckpointDeleteButton({
+  blocked,
+  deleting,
+  onDelete,
+}: {
+  blocked: boolean
+  deleting: boolean
+  onDelete: () => void
+}) {
+  const label = blocked
+    ? "Current paused checkpoint cannot be deleted"
+    : "Delete checkpoint"
+
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <span
+          className="inline-flex"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <Button
+            aria-label={label}
+            disabled={blocked || deleting}
+            size="icon-sm"
+            type="button"
+            variant="ghost"
+            onClick={(event) => {
+              event.stopPropagation()
+              onDelete()
+            }}
+          >
+            <Trash2 className="size-4" />
           </Button>
-          <Button disabled={!canLoad} onClick={loadPendingCheckpoint}>
-            Load
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </span>
+      </TooltipTrigger>
+      <TooltipContent>{label}</TooltipContent>
+    </Tooltip>
   )
 }
 
@@ -1166,6 +1550,106 @@ function sameCheckpoint(
   }
 
   return left.run_id === right.run_id && left.kind === right.kind
+}
+
+function checkpointOptimizerOptions(
+  checkpoints: CheckpointSummary[],
+  schemaOptions: SelectOption[] | null | undefined
+): SelectOption[] {
+  return checkpointFilterOptions(
+    checkpoints.map((checkpoint) => checkpoint.optimizer),
+    schemaOptions
+  )
+}
+
+function checkpointDatasetOptions(
+  checkpoints: CheckpointSummary[],
+  schemaOptions: SelectOption[] | null | undefined
+): SelectOption[] {
+  return checkpointFilterOptions(
+    checkpoints.map((checkpoint) => checkpoint.dataset),
+    schemaOptions
+  )
+}
+
+function checkpointFilterOptions(
+  values: string[],
+  schemaOptions: SelectOption[] | null | undefined
+): SelectOption[] {
+  const availableValues = new Set(values)
+  const options = (schemaOptions ?? []).filter((option) =>
+    availableValues.has(option.value)
+  )
+  const optionValues = new Set(options.map((option) => option.value))
+  const extraOptions = [...availableValues]
+    .filter((value) => !optionValues.has(value))
+    .sort((left, right) => left.localeCompare(right))
+    .map((value) => ({ value, label: value }))
+
+  return [...options, ...extraOptions]
+}
+
+function sortCheckpoints(
+  checkpoints: CheckpointSummary[],
+  sortKey: CheckpointSortKey,
+  direction: SortDirection
+): CheckpointSummary[] {
+  return [...checkpoints].sort((left, right) =>
+    compareCheckpoints(left, right, sortKey, direction)
+  )
+}
+
+function compareCheckpoints(
+  left: CheckpointSummary,
+  right: CheckpointSummary,
+  sortKey: CheckpointSortKey,
+  direction: SortDirection
+): number {
+  const leftValue = checkpointSortValue(left, sortKey)
+  const rightValue = checkpointSortValue(right, sortKey)
+  const leftMissing = leftValue === null
+  const rightMissing = rightValue === null
+
+  if (leftMissing || rightMissing) {
+    if (leftMissing && rightMissing) {
+      return left.run_id.localeCompare(right.run_id)
+    }
+    return leftMissing ? 1 : -1
+  }
+
+  const comparison =
+    direction === "asc" ? leftValue - rightValue : rightValue - leftValue
+  return comparison || left.run_id.localeCompare(right.run_id)
+}
+
+function checkpointSortValue(
+  checkpoint: CheckpointSummary,
+  sortKey: CheckpointSortKey
+): number | null {
+  if (sortKey === "saved_at") {
+    const timestamp = new Date(checkpoint.saved_at).getTime()
+    return Number.isFinite(timestamp) ? timestamp : null
+  }
+
+  if (sortKey === "accuracy") {
+    return finiteNumberOrNull(checkpoint.accuracy)
+  }
+
+  if (sortKey === "elapsed") {
+    return finiteNumberOrNull(checkpoint.total_elapsed_seconds)
+  }
+
+  return finiteNumberOrNull(checkpoint.step)
+}
+
+function finiteNumberOrNull(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null
+}
+
+function checkpointDisplayName(checkpoint: CheckpointSummary): string {
+  const accuracy = formatOptionalPercent(checkpoint.accuracy)
+  const elapsed = formatOptionalDuration(checkpoint.total_elapsed_seconds)
+  return `${checkpoint.optimizer} ${formatDatasetName(checkpoint.dataset)} checkpoint (${accuracy}, ${elapsed})`
 }
 
 function mergeOptimizerParams(
