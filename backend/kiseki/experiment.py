@@ -27,6 +27,9 @@ from .models import CNN2C2DMNIST
 from .optimizers import build_optimizer_runner
 from .schemas import (
     AccuracyPoint,
+    CheckpointKind,
+    CheckpointSelection,
+    CheckpointSummary,
     ExperimentConfig,
     ExperimentStatus,
     MutationStepPoint,
@@ -59,13 +62,70 @@ class ExperimentManager:
         self.subscribers: set[Queue[tuple[str, ExperimentStatus]]] = set()
         self.worker: threading.Thread | None = None
         self._status = ExperimentStatus()
+        self._resume_checkpoint_kind: CheckpointKind = "latest"
 
     def status(self) -> ExperimentStatus:
         with self.lock:
             return self._status.model_copy(deep=True)
 
+    def checkpoints(self) -> list[CheckpointSummary]:
+        return self.checkpoint_saver.list_summaries()
+
+    def load_checkpoint(self, selection: CheckpointSelection) -> ExperimentStatus:
+        with self.lock:
+            if self._status.is_running:
+                raise RuntimeError("An experiment is already running")
+
+        checkpoint = self.checkpoint_saver.load(
+            selection.run_id,
+            selection.kind,
+            map_location="cpu",
+        )
+        config = ExperimentConfig.model_validate(checkpoint["config"])
+        saved_status = ExperimentStatus.model_validate(checkpoint["status"])
+
+        with self.lock:
+            if self._status.is_running:
+                raise RuntimeError("An experiment is already running")
+
+            restored = saved_status.model_copy(deep=True)
+            restored.is_running = False
+            restored.is_paused = True
+            restored.pause_requested = False
+            restored.error = None
+            restored.run_id = selection.run_id
+            restored.optimizer = config.optimizer
+            restored.requested_device = config.device
+            self._status = restored
+            self._resume_checkpoint_kind = selection.kind
+            status = self._status.model_copy(deep=True)
+        self._publish("paused", status)
+        return status
+
     def start(self, request: StartExperimentRequest) -> ExperimentStatus:
+        with self.lock:
+            if self._status.is_running:
+                raise RuntimeError("An experiment is already running")
+            if self._status.is_paused:
+                raise RuntimeError("Resume or stop the paused experiment before starting a new one")
+
+        checkpoint = None
         run_id = build_run_id(request.config)
+        effective_request = request
+        if request.checkpoint is not None:
+            run_id = request.checkpoint.run_id
+            checkpoint = self.checkpoint_saver.load(
+                request.checkpoint.run_id,
+                request.checkpoint.kind,
+                map_location="cpu",
+            )
+            config = ExperimentConfig.model_validate(checkpoint["config"])
+            effective_request = StartExperimentRequest(
+                config=config,
+                opt_params=checkpoint.get("optimizer_params", {}),
+                checkpoint=request.checkpoint,
+            )
+
         with self.lock:
             if self._status.is_running:
                 raise RuntimeError("An experiment is already running")
@@ -74,16 +134,17 @@ class ExperimentManager:
 
             self.stop_event.clear()
             self.pause_event.clear()
+            self._resume_checkpoint_kind = "latest"
             self._status = ExperimentStatus(
                 is_running=True,
-                optimizer=request.config.optimizer,
-                requested_device=request.config.device,
+                optimizer=effective_request.config.optimizer,
+                requested_device=effective_request.config.device,
                 run_id=run_id,
-                reproducibility_mode=reproducibility_mode(request.config.deterministic),
+                reproducibility_mode=reproducibility_mode(effective_request.config.deterministic),
             )
             self.worker = threading.Thread(
                 target=self._run,
-                args=(request, run_id, None),
+                args=(effective_request, run_id, checkpoint),
                 daemon=True,
             )
             self.worker.start()
@@ -111,16 +172,35 @@ class ExperimentManager:
                 raise RuntimeError("No paused experiment can be resumed")
 
             run_id = self._status.run_id
+            checkpoint_kind = self._resume_checkpoint_kind
             self.stop_event.clear()
             self.pause_event.clear()
             self._status.is_running = True
             self._status.is_paused = False
             self._status.pause_requested = False
             self._status.error = None
-            self.worker = threading.Thread(target=self._resume_run, args=(run_id,), daemon=True)
+            self.worker = threading.Thread(
+                target=self._resume_run,
+                args=(run_id, checkpoint_kind),
+                daemon=True,
+            )
             self.worker.start()
             status = self._status.model_copy(deep=True)
         self._publish("resumed", status)
+        return status
+
+    def reset(self) -> ExperimentStatus:
+        with self.lock:
+            if self._status.is_running:
+                raise RuntimeError("Pause the running experiment before starting a new experiment")
+
+            self.pause_event.clear()
+            self.stop_event.clear()
+            self._resume_checkpoint_kind = "latest"
+            self._status = ExperimentStatus()
+            status = self._status.model_copy(deep=True)
+
+        self._publish("stopped", status)
         return status
 
     def stop(self) -> ExperimentStatus:
@@ -132,6 +212,7 @@ class ExperimentManager:
                 self._status.is_running = False
                 self._status.is_paused = False
                 self._status.pause_requested = False
+                self._resume_checkpoint_kind = "latest"
                 status = self._status.model_copy(deep=True)
                 publish_stopped = True
             elif self._status.is_running:
@@ -164,9 +245,9 @@ class ExperimentManager:
             with self.lock:
                 self.subscribers.discard(queue)
 
-    def _resume_run(self, run_id: str) -> None:
+    def _resume_run(self, run_id: str, kind: CheckpointKind = "latest") -> None:
         try:
-            checkpoint = self.checkpoint_saver.load_latest(run_id, map_location="cpu")
+            checkpoint = self.checkpoint_saver.load(run_id, kind, map_location="cpu")
             config = ExperimentConfig.model_validate(checkpoint["config"])
             request = StartExperimentRequest(
                 config=config,
@@ -191,7 +272,9 @@ class ExperimentManager:
         try:
             config = request.config
             seed_everything(config.seed, numeric_mode="strict" if config.deterministic else "fast")
-            device, resume_warnings = resolve_run_device(config.device, allow_cpu_fallback=checkpoint is not None)
+            device, resume_warnings = resolve_run_device(
+                config.device, allow_cpu_fallback=checkpoint is not None
+            )
             current_manifest = build_runtime_manifest(device)
             compatibility_warnings = list(resume_warnings)
             if checkpoint is not None:
@@ -530,6 +613,7 @@ class ExperimentManager:
             self._status.is_paused = True
             self._status.pause_requested = False
             self._status.error = None
+            self._resume_checkpoint_kind = "latest"
             if elapsed_seconds is not None:
                 self._status.total_elapsed_seconds = max(elapsed_seconds, 0.0)
             return self._status.model_copy(deep=True)
@@ -545,6 +629,7 @@ class ExperimentManager:
             self._status.is_paused = False
             self._status.pause_requested = False
             self._status.error = error
+            self._resume_checkpoint_kind = "latest"
             if elapsed_seconds is not None:
                 self._status.total_elapsed_seconds = max(elapsed_seconds, 0.0)
             return self._status.model_copy(deep=True)

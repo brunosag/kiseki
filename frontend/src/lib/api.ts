@@ -37,6 +37,34 @@ export type ExperimentConfig = {
   optimizer: "LEEA" | "SGD"
 }
 
+export type CheckpointKind = "latest" | "best"
+
+export type CheckpointSelection = {
+  run_id: string
+  kind: CheckpointKind
+}
+
+export type CheckpointSummary = CheckpointSelection & {
+  saved_at: string
+  step: number
+  optimizer: "LEEA" | "SGD"
+  dataset: "mnist"
+  seed: number
+  requested_device?: string | null
+  device: string
+  device_name?: string | null
+  deterministic: boolean
+  accuracy?: number | null
+  best_acc?: number | null
+  current_loss?: number | null
+  total_elapsed_seconds?: number | null
+  reproducibility_mode: string
+  reproducibility_status: string
+  compatibility_warnings: string[]
+  config: ExperimentConfig
+  optimizer_params: OptimizerParams
+}
+
 export type AccuracyPoint = {
   i: number
   value: number
@@ -263,14 +291,19 @@ export function configDefaults(schema: SchemaResponse): ExperimentConfig {
     iterations: numberDefault(schema.config_schema.iterations, 100000),
     target_acc: numberDefault(schema.config_schema.target_acc, 100.0),
     deterministic: booleanDefault(schema.config_schema.deterministic, false),
-    checkpoint_interval: numberDefault(schema.config_schema.checkpoint_interval, 50),
+    checkpoint_interval: numberDefault(
+      schema.config_schema.checkpoint_interval,
+      50
+    ),
     optimizer: selectDefault(schema.config_schema.optimizer, "LEEA") as
       | "LEEA"
       | "SGD",
   }
 }
 
-export function optimizerParamDefaults(schema: SchemaResponse): OptimizerParams {
+export function optimizerParamDefaults(
+  schema: SchemaResponse
+): OptimizerParams {
   return Object.fromEntries(
     Object.entries(schema.optimizers_schema).map(([optimizer, fields]) => [
       optimizer,
@@ -303,6 +336,38 @@ export async function fetchSchema(): Promise<SchemaResponse> {
   const response = await fetch(apiUrl("/api/schema"))
   if (!response.ok) {
     throw new Error("Failed to load schema")
+  }
+  return response.json()
+}
+
+export async function fetchCheckpoints(): Promise<CheckpointSummary[]> {
+  const response = await fetch(apiUrl("/api/checkpoints"))
+  if (!response.ok) {
+    throw new Error("Failed to load checkpoints")
+  }
+  return response.json()
+}
+
+export async function loadCheckpointStatus(
+  selection: CheckpointSelection
+): Promise<ExperimentStatus> {
+  const response = await fetch(apiUrl("/api/checkpoints/load"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(selection),
+  })
+  if (!response.ok) {
+    throw new Error("Failed to load checkpoint")
+  }
+  return response.json()
+}
+
+export async function resetExperimentStatus(): Promise<ExperimentStatus> {
+  const response = await fetch(apiUrl("/api/experiments/reset"), {
+    method: "POST",
+  })
+  if (!response.ok) {
+    throw new Error("Failed to start a new experiment")
   }
   return response.json()
 }

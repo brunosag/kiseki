@@ -1,7 +1,16 @@
 import { useEffect, useMemo, useState } from "react"
 import ReactPlotly from "react-plotly.js"
 import katex from "katex"
-import { Moon, Pause, Play, RotateCcw, Square, Sun } from "lucide-react"
+import {
+  Check,
+  FolderOpen,
+  Moon,
+  Pause,
+  Play,
+  Plus,
+  RotateCcw,
+  Sun,
+} from "lucide-react"
 import type { ComponentType } from "react"
 import type { PlotParams } from "react-plotly.js"
 import type { Data, Layout } from "plotly.js"
@@ -9,13 +18,17 @@ import type { Data, Layout } from "plotly.js"
 import "katex/dist/katex.min.css"
 
 import { Button } from "@/components/ui/button"
-import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card"
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Separator } from "@/components/ui/separator"
@@ -32,9 +45,14 @@ import {
   configDefaults,
   defaultStatus,
   fallbackSchema,
+  fetchCheckpoints,
   fetchSchema,
   fetchStatus,
+  loadCheckpointStatus,
+  type CheckpointSelection,
+  type CheckpointSummary,
   optimizerParamDefaults,
+  resetExperimentStatus,
   type ConfigField,
   type ExperimentConfig,
   type ExperimentStatus,
@@ -145,6 +163,8 @@ export function App() {
     readStoredOptimizerParams(fallbackSchema)
   )
   const [status, setStatus] = useState<ExperimentStatus>(defaultStatus)
+  const [loadedCheckpoint, setLoadedCheckpoint] =
+    useState<CheckpointSummary | null>(null)
 
   useEffect(() => {
     let ignore = false
@@ -173,12 +193,20 @@ export function App() {
   }, [])
 
   useEffect(() => {
+    if (loadedCheckpoint) {
+      return
+    }
+
     writeStorage(CONFIG_STORAGE_KEY, config)
-  }, [config])
+  }, [config, loadedCheckpoint])
 
   useEffect(() => {
+    if (loadedCheckpoint) {
+      return
+    }
+
     writeStorage(OPT_PARAMS_STORAGE_KEY, optParams)
-  }, [optParams])
+  }, [loadedCheckpoint, optParams])
 
   useEffect(() => {
     const source = new EventSource(apiUrl("/api/experiments/events"))
@@ -203,7 +231,27 @@ export function App() {
 
   const isRunning = status.is_running
   const isPaused = status.is_paused
-  const controlsDisabled = isRunning || isPaused
+  const isRunActive = isRunning || isPaused
+  const controlsDisabled = isRunActive
+  const currentCheckpointSelection = useMemo(
+    () =>
+      selectionFromCheckpoint(loadedCheckpoint) ?? selectionFromStatus(status),
+    [
+      loadedCheckpoint,
+      status.best_checkpoint_path,
+      status.best_checkpoint_saved_at,
+      status.best_checkpoint_step,
+      status.checkpoint_path,
+      status.last_checkpoint_saved_at,
+      status.last_checkpoint_step,
+      status.run_id,
+    ]
+  )
+  const showNewExperiment =
+    currentCheckpointSelection !== null ||
+    Boolean(status.run_id) ||
+    status.current_step > 0 ||
+    isRunActive
   const activeOptimizerSchema = schema.optimizers_schema[config.optimizer] ?? []
   const mutationStepHistory = useMemo(
     () => status.history.mutation_step ?? [],
@@ -285,8 +333,7 @@ export function App() {
         bordercolor: plotPalette.hoverBorder,
         font: { color: plotPalette.hoverText, size: 12 },
       },
-      hovertemplate:
-        "<b>Accuracy</b><br>Step %{x}<br>%{y:.2f}%<extra></extra>",
+      hovertemplate: "<b>Accuracy</b><br>Step %{x}<br>%{y:.2f}%<extra></extra>",
       yaxis: "y2",
       line: { color: plotPalette.accuracy, width: 1.5 },
       marker: { color: plotPalette.accuracy, size: 5 },
@@ -462,21 +509,13 @@ export function App() {
     }
   }
 
-  async function stopExperiment() {
-    const response = await fetch(apiUrl("/api/experiments/stop"), {
-      method: "POST",
-    })
-    if (response.ok) {
-      setStatus(await response.json())
-    }
-  }
-
   async function pauseExperiment() {
     const response = await fetch(apiUrl("/api/experiments/pause"), {
       method: "POST",
     })
     if (response.ok) {
       setStatus(await response.json())
+      setLoadedCheckpoint(null)
     }
   }
 
@@ -486,6 +525,7 @@ export function App() {
     })
     if (response.ok) {
       setStatus(await response.json())
+      setLoadedCheckpoint(null)
     }
   }
 
@@ -506,101 +546,128 @@ export function App() {
     }))
   }
 
+  async function loadCheckpoint(checkpoint: CheckpointSummary) {
+    const nextStatus = await loadCheckpointStatus({
+      run_id: checkpoint.run_id,
+      kind: checkpoint.kind,
+    })
+    setLoadedCheckpoint(checkpoint)
+    setConfig(checkpoint.config)
+    setOptParams(mergeOptimizerParams(schema, checkpoint.optimizer_params))
+    setStatus(nextStatus)
+  }
+
+  async function newExperiment() {
+    const nextStatus = await resetExperimentStatus()
+    setLoadedCheckpoint(null)
+    setConfig(readStoredConfig(schema))
+    setOptParams(readStoredOptimizerParams(schema))
+    setStatus(nextStatus)
+  }
+
   return (
     <div className="p-6">
-      <div className="mb-4 flex justify-end">
+      <div className="mb-4 flex items-center justify-between gap-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <CheckpointPicker
+            currentSelection={currentCheckpointSelection}
+            disabled={isRunning}
+            onLoad={loadCheckpoint}
+          />
+          {showNewExperiment ? (
+            <Button
+              disabled={isRunning}
+              variant="secondary"
+              onClick={newExperiment}
+            >
+              <Plus className="size-4" />
+              New experiment
+            </Button>
+          ) : null}
+        </div>
         <ThemeToggle resolvedTheme={resolvedTheme} />
       </div>
       <div className="flex flex-col gap-6 md:flex-row">
-        <Card className="w-full max-w-3xl md:max-w-md">
-          <CardHeader>
-            <CardTitle className="text-xl">Configuration</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <Separator />
-            <div className="mt-4 flex flex-col gap-2">
-              {configOrder.map((key) => {
-                const field = schema.config_schema[key]
-                return (
-                  <ConfigControl
-                    key={key}
-                    fieldKey={key}
-                    field={field}
-                    value={config[key]}
-                    disabled={controlsDisabled}
-                    onChange={(value) => updateConfig(key, value)}
-                  />
-                )
-              })}
-            </div>
-
-            <div className="mt-6 rounded-lg border p-4">
-              <h4 className="mb-4 pb-1">
-                {config.optimizer} parameters
-              </h4>
+        <div className="flex w-full max-w-3xl flex-col gap-3 md:max-w-md">
+          <Card className="w-full">
+            <CardHeader>
+              <CardTitle className="text-xl">Configuration</CardTitle>
+            </CardHeader>
+            <CardContent>
               <Separator />
-              <div className="mt-4 grid grid-cols-[max-content_auto_1fr] items-center gap-x-3 gap-y-2">
-                {activeOptimizerSchema.map((param) => (
-                  <div className="contents" key={param.key}>
-                    <span className="text-lg">
-                      <MathLabel math={param.label} />
-                    </span>
-                    <Input
-                      className="h-8 w-24"
-                      type={param.type}
-                      step={param.step}
+              <div className="mt-4 flex flex-col gap-2">
+                {configOrder.map((key) => {
+                  const field = schema.config_schema[key]
+                  return (
+                    <ConfigControl
+                      key={key}
+                      fieldKey={key}
+                      field={field}
+                      value={config[key]}
                       disabled={controlsDisabled}
-                      value={optParams[config.optimizer]?.[param.key] ?? ""}
-                      onChange={(event) =>
-                        updateOptimizerParam(
-                          param.key,
-                          Number(event.currentTarget.value)
-                        )
-                      }
+                      onChange={(value) => updateConfig(key, value)}
                     />
-                    <Label className="text-sm font-normal text-muted-foreground">
-                      {param.desc}
-                    </Label>
-                  </div>
-                ))}
+                  )
+                })}
               </div>
-            </div>
 
-            <div
-              className="mt-6 grid grid-cols-1 gap-2 data-[active=true]:grid-cols-2"
-              data-active={isRunning || isPaused}
-            >
-              {!isRunning && !isPaused ? (
-                <Button onClick={startExperiment}>
-                  <Play className="size-4" />
-                  Start
-                </Button>
-              ) : null}
-              {isRunning ? (
-                <Button
-                  disabled={status.pause_requested}
-                  variant="secondary"
-                  onClick={pauseExperiment}
-                >
-                  <Pause className="size-4" />
-                  Pause
-                </Button>
-              ) : null}
-              {isPaused ? (
-                <Button onClick={resumeExperiment}>
-                  <RotateCcw className="size-4" />
-                  Resume
-                </Button>
-              ) : null}
-              {isRunning || isPaused ? (
-                <Button variant="destructive" onClick={stopExperiment}>
-                  <Square className="size-4" />
-                  Stop
-                </Button>
-              ) : null}
-            </div>
-          </CardContent>
-        </Card>
+              <div className="mt-6 rounded-lg border p-4">
+                <h4 className="mb-4 pb-1">{config.optimizer} parameters</h4>
+                <Separator />
+                <div className="mt-4 grid grid-cols-[max-content_auto_1fr] items-center gap-x-3 gap-y-2">
+                  {activeOptimizerSchema.map((param) => (
+                    <div className="contents" key={param.key}>
+                      <span className="text-lg">
+                        <MathLabel math={param.label} />
+                      </span>
+                      <Input
+                        className="h-8 w-24"
+                        type={param.type}
+                        step={param.step}
+                        disabled={controlsDisabled}
+                        value={optParams[config.optimizer]?.[param.key] ?? ""}
+                        onChange={(event) =>
+                          updateOptimizerParam(
+                            param.key,
+                            Number(event.currentTarget.value)
+                          )
+                        }
+                      />
+                      <Label className="text-sm font-normal text-muted-foreground">
+                        {param.desc}
+                      </Label>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="mt-6 grid grid-cols-1 gap-2">
+                {!isRunning && !isPaused ? (
+                  <Button onClick={startExperiment}>
+                    <Play className="size-4" />
+                    Start
+                  </Button>
+                ) : null}
+                {isRunning ? (
+                  <Button
+                    disabled={status.pause_requested}
+                    variant="secondary"
+                    onClick={pauseExperiment}
+                  >
+                    <Pause className="size-4" />
+                    Pause
+                  </Button>
+                ) : null}
+                {isPaused ? (
+                  <Button onClick={resumeExperiment}>
+                    <RotateCcw className="size-4" />
+                    Resume
+                  </Button>
+                ) : null}
+              </div>
+            </CardContent>
+          </Card>
+        </div>
 
         <Card className="h-fit w-full">
           <CardHeader>
@@ -668,6 +735,220 @@ export function App() {
   )
 }
 
+type CheckpointPickerProps = {
+  currentSelection: CheckpointSelection | null
+  disabled: boolean
+  onLoad: (checkpoint: CheckpointSummary) => Promise<void>
+}
+
+function CheckpointPicker({
+  currentSelection,
+  disabled,
+  onLoad,
+}: CheckpointPickerProps) {
+  const [open, setOpen] = useState(false)
+  const [checkpoints, setCheckpoints] = useState<CheckpointSummary[]>([])
+  const [pendingSelection, setPendingSelection] =
+    useState<CheckpointSelection | null>(null)
+  const [isLoading, setIsLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  useEffect(() => {
+    if (!open) {
+      return
+    }
+
+    let ignore = false
+    setPendingSelection(currentSelection)
+    setIsLoading(true)
+    setError(null)
+
+    fetchCheckpoints()
+      .then((nextCheckpoints) => {
+        if (ignore) {
+          return
+        }
+
+        setCheckpoints(nextCheckpoints)
+      })
+      .catch(() => {
+        if (ignore) {
+          return
+        }
+
+        setError("Failed to load checkpoints")
+        setCheckpoints([])
+      })
+      .finally(() => {
+        if (!ignore) {
+          setIsLoading(false)
+        }
+      })
+
+    return () => {
+      ignore = true
+    }
+  }, [currentSelection, open])
+
+  const pendingCheckpoint = pendingSelection
+    ? (checkpoints.find((checkpoint) =>
+        sameCheckpoint(checkpoint, pendingSelection)
+      ) ?? null)
+    : null
+  const canLoad =
+    pendingCheckpoint !== null &&
+    !sameCheckpoint(pendingCheckpoint, currentSelection)
+  const buttonLabel = currentSelection?.run_id ?? "Load checkpoint"
+
+  function togglePendingSelection(checkpoint: CheckpointSummary) {
+    setPendingSelection((current) =>
+      sameCheckpoint(current, checkpoint)
+        ? null
+        : selectionFromCheckpoint(checkpoint)
+    )
+  }
+
+  async function loadPendingCheckpoint() {
+    if (!pendingCheckpoint) {
+      return
+    }
+
+    setError(null)
+    try {
+      await onLoad(pendingCheckpoint)
+      setOpen(false)
+    } catch {
+      setError("Failed to load checkpoint")
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button
+          className="max-w-[18rem] justify-start"
+          disabled={disabled}
+          variant="outline"
+        >
+          <FolderOpen className="size-4" />
+          <span className="truncate">{buttonLabel}</span>
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Checkpoints</DialogTitle>
+          <DialogDescription className="sr-only">
+            Select a checkpoint to load into the paused experiment view.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="max-h-[min(60vh,32rem)] overflow-y-auto pr-1">
+          {isLoading ? (
+            <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+              Loading checkpoints
+            </div>
+          ) : null}
+          {error ? (
+            <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
+              {error}
+            </div>
+          ) : null}
+          {!isLoading && !error && checkpoints.length === 0 ? (
+            <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+              No checkpoints found
+            </div>
+          ) : null}
+          {!isLoading && !error && checkpoints.length > 0 ? (
+            <div className="grid gap-2">
+              {checkpoints.map((checkpoint) => {
+                const selected = sameCheckpoint(checkpoint, pendingSelection)
+
+                return (
+                  <button
+                    aria-pressed={selected}
+                    className={cn(
+                      "rounded-lg border p-4 text-left transition-colors hover:bg-muted/60 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
+                      selected
+                        ? "border-primary bg-primary/5"
+                        : "border-border bg-popover"
+                    )}
+                    key={`${checkpoint.run_id}-${checkpoint.kind}`}
+                    type="button"
+                    onClick={() => togglePendingSelection(checkpoint)}
+                  >
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <div className="flex min-w-0 items-center gap-2">
+                          <span className="truncate font-medium">
+                            {checkpoint.run_id}
+                          </span>
+                          <span className="shrink-0 rounded-md border px-2 py-0.5 text-xs tracking-normal text-muted-foreground uppercase">
+                            {checkpoint.kind}
+                          </span>
+                        </div>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          {checkpoint.optimizer} on{" "}
+                          {formatCheckpointDevice(checkpoint.device)}
+                        </p>
+                      </div>
+                      {selected ? (
+                        <Check className="mt-1 size-4 text-primary" />
+                      ) : null}
+                    </div>
+
+                    <div className="mt-3 flex flex-wrap justify-between gap-x-6 gap-y-3 text-sm">
+                      <CheckpointFact
+                        label="Step"
+                        value={checkpoint.step.toString()}
+                      />
+                      <CheckpointFact
+                        label="Accuracy"
+                        value={formatOptionalPercent(checkpoint.accuracy)}
+                      />
+                      <CheckpointFact
+                        label="Elapsed"
+                        value={formatOptionalDuration(
+                          checkpoint.total_elapsed_seconds
+                        )}
+                      />
+                      <CheckpointFact
+                        label="Seed"
+                        value={checkpoint.seed.toString()}
+                      />
+                      <CheckpointFact
+                        label="Saved"
+                        value={formatCheckpointDate(checkpoint.saved_at)}
+                      />
+                    </div>
+                  </button>
+                )
+              })}
+            </div>
+          ) : null}
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)}>
+            Cancel
+          </Button>
+          <Button disabled={!canLoad} onClick={loadPendingCheckpoint}>
+            Load
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function CheckpointFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="truncate">{value}</div>
+    </div>
+  )
+}
+
 function ThemeToggle({ resolvedTheme }: { resolvedTheme: ResolvedTheme }) {
   const { setTheme } = useTheme()
   const nextTheme = resolvedTheme === "dark" ? "light" : "dark"
@@ -719,6 +1000,106 @@ function readResolvedTheme(): ResolvedTheme {
   return document.documentElement.classList.contains("dark") ? "dark" : "light"
 }
 
+function selectionFromCheckpoint(
+  checkpoint: CheckpointSummary | null
+): CheckpointSelection | null {
+  if (!checkpoint) {
+    return null
+  }
+
+  return { run_id: checkpoint.run_id, kind: checkpoint.kind }
+}
+
+function selectionFromStatus(
+  status: ExperimentStatus
+): CheckpointSelection | null {
+  if (!status.run_id) {
+    return null
+  }
+
+  if (
+    status.checkpoint_path ||
+    status.last_checkpoint_saved_at ||
+    status.last_checkpoint_step != null
+  ) {
+    return { run_id: status.run_id, kind: "latest" }
+  }
+
+  if (
+    status.best_checkpoint_path ||
+    status.best_checkpoint_saved_at ||
+    status.best_checkpoint_step != null
+  ) {
+    return { run_id: status.run_id, kind: "best" }
+  }
+
+  return null
+}
+
+function sameCheckpoint(
+  left: CheckpointSelection | null,
+  right: CheckpointSelection | null
+): boolean {
+  if (!left || !right) {
+    return left === right
+  }
+
+  return left.run_id === right.run_id && left.kind === right.kind
+}
+
+function mergeOptimizerParams(
+  schema: SchemaResponse,
+  checkpointParams: OptimizerParams
+): OptimizerParams {
+  const defaults = optimizerParamDefaults(schema)
+
+  return Object.fromEntries(
+    Object.entries(defaults).map(([optimizer, params]) => [
+      optimizer,
+      {
+        ...params,
+        ...(checkpointParams[optimizer] ?? {}),
+      },
+    ])
+  )
+}
+
+function formatOptionalPercent(value: number | null | undefined): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return "n/a"
+  }
+
+  return `${value.toFixed(2)}%`
+}
+
+function formatOptionalDuration(seconds: number | null | undefined): string {
+  if (typeof seconds !== "number" || !Number.isFinite(seconds)) {
+    return "n/a"
+  }
+
+  return formatDuration(seconds)
+}
+
+function formatCheckpointDate(savedAt: string): string {
+  const date = new Date(savedAt)
+  if (Number.isNaN(date.getTime())) {
+    return savedAt
+  }
+
+  return date.toLocaleString(undefined, {
+    dateStyle: "medium",
+    hour12: false,
+    timeStyle: "short",
+  })
+}
+
+function formatCheckpointDevice(device: string): "GPU" | "CPU" {
+  const normalizedDevice = device.toLowerCase()
+  return normalizedDevice === "cuda" || normalizedDevice === "gpu"
+    ? "GPU"
+    : "CPU"
+}
+
 function traceMode(pointCount: number): "lines" | "lines+markers" {
   return pointCount > 0 && pointCount <= MARKER_POINT_LIMIT
     ? "lines+markers"
@@ -750,7 +1131,8 @@ function mutationStepAxisUpperBoundFor(
   selectedInitialValue: number | null | undefined
 ): number {
   const selectedValue =
-    typeof selectedInitialValue === "number" && Number.isFinite(selectedInitialValue)
+    typeof selectedInitialValue === "number" &&
+    Number.isFinite(selectedInitialValue)
       ? selectedInitialValue
       : undefined
   const maxObservedValue = maxFiniteAxisValue(values, currentValue)
@@ -825,7 +1207,10 @@ function axisTickValues(upperBound: number, segments: number): number[] {
   )
 }
 
-function niceTickValues(upperBound: number, preferredSegments: number): number[] {
+function niceTickValues(
+  upperBound: number,
+  preferredSegments: number
+): number[] {
   const safeUpperBound =
     Number.isFinite(upperBound) && upperBound > 0 ? upperBound : 1
   const rawStep = safeUpperBound / preferredSegments
@@ -1176,9 +1561,7 @@ function formatDuration(seconds: number): string {
   }
 
   const minutes = Math.floor(totalSeconds / 60)
-  const remainingSeconds = (totalSeconds % 60)
-    .toString()
-    .padStart(2, "0")
+  const remainingSeconds = (totalSeconds % 60).toString().padStart(2, "0")
   return `${minutes}m ${remainingSeconds}s`
 }
 

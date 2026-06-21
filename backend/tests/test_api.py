@@ -16,6 +16,7 @@ from kiseki.experiment import (
     resolve_device,
     seed_everything,
 )
+from kiseki.models import CNN2C2DMNIST
 from kiseki.schemas import ETA, ETA_0, ExperimentConfig, ExperimentStatus
 from kiseki.optimizers import SGDConfig, SGDRunner
 
@@ -45,6 +46,302 @@ def wait_for_status(client: TestClient, predicate, timeout: float = 5.0) -> dict
         time.sleep(0.05)
         status = client.get("/api/experiments/status").json()
     return status
+
+
+def save_api_checkpoint(
+    saver: CheckpointSaver,
+    *,
+    run_id: str,
+    saved_at: str,
+    step: int,
+    kind: str = "latest",
+    iterations: int = 6,
+    accuracy: float | None = 12.0,
+) -> None:
+    config = ExperimentConfig(
+        device="cpu",
+        seed=19,
+        batch_size=4,
+        iterations=iterations,
+        target_acc=100.0,
+        optimizer="SGD",
+    )
+    status = ExperimentStatus(
+        run_id=run_id,
+        optimizer="SGD",
+        current_step=step,
+        current_loss=0.75,
+        total_elapsed_seconds=123.4,
+        best_acc=accuracy or 0.0,
+        last_checkpoint_step=step,
+        last_checkpoint_acc=accuracy,
+        last_checkpoint_saved_at=saved_at,
+        checkpoint_path=str(saver.latest_pt_path(run_id)),
+        best_checkpoint_acc=accuracy if kind == "best" else None,
+        best_checkpoint_step=step if kind == "best" else None,
+        best_checkpoint_saved_at=saved_at if kind == "best" else None,
+        best_checkpoint_path=str(saver.best_pt_path(run_id)) if kind == "best" else None,
+    )
+    saver.save(
+        model=CNN2C2DMNIST(),
+        status=status,
+        config=config,
+        optimizer="SGD",
+        run_id=run_id,
+        optimizer_params={"SGD": {ETA: 0.02}},
+        saved_at=saved_at,
+        kind=kind,
+    )
+
+
+def test_api_lists_complete_checkpoints_sorted_newest_first(tmp_path) -> None:
+    saver = CheckpointSaver(tmp_path)
+    save_api_checkpoint(
+        saver,
+        run_id="old-run",
+        saved_at="2026-06-20T12:00:00+00:00",
+        step=2,
+    )
+    save_api_checkpoint(
+        saver,
+        run_id="new-run",
+        saved_at="2026-06-20T12:02:00+00:00",
+        step=4,
+    )
+    save_api_checkpoint(
+        saver,
+        run_id="best-run",
+        saved_at="2026-06-20T12:01:00+00:00",
+        step=3,
+        kind="best",
+    )
+    incomplete_dir = tmp_path / "incomplete-run"
+    incomplete_dir.mkdir()
+    (incomplete_dir / "latest.json").write_text("{}", encoding="utf-8")
+
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=saver,
+    )
+    client = TestClient(create_app(manager))
+
+    response = client.get("/api/checkpoints")
+
+    assert response.status_code == 200
+    checkpoints = response.json()
+    assert [(item["run_id"], item["kind"]) for item in checkpoints] == [
+        ("new-run", "latest"),
+        ("best-run", "best"),
+        ("old-run", "latest"),
+    ]
+    assert checkpoints[0]["saved_at"] == "2026-06-20T12:02:00+00:00"
+    assert checkpoints[0]["step"] == 4
+    assert checkpoints[0]["optimizer"] == "SGD"
+    assert checkpoints[0]["dataset"] == "mnist"
+    assert checkpoints[0]["seed"] == 19
+    assert checkpoints[0]["device"] == "cpu"
+    assert checkpoints[0]["deterministic"] is False
+    assert checkpoints[0]["accuracy"] == 12.0
+    assert checkpoints[0]["current_loss"] == 0.75
+    assert checkpoints[0]["total_elapsed_seconds"] == 123.4
+    assert checkpoints[0]["reproducibility_status"].startswith("best-effort")
+    assert checkpoints[0]["config"]["iterations"] == 6
+    assert checkpoints[0]["optimizer_params"] == {"SGD": {ETA: 0.02}}
+
+
+def test_api_start_from_checkpoint_uses_saved_payload(tmp_path) -> None:
+    saver = CheckpointSaver(tmp_path)
+    save_api_checkpoint(
+        saver,
+        run_id="resume-run",
+        saved_at="2026-06-20T12:00:00+00:00",
+        step=2,
+        kind="best",
+        iterations=4,
+    )
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=saver,
+    )
+    client = TestClient(create_app(manager))
+
+    response = client.post(
+        "/api/experiments/start",
+        json={
+            "config": {
+                "dataset": "mnist",
+                "device": "cpu",
+                "seed": 999,
+                "batch_size": 4,
+                "iterations": 1,
+                "target_acc": 100.0,
+                "optimizer": "LEEA",
+            },
+            "opt_params": {"LEEA": {"N": 4, ETA_0: 0.2}},
+            "checkpoint": {"run_id": "resume-run", "kind": "best"},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == "resume-run"
+    assert response.json()["optimizer"] == "SGD"
+    status = wait_for_status(client, lambda status: not status["is_running"])
+    assert status["run_id"] == "resume-run"
+    assert status["current_step"] == 4
+    assert status["requested_device"] == "cpu"
+
+
+def test_api_load_checkpoint_sets_paused_status_and_resume_uses_selected_kind(tmp_path) -> None:
+    saver = CheckpointSaver(tmp_path)
+    save_api_checkpoint(
+        saver,
+        run_id="resume-run",
+        saved_at="2026-06-20T12:00:00+00:00",
+        step=2,
+        kind="best",
+        iterations=4,
+    )
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=saver,
+    )
+    client = TestClient(create_app(manager))
+
+    load_response = client.post(
+        "/api/checkpoints/load",
+        json={"run_id": "resume-run", "kind": "best"},
+    )
+
+    assert load_response.status_code == 200
+    loaded = load_response.json()
+    assert loaded["is_running"] is False
+    assert loaded["is_paused"] is True
+    assert loaded["run_id"] == "resume-run"
+    assert loaded["optimizer"] == "SGD"
+    assert loaded["current_step"] == 2
+    assert loaded["total_elapsed_seconds"] == 123.4
+
+    resume_response = client.post("/api/experiments/resume")
+    assert resume_response.status_code == 200
+    status = wait_for_status(client, lambda status: not status["is_running"])
+    assert status["run_id"] == "resume-run"
+    assert status["current_step"] == 4
+
+
+def test_api_reset_clears_loaded_checkpoint_status(tmp_path) -> None:
+    saver = CheckpointSaver(tmp_path)
+    save_api_checkpoint(
+        saver,
+        run_id="loaded-run",
+        saved_at="2026-06-20T12:00:00+00:00",
+        step=2,
+    )
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=saver,
+    )
+    client = TestClient(create_app(manager))
+
+    load_response = client.post(
+        "/api/checkpoints/load",
+        json={"run_id": "loaded-run", "kind": "latest"},
+    )
+    assert load_response.status_code == 200
+    assert load_response.json()["is_paused"] is True
+
+    reset_response = client.post("/api/experiments/reset")
+
+    assert reset_response.status_code == 200
+    reset = reset_response.json()
+    assert reset["is_running"] is False
+    assert reset["is_paused"] is False
+    assert reset["run_id"] is None
+    assert reset["current_step"] == 0
+    assert reset["current_loss"] == 0.0
+    assert reset["best_acc"] == 0.0
+    assert reset["total_elapsed_seconds"] == 0.0
+    assert reset["history"] == {"loss": [], "acc": [], "mutation_step": []}
+    assert reset["checkpoint_path"] is None
+    assert client.get("/api/experiments/status").json() == reset
+
+
+def test_api_start_from_missing_checkpoint_returns_404(tmp_path) -> None:
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=CheckpointSaver(tmp_path),
+    )
+    client = TestClient(create_app(manager))
+
+    response = client.post(
+        "/api/experiments/start",
+        json={"checkpoint": {"run_id": "missing-run", "kind": "latest"}},
+    )
+
+    assert response.status_code == 404
+    assert "missing-run" in response.json()["detail"]
+
+    response = client.post(
+        "/api/checkpoints/load",
+        json={"run_id": "missing-run", "kind": "latest"},
+    )
+
+    assert response.status_code == 404
+    assert "missing-run" in response.json()["detail"]
+
+
+def test_api_checkpoint_start_conflicts_and_load_replaces_paused_state(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    def build_slow_runner(optimizer_name, model, raw_params, *, device, seed, **kwargs):
+        assert optimizer_name == "SGD"
+        return SlowSGDRunner(model, SGDConfig(eta=float(raw_params.get(ETA, 0.01))))
+
+    saver = CheckpointSaver(tmp_path)
+    save_api_checkpoint(
+        saver,
+        run_id="resume-run",
+        saved_at="2026-06-20T12:00:00+00:00",
+        step=2,
+    )
+    monkeypatch.setattr(experiment, "build_optimizer_runner", build_slow_runner)
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=saver,
+    )
+    client = TestClient(create_app(manager))
+    payload = {
+        "config": {
+            "dataset": "mnist",
+            "device": "cpu",
+            "seed": 11,
+            "batch_size": 4,
+            "iterations": 100,
+            "target_acc": 100.0,
+            "optimizer": "SGD",
+            "checkpoint_interval": 0,
+        },
+        "opt_params": {"SGD": {ETA: 0.01}},
+    }
+    checkpoint_payload = {"checkpoint": {"run_id": "resume-run", "kind": "latest"}}
+
+    assert client.post("/api/experiments/start", json=payload).status_code == 200
+    wait_for_status(client, lambda status: status["current_step"] >= 1)
+    assert client.post("/api/experiments/start", json=checkpoint_payload).status_code == 409
+    assert client.post("/api/experiments/reset").status_code == 409
+    assert (
+        client.post("/api/checkpoints/load", json=checkpoint_payload["checkpoint"]).status_code
+        == 409
+    )
+
+    assert client.post("/api/experiments/pause").status_code == 200
+    wait_for_status(client, lambda status: status["is_paused"])
+    assert client.post("/api/experiments/start", json=checkpoint_payload).status_code == 409
+    load_response = client.post("/api/checkpoints/load", json=checkpoint_payload["checkpoint"])
+    assert load_response.status_code == 200
+    assert load_response.json()["is_paused"] is True
+    assert load_response.json()["run_id"] == "resume-run"
+    assert client.post("/api/experiments/stop").status_code == 200
 
 
 def test_api_start_status_stop_flow(tmp_path) -> None:

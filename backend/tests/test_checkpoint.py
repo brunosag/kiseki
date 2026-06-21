@@ -23,6 +23,7 @@ def test_checkpoint_saver_overwrites_run_latest_and_writes_metadata(tmp_path) ->
         optimizer="SGD",
         current_step=1,
         current_loss=2.0,
+        total_elapsed_seconds=4.5,
         best_acc=5.0,
         checkpoint_path=str(saver.latest_pt_path("run-1")),
     )
@@ -64,6 +65,7 @@ def test_checkpoint_saver_overwrites_run_latest_and_writes_metadata(tmp_path) ->
     assert metadata["optimizer_params"] == optimizer_params
     assert metadata["best_acc"] == 5.0
     assert metadata["current_loss"] == 1.5
+    assert metadata["total_elapsed_seconds"] == 4.5
     assert metadata["reproducibility_mode"] == "exact"
 
     payload = saver.load_latest("run-1")
@@ -135,3 +137,33 @@ def test_checkpoint_saver_writes_best_checkpoint_independently(tmp_path) -> None
 
     best_payload = saver.load_best("run-1")
     assert best_payload["status"]["current_step"] == 6
+
+
+def test_checkpoint_listing_reads_elapsed_from_legacy_payload_metadata(tmp_path) -> None:
+    saver = CheckpointSaver(tmp_path)
+    model = CNN2C2DMNIST()
+    config = ExperimentConfig(device="cpu", optimizer="SGD")
+    status = ExperimentStatus(
+        run_id="run-1",
+        optimizer="SGD",
+        current_step=4,
+        current_loss=1.5,
+        total_elapsed_seconds=12.5,
+        checkpoint_path=str(saver.latest_pt_path("run-1")),
+    )
+    saver.save(
+        model=model,
+        status=status,
+        config=config,
+        optimizer="SGD",
+        run_id="run-1",
+        saved_at="2026-06-20T00:00:00+00:00",
+    )
+    metadata_path = saver.latest_metadata_path("run-1")
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata.pop("total_elapsed_seconds")
+    metadata_path.write_text(json.dumps(metadata), encoding="utf-8")
+
+    summaries = saver.list_summaries()
+
+    assert summaries[0].total_elapsed_seconds == 12.5

@@ -5,16 +5,20 @@ import sys
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 import numpy as np
 import torch
 from torch import nn
 
-from .schemas import ExperimentConfig, ExperimentStatus
+from .schemas import CheckpointKind, CheckpointSummary, ExperimentConfig, ExperimentStatus
 
 CHECKPOINT_SCHEMA_VERSION = 1
-CheckpointKind = Literal["latest", "best"]
+CHECKPOINT_KINDS: tuple[CheckpointKind, ...] = ("latest", "best")
+
+
+class CheckpointNotFoundError(FileNotFoundError):
+    pass
 
 
 @dataclass(slots=True)
@@ -45,6 +49,68 @@ class CheckpointSaver:
         if kind == "best":
             return self.best_metadata_path(run_id)
         return self.latest_metadata_path(run_id)
+
+    def load(
+        self,
+        run_id: str,
+        kind: CheckpointKind = "latest",
+        *,
+        map_location: str | torch.device = "cpu",
+    ) -> dict[str, Any]:
+        path = self.pt_path(run_id, kind)
+        if not path.exists():
+            raise CheckpointNotFoundError(
+                f"{kind.title()} checkpoint for run {run_id!r} was not found"
+            )
+
+        try:
+            return torch.load(path, map_location=map_location, weights_only=False)
+        except TypeError:
+            return torch.load(path, map_location=map_location)
+
+    def load_metadata(self, run_id: str, kind: CheckpointKind = "latest") -> dict[str, Any]:
+        return json.loads(self.metadata_path(run_id, kind).read_text(encoding="utf-8"))
+
+    def list_summaries(self) -> list[CheckpointSummary]:
+        summaries: list[CheckpointSummary] = []
+        if not self.directory.exists():
+            return summaries
+
+        for run_directory in self.directory.iterdir():
+            if not run_directory.is_dir():
+                continue
+
+            run_id = run_directory.name
+            for kind in CHECKPOINT_KINDS:
+                pt_path = self.pt_path(run_id, kind)
+                metadata_path = self.metadata_path(run_id, kind)
+                if not pt_path.exists() or not metadata_path.exists():
+                    continue
+
+                try:
+                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                    if "total_elapsed_seconds" not in metadata:
+                        metadata = self._metadata_with_payload_elapsed(metadata, run_id, kind)
+                    summaries.append(checkpoint_summary_from_metadata(metadata, run_id, kind))
+                except Exception:
+                    continue
+
+        return sorted(
+            summaries, key=lambda summary: saved_at_sort_key(summary.saved_at), reverse=True
+        )
+
+    def _metadata_with_payload_elapsed(
+        self,
+        metadata: dict[str, Any],
+        run_id: str,
+        kind: CheckpointKind,
+    ) -> dict[str, Any]:
+        payload = self.load(run_id, kind, map_location="cpu")
+        status = payload.get("status")
+        if not isinstance(status, dict) or "total_elapsed_seconds" not in status:
+            return metadata
+
+        return {**metadata, "total_elapsed_seconds": status["total_elapsed_seconds"]}
 
     def save(
         self,
@@ -105,25 +171,19 @@ class CheckpointSaver:
         metadata_path.write_text(json.dumps(metadata, indent=2), encoding="utf-8")
         return pt_path
 
-    def load_latest(self, run_id: str, *, map_location: str | torch.device = "cpu") -> dict[str, Any]:
-        path = self.latest_pt_path(run_id)
-        try:
-            return torch.load(path, map_location=map_location, weights_only=False)
-        except TypeError:
-            return torch.load(path, map_location=map_location)
+    def load_latest(
+        self, run_id: str, *, map_location: str | torch.device = "cpu"
+    ) -> dict[str, Any]:
+        return self.load(run_id, "latest", map_location=map_location)
 
     def load_latest_metadata(self, run_id: str) -> dict[str, Any]:
-        return json.loads(self.latest_metadata_path(run_id).read_text(encoding="utf-8"))
+        return self.load_metadata(run_id, "latest")
 
     def load_best(self, run_id: str, *, map_location: str | torch.device = "cpu") -> dict[str, Any]:
-        path = self.best_pt_path(run_id)
-        try:
-            return torch.load(path, map_location=map_location, weights_only=False)
-        except TypeError:
-            return torch.load(path, map_location=map_location)
+        return self.load(run_id, "best", map_location=map_location)
 
     def load_best_metadata(self, run_id: str) -> dict[str, Any]:
-        return json.loads(self.best_metadata_path(run_id).read_text(encoding="utf-8"))
+        return self.load_metadata(run_id, "best")
 
 
 def checkpoint_metadata(
@@ -163,10 +223,63 @@ def checkpoint_metadata(
         "best_checkpoint_saved_at": status.best_checkpoint_saved_at,
         "best_checkpoint_path": status.best_checkpoint_path,
         "current_loss": status.current_loss,
+        "total_elapsed_seconds": status.total_elapsed_seconds,
         "reproducibility_mode": reproducibility_mode(config.deterministic, compatibility_warnings),
-        "reproducibility_status": reproducibility_status(config.deterministic, compatibility_warnings),
+        "reproducibility_status": reproducibility_status(
+            config.deterministic, compatibility_warnings
+        ),
         "compatibility_warnings": compatibility_warnings,
     }
+
+
+def checkpoint_summary_from_metadata(
+    metadata: dict[str, Any],
+    run_id: str,
+    kind: CheckpointKind,
+) -> CheckpointSummary:
+    config = ExperimentConfig.model_validate(metadata.get("config"))
+    accuracy = (
+        metadata.get("best_checkpoint_acc")
+        if kind == "best"
+        else metadata.get("last_checkpoint_acc")
+    )
+    if accuracy is None:
+        accuracy = metadata.get("best_acc")
+
+    return CheckpointSummary(
+        run_id=str(metadata.get("run_id") or run_id),
+        kind=kind,
+        saved_at=str(metadata["saved_at"]),
+        step=int(metadata["step"]),
+        optimizer=metadata.get("optimizer") or config.optimizer,
+        dataset=metadata.get("dataset") or config.dataset,
+        seed=int(metadata.get("seed") or config.seed),
+        requested_device=metadata.get("requested_device"),
+        device=str(metadata.get("device") or metadata.get("requested_device") or config.device),
+        device_name=metadata.get("device_name"),
+        deterministic=bool(metadata.get("deterministic", config.deterministic)),
+        accuracy=accuracy,
+        best_acc=metadata.get("best_acc"),
+        current_loss=metadata.get("current_loss"),
+        total_elapsed_seconds=metadata.get("total_elapsed_seconds"),
+        reproducibility_mode=metadata.get("reproducibility_mode", "best_effort"),
+        reproducibility_status=metadata.get(
+            "reproducibility_status",
+            reproducibility_status(
+                config.deterministic, metadata.get("compatibility_warnings", [])
+            ),
+        ),
+        compatibility_warnings=metadata.get("compatibility_warnings", []),
+        config=config,
+        optimizer_params=metadata.get("optimizer_params", {}),
+    )
+
+
+def saved_at_sort_key(saved_at: str) -> datetime:
+    try:
+        return datetime.fromisoformat(saved_at.replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.min.replace(tzinfo=UTC)
 
 
 def capture_rng_state() -> dict[str, Any]:
@@ -212,7 +325,9 @@ def build_runtime_manifest(device: torch.device | None = None) -> dict[str, Any]
     }
     if device is not None:
         manifest["device"] = device.type
-        manifest["device_name"] = torch.cuda.get_device_name(device) if device.type == "cuda" else "cpu"
+        manifest["device_name"] = (
+            torch.cuda.get_device_name(device) if device.type == "cuda" else "cpu"
+        )
     return manifest
 
 

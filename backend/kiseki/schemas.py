@@ -68,9 +68,41 @@ class ExperimentConfig(BaseModel):
         return value
 
 
+CheckpointKind = Literal["latest", "best"]
+
+
+class CheckpointSelection(BaseModel):
+    run_id: str
+    kind: CheckpointKind
+
+
 class StartExperimentRequest(BaseModel):
     config: ExperimentConfig = Field(default_factory=ExperimentConfig)
     opt_params: dict[str, dict[str, float]] = Field(default_factory=dict)
+    checkpoint: CheckpointSelection | None = None
+
+
+class CheckpointSummary(BaseModel):
+    run_id: str
+    kind: CheckpointKind
+    saved_at: str
+    step: int
+    optimizer: Literal["LEEA", "SGD"]
+    dataset: Literal["mnist"]
+    seed: int
+    requested_device: str | None = None
+    device: str
+    device_name: str | None = None
+    deterministic: bool
+    accuracy: float | None = None
+    best_acc: float | None = None
+    current_loss: float | None = None
+    total_elapsed_seconds: float | None = None
+    reproducibility_mode: str = "best_effort"
+    reproducibility_status: str
+    compatibility_warnings: list[str] = Field(default_factory=list)
+    config: ExperimentConfig
+    optimizer_params: dict[str, dict[str, float]] = Field(default_factory=dict)
 
 
 class AccuracyPoint(BaseModel):
