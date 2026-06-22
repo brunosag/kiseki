@@ -562,6 +562,105 @@ def test_api_interval_checkpoint_and_checkpoint_interval_zero(tmp_path) -> None:
     assert not (tmp_path / status["run_id"] / "latest.pt").exists()
 
 
+def test_api_saves_checkpoint_when_best_accuracy_is_surpassed_without_interval(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    def evaluate_fixed(model, loader, device) -> float:
+        return 18.5
+
+    monkeypatch.setattr(experiment, "evaluate", evaluate_fixed)
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=CheckpointSaver(tmp_path),
+    )
+    client = TestClient(create_app(manager))
+
+    payload = {
+        "config": {
+            "dataset": "mnist",
+            "device": "cpu",
+            "seed": 3,
+            "batch_size": 4,
+            "iterations": 10,
+            "target_acc": 100.0,
+            "optimizer": "SGD",
+            "checkpoint_interval": 0,
+        },
+        "opt_params": {"SGD": {ETA: 0.01}},
+    }
+
+    response = client.post("/api/experiments/start", json=payload)
+    assert response.status_code == 200
+    status = wait_for_status(client, lambda status: not status["is_running"])
+    run_id = status["run_id"]
+
+    assert status["best_acc"] == 18.5
+    assert status["last_checkpoint_step"] == 10
+    assert status["last_checkpoint_acc"] == 18.5
+    assert status["best_checkpoint_step"] == 10
+    assert status["best_checkpoint_acc"] == 18.5
+    assert status["best_checkpoint_path"] == str(tmp_path / run_id / "latest.pt")
+    assert (tmp_path / run_id / "latest.pt").exists()
+    assert not (tmp_path / run_id / "best.pt").exists()
+
+
+def test_api_regular_checkpoint_preserves_prior_best_and_reports_best_accuracy(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    validation_accuracies = iter([20.0, 15.0])
+
+    def evaluate_sequence(model, loader, device) -> float:
+        return next(validation_accuracies)
+
+    monkeypatch.setattr(experiment, "evaluate", evaluate_sequence)
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=CheckpointSaver(tmp_path),
+    )
+    client = TestClient(create_app(manager))
+
+    payload = {
+        "config": {
+            "dataset": "mnist",
+            "device": "cpu",
+            "seed": 3,
+            "batch_size": 4,
+            "iterations": 12,
+            "target_acc": 100.0,
+            "optimizer": "SGD",
+            "checkpoint_interval": 12,
+        },
+        "opt_params": {"SGD": {ETA: 0.01}},
+    }
+
+    response = client.post("/api/experiments/start", json=payload)
+    assert response.status_code == 200
+    status = wait_for_status(client, lambda status: not status["is_running"])
+    run_id = status["run_id"]
+
+    assert status["best_acc"] == 20.0
+    assert status["last_checkpoint_step"] == 12
+    assert status["last_checkpoint_acc"] == 15.0
+    assert status["best_checkpoint_step"] == 10
+    assert status["best_checkpoint_acc"] == 20.0
+    assert status["best_checkpoint_path"] == str(tmp_path / run_id / "best.pt")
+
+    latest_metadata = manager.checkpoint_saver.load_latest_metadata(run_id)
+    assert latest_metadata["step"] == 12
+    assert latest_metadata["best_acc"] == 20.0
+    assert latest_metadata["last_checkpoint_acc"] == 15.0
+
+    best_payload = manager.checkpoint_saver.load_best(run_id)
+    assert best_payload["status"]["current_step"] == 10
+
+    checkpoints = client.get("/api/checkpoints").json()
+    assert len(checkpoints) == 1
+    assert checkpoints[0]["run_id"] == run_id
+    assert checkpoints[0]["accuracy"] == status["best_acc"]
+
+
 def test_api_best_checkpoint_updates_only_on_strict_checkpoint_accuracy_improvement(
     tmp_path,
     monkeypatch,

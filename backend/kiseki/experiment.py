@@ -376,13 +376,14 @@ class ExperimentManager:
                 self._publish("step", status)
 
                 checkpoint_accuracy = None
+                best_accuracy_surpassed = False
                 target_reached = False
                 if step % VAL_FREQ == 0:
                     accuracy = evaluate(model, val_loader, device)
-                    is_best = accuracy > status.best_acc
+                    best_accuracy_surpassed = accuracy > status.best_acc
                     update_scheduler = getattr(runner, "update_scheduler", None)
                     if callable(update_scheduler):
-                        update_scheduler(is_best)
+                        update_scheduler(best_accuracy_surpassed)
                     status = self._update_accuracy(
                         step,
                         accuracy,
@@ -394,7 +395,11 @@ class ExperimentManager:
                     if accuracy >= config.target_acc:
                         target_reached = True
 
-                if config.checkpoint_interval > 0 and step % config.checkpoint_interval == 0:
+                checkpoint_interval_passed = (
+                    config.checkpoint_interval > 0
+                    and step % config.checkpoint_interval == 0
+                )
+                if checkpoint_interval_passed or best_accuracy_surpassed:
                     if checkpoint_accuracy is None:
                         checkpoint_accuracy = evaluate(model, val_loader, device)
                         status = self._update_accuracy(

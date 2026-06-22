@@ -308,13 +308,13 @@ def checkpoint_summary_from_metadata(
     kind: CheckpointKind,
 ) -> CheckpointSummary:
     config = ExperimentConfig.model_validate(metadata.get("config"))
-    accuracy = (
-        metadata.get("best_checkpoint_acc")
-        if kind == "best"
-        else metadata.get("last_checkpoint_acc")
-    )
+    accuracy = metadata.get("best_acc")
     if accuracy is None:
-        accuracy = metadata.get("best_acc")
+        accuracy = (
+            metadata.get("best_checkpoint_acc")
+            if kind == "best"
+            else metadata.get("last_checkpoint_acc")
+        )
 
     return CheckpointSummary(
         run_id=str(metadata.get("run_id") or run_id),
