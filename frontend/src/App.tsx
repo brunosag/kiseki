@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react"
+import { forwardRef, useEffect, useMemo, useRef, useState } from "react"
 import ReactPlotly from "react-plotly.js"
 import katex from "katex"
 import {
@@ -6,6 +6,7 @@ import {
   ArrowUpDown,
   Funnel,
   FolderOpen,
+  LoaderCircle,
   Moon,
   Pause,
   Play,
@@ -14,7 +15,13 @@ import {
   Sun,
   Trash2,
 } from "lucide-react"
-import type { ChangeEvent, ComponentType, KeyboardEvent } from "react"
+import type {
+  ChangeEvent,
+  ComponentPropsWithoutRef,
+  ComponentType,
+  KeyboardEvent,
+  ReactElement,
+} from "react"
 import type { PlotParams } from "react-plotly.js"
 import type { Data, Layout } from "plotly.js"
 
@@ -73,6 +80,7 @@ import {
 import { useTheme } from "@/components/theme-provider"
 import {
   apiUrl,
+  computeTsneAnalysis,
   configDefaults,
   deleteCheckpointRun,
   defaultStatus,
@@ -82,6 +90,7 @@ import {
   fetchStatus,
   loadCheckpointStatus,
   type CheckpointSelection,
+  type CheckpointListMode,
   type CheckpointSummary,
   optimizerParamDefaults,
   resetExperimentStatus,
@@ -91,8 +100,17 @@ import {
   type OptimizerParams,
   type SchemaResponse,
   type SelectOption,
+  type TsneAnalysisResponse,
+  type TsneLearningRateMode,
+  type TsneParams,
 } from "@/lib/api"
 import { cn } from "@/lib/utils"
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs"
 
 const Plot = (
   ReactPlotly as unknown as {
@@ -149,6 +167,19 @@ type CheckpointSortKey = "saved_at" | "accuracy" | "step" | "elapsed"
 type SortDirection = "asc" | "desc"
 type CheckpointOptimizerFilter = ExperimentConfig["optimizer"] | "all"
 type CheckpointDatasetFilter = ExperimentConfig["dataset"] | "all"
+type AppTab = "training" | "analysis"
+type AnalysisMethod = "tsne"
+type AnalysisCardId = "left" | "right"
+type AnalysisPlotStatus = "empty" | "loading" | "ready" | "error"
+
+type AnalysisCardState = {
+  checkpoint: CheckpointSummary | null
+  error: string | null
+  requestId: number
+  requestParams: TsneParams | null
+  response: TsneAnalysisResponse | null
+  status: AnalysisPlotStatus
+}
 
 type PlotPalette = {
   accuracy: string
@@ -192,6 +223,49 @@ const fallbackPlotPalettes: Record<ResolvedTheme, PlotPalette> = {
 }
 
 const LONG_CHECKPOINT_DELETE_SECONDS = 600
+const ANALYSIS_CARD_IDS: AnalysisCardId[] = ["left", "right"]
+const DEFAULT_TSNE_PARAMS: TsneParams = {
+  perplexity: 30,
+  max_iter: 1000,
+  learning_rate_mode: "auto",
+  learning_rate: 200,
+  angle: 0.5,
+  pca_components: 50,
+  seed: null,
+  use_pca: true,
+}
+
+const defaultAnalysisCards: Record<AnalysisCardId, AnalysisCardState> = {
+  left: {
+    checkpoint: null,
+    error: null,
+    requestId: 0,
+    requestParams: null,
+    response: null,
+    status: "empty",
+  },
+  right: {
+    checkpoint: null,
+    error: null,
+    requestId: 0,
+    requestParams: null,
+    response: null,
+    status: "empty",
+  },
+}
+
+const ANALYSIS_CLASS_COLORS = [
+  "#2563eb",
+  "#0891b2",
+  "#059669",
+  "#65a30d",
+  "#ca8a04",
+  "#ea580c",
+  "#dc2626",
+  "#c026d3",
+  "#7c3aed",
+  "#475569",
+]
 
 export function App() {
   const { theme } = useTheme()
@@ -207,6 +281,19 @@ export function App() {
   const [status, setStatus] = useState<ExperimentStatus>(defaultStatus)
   const [loadedCheckpoint, setLoadedCheckpoint] =
     useState<CheckpointSummary | null>(null)
+  const [activeTab, setActiveTab] = useState<AppTab>("training")
+  const [analysisMethod, setAnalysisMethod] = useState<AnalysisMethod>("tsne")
+  const [tsneParams, setTsneParams] =
+    useState<TsneParams>(DEFAULT_TSNE_PARAMS)
+  const [analysisLockedClass, setAnalysisLockedClass] = useState<
+    number | null
+  >(null)
+  const [analysisHoveredClass, setAnalysisHoveredClass] = useState<
+    number | null
+  >(null)
+  const [analysisCards, setAnalysisCards] =
+    useState<Record<AnalysisCardId, AnalysisCardState>>(defaultAnalysisCards)
+  const analysisRequestCounter = useRef(0)
 
   useEffect(() => {
     let ignore = false
@@ -342,6 +429,17 @@ export function App() {
   const mutationStepTickText = useMemo(
     () => fixedTickText(mutationStepTickValues, MUTATION_STEP_TICK_DECIMALS),
     [mutationStepTickValues]
+  )
+  const tsneValidationError = useMemo(
+    () => validateTsneParams(tsneParams),
+    [tsneParams]
+  )
+  const staleAnalysisCards = useMemo(
+    () =>
+      ANALYSIS_CARD_IDS.filter((cardId) =>
+        isAnalysisCardStale(analysisCards[cardId], tsneParams)
+      ),
+    [analysisCards, tsneParams]
   )
 
   const plotData = useMemo<Data[]>(() => {
@@ -630,6 +728,111 @@ export function App() {
     setStatus(nextStatus)
   }
 
+  function updateTsneParam<K extends keyof TsneParams>(
+    key: K,
+    value: TsneParams[K]
+  ) {
+    setTsneParams((current) => ({ ...current, [key]: value }))
+  }
+
+  const effectiveAnalysisClass = analysisHoveredClass ?? analysisLockedClass
+
+  function toggleAnalysisClassLock(label: number) {
+    setAnalysisLockedClass((current) => (current === label ? null : label))
+  }
+
+  async function loadAnalysisCheckpoint(
+    cardId: AnalysisCardId,
+    checkpoint: CheckpointSummary
+  ) {
+    const error = validateTsneParams(tsneParams)
+    if (error) {
+      setAnalysisCards((current) => ({
+        ...current,
+        [cardId]: {
+          ...current[cardId],
+          checkpoint,
+          error,
+          requestParams: null,
+          response: null,
+          status: "error",
+        },
+      }))
+      return
+    }
+
+    const requestId = analysisRequestCounter.current + 1
+    analysisRequestCounter.current = requestId
+    const requestParams = tsneRequestParams(tsneParams)
+
+    setAnalysisCards((current) => ({
+      ...current,
+      [cardId]: {
+        ...current[cardId],
+        checkpoint,
+        error: null,
+        requestId,
+        requestParams,
+        response: null,
+        status: "loading",
+      },
+    }))
+
+    try {
+      const response = await computeTsneAnalysis(
+        selectionFromCheckpoint(checkpoint) ?? {
+          run_id: checkpoint.run_id,
+          kind: checkpoint.kind,
+        },
+        requestParams
+      )
+      setAnalysisCards((current) => {
+        if (current[cardId].requestId !== requestId) {
+          return current
+        }
+
+        return {
+          ...current,
+          [cardId]: {
+            checkpoint: response.checkpoint,
+            error: null,
+            requestId,
+            requestParams,
+            response,
+            status: "ready",
+          },
+        }
+      })
+    } catch {
+      setAnalysisCards((current) => {
+        if (current[cardId].requestId !== requestId) {
+          return current
+        }
+
+        return {
+          ...current,
+          [cardId]: {
+            ...current[cardId],
+            checkpoint,
+            error: "Failed to compute t-SNE",
+            response: null,
+            requestParams,
+            status: "error",
+          },
+        }
+      })
+    }
+  }
+
+  function recomputeLoadedAnalysisCards() {
+    for (const cardId of ANALYSIS_CARD_IDS) {
+      const checkpoint = analysisCards[cardId].checkpoint
+      if (checkpoint) {
+        void loadAnalysisCheckpoint(cardId, checkpoint)
+      }
+    }
+  }
+
   async function newExperiment() {
     const nextStatus = await resetExperimentStatus()
     setLoadedCheckpoint(null)
@@ -639,29 +842,66 @@ export function App() {
   }
 
   return (
-    <div className="p-6">
-      <div className="mb-4 flex items-center justify-between gap-2">
+    <Tabs
+      className="min-h-dvh gap-0 p-4"
+      value={activeTab}
+      onValueChange={(value) => setActiveTab(value as AppTab)}
+    >
+      <div className="mb-4 grid grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
         <div className="flex min-w-0 items-center gap-2">
-          <CheckpointPicker
-            currentSelection={currentCheckpointSelection}
-            disabled={isRunning}
-            pausedRunId={isPaused ? status.run_id : null}
-            schema={schema}
-            onLoad={loadCheckpoint}
-          />
-          {showNewExperiment ? (
-            <Button
-              disabled={isRunning}
-              variant="secondary"
-              onClick={newExperiment}
+          {activeTab === "training" ? (
+            <>
+              <CheckpointPicker
+                currentSelection={currentCheckpointSelection}
+                disabled={isRunning}
+                mode="training"
+                pausedRunId={isPaused ? status.run_id : null}
+                schema={schema}
+                onLoad={loadCheckpoint}
+              />
+              {showNewExperiment ? (
+                <Button
+                  disabled={isRunning}
+                  variant="secondary"
+                  onClick={newExperiment}
+                >
+                  <Plus className="size-4" />
+                  New experiment
+                </Button>
+              ) : null}
+            </>
+          ) : (
+            <Select
+              value={analysisMethod}
+              onValueChange={(value) =>
+                setAnalysisMethod(value as AnalysisMethod)
+              }
             >
-              <Plus className="size-4" />
-              New experiment
-            </Button>
-          ) : null}
+              <SelectTrigger
+                aria-label="Analysis method"
+                className="h-9 w-36"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent
+                align="start"
+                className="w-(--radix-select-trigger-width) min-w-(--radix-select-trigger-width)"
+                position="popper"
+              >
+                <SelectItem value="tsne">t-SNE</SelectItem>
+              </SelectContent>
+            </Select>
+          )}
         </div>
-        <ThemeToggle resolvedTheme={resolvedTheme} />
+        <TabsList>
+          <TabsTrigger value="training">Training</TabsTrigger>
+          <TabsTrigger value="analysis">Analysis</TabsTrigger>
+        </TabsList>
+        <div className="flex justify-end">
+          <ThemeToggle resolvedTheme={resolvedTheme} />
+        </div>
       </div>
+      <TabsContent className="mt-0" value="training">
       <div className="flex flex-col gap-6 md:flex-row">
         <div className="flex w-full max-w-3xl flex-col gap-3 md:max-w-md">
           <Card className="w-full">
@@ -795,7 +1035,7 @@ export function App() {
             ) : null}
 
             <div className="mt-6 w-full">
-              <Plot
+      <Plot
                 className="w-full"
                 data={plotData}
                 layout={plotLayout}
@@ -812,23 +1052,519 @@ export function App() {
           </CardContent>
         </Card>
       </div>
+      </TabsContent>
+      <TabsContent className="mt-0 flex min-h-0 flex-1" value="analysis">
+        <AnalysisTab
+          cards={analysisCards}
+          focusedClass={effectiveAnalysisClass}
+          lockedClass={analysisLockedClass}
+          pausedRunId={isPaused ? status.run_id : null}
+          plotPalette={plotPalette}
+          schema={schema}
+          staleCardCount={staleAnalysisCards.length}
+          tsneParams={tsneParams}
+          validationError={tsneValidationError}
+          onLoadCheckpoint={loadAnalysisCheckpoint}
+          onRecomputeLoaded={recomputeLoadedAnalysisCards}
+          onHoverClass={setAnalysisHoveredClass}
+          onToggleClass={toggleAnalysisClassLock}
+          onUpdateTsneParam={updateTsneParam}
+        />
+      </TabsContent>
+    </Tabs>
+  )
+}
+
+type AnalysisTabProps = {
+  cards: Record<AnalysisCardId, AnalysisCardState>
+  focusedClass: number | null
+  lockedClass: number | null
+  pausedRunId: string | null | undefined
+  plotPalette: PlotPalette
+  schema: SchemaResponse
+  staleCardCount: number
+  tsneParams: TsneParams
+  validationError: string | null
+  onLoadCheckpoint: (
+    cardId: AnalysisCardId,
+    checkpoint: CheckpointSummary
+  ) => Promise<void>
+  onHoverClass: (label: number | null) => void
+  onRecomputeLoaded: () => void
+  onToggleClass: (label: number) => void
+  onUpdateTsneParam: <K extends keyof TsneParams>(
+    key: K,
+    value: TsneParams[K]
+  ) => void
+}
+
+function AnalysisTab({
+  cards,
+  focusedClass,
+  lockedClass,
+  pausedRunId,
+  plotPalette,
+  schema,
+  staleCardCount,
+  tsneParams,
+  validationError,
+  onLoadCheckpoint,
+  onHoverClass,
+  onRecomputeLoaded,
+  onToggleClass,
+  onUpdateTsneParam,
+}: AnalysisTabProps) {
+  const loadedCardCount = ANALYSIS_CARD_IDS.filter(
+    (cardId) => cards[cardId].checkpoint !== null
+  ).length
+  const hasLoadingCard = ANALYSIS_CARD_IDS.some(
+    (cardId) => cards[cardId].status === "loading"
+  )
+  return (
+    <div className="flex min-h-0 flex-1 flex-col gap-4">
+      <div className="mx-auto flex max-w-full shrink-0 flex-wrap items-center justify-center gap-3">
+        <Card className="w-fit max-w-full" size="sm">
+          <CardContent className="py-0">
+            <div className="flex flex-wrap items-end justify-center gap-x-3 gap-y-2">
+              <TsneNumberField
+                className="w-24"
+                label="Perplexity"
+                max={50}
+                min={5}
+                step={1}
+                value={tsneParams.perplexity}
+                onChange={(value) => onUpdateTsneParam("perplexity", value)}
+              />
+              <TsneNumberField
+                className="w-24"
+                label="Max iter"
+                min={250}
+                step={50}
+                value={tsneParams.max_iter}
+                onChange={(value) => onUpdateTsneParam("max_iter", value)}
+              />
+              <TsneNumberField
+                className="w-20"
+                label="Angle"
+                max={0.8}
+                min={0.2}
+                step={0.05}
+                value={tsneParams.angle}
+                onChange={(value) => onUpdateTsneParam("angle", value)}
+              />
+              <div className="grid w-28 gap-1">
+                <Label className="text-xs leading-none">Learning rate</Label>
+                <Select
+                  value={tsneParams.learning_rate_mode}
+                  onValueChange={(value) =>
+                    onUpdateTsneParam(
+                      "learning_rate_mode",
+                      value as TsneLearningRateMode
+                    )
+                  }
+                >
+                  <SelectTrigger className="h-8">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent
+                    className="w-(--radix-select-trigger-width) min-w-(--radix-select-trigger-width)"
+                    position="popper"
+                  >
+                    <SelectItem value="auto">Auto</SelectItem>
+                    <SelectItem value="numeric">Numeric</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              {tsneParams.learning_rate_mode === "numeric" ? (
+                <TsneNumberField
+                  className="w-24"
+                  label="LR value"
+                  min={0}
+                  step={10}
+                  value={tsneParams.learning_rate ?? NaN}
+                  onChange={(value) =>
+                    onUpdateTsneParam(
+                      "learning_rate",
+                      Number.isFinite(value) ? value : null
+                    )
+                  }
+                />
+              ) : null}
+              <div className="flex h-8 items-center gap-2 px-1">
+                <Checkbox
+                  checked={tsneParams.use_pca}
+                  id="analysis-use-pca"
+                  onCheckedChange={(checked) =>
+                    onUpdateTsneParam("use_pca", checked === true)
+                  }
+                />
+                <Label
+                  className="whitespace-nowrap text-sm font-normal"
+                  htmlFor="analysis-use-pca"
+                >
+                  Use PCA
+                </Label>
+              </div>
+              {tsneParams.use_pca ? (
+                <TsneNumberField
+                  className="w-20"
+                  label="PCA dims"
+                  max={120}
+                  min={2}
+                  step={1}
+                  value={tsneParams.pca_components}
+                  onChange={(value) =>
+                    onUpdateTsneParam("pca_components", value)
+                  }
+                />
+              ) : null}
+              {loadedCardCount > 0 ? (
+                <Button
+                  className="h-8"
+                  disabled={
+                    staleCardCount === 0 ||
+                    hasLoadingCard ||
+                    validationError !== null
+                  }
+                  onClick={onRecomputeLoaded}
+                >
+                  Recompute
+                </Button>
+              ) : null}
+            </div>
+            {validationError ? (
+              <div className="mt-3 rounded-lg border border-destructive/40 bg-destructive/10 p-2 text-sm text-destructive">
+                {validationError}
+              </div>
+            ) : null}
+          </CardContent>
+        </Card>
+        <Card className="w-fit max-w-full" size="sm">
+          <CardContent className="py-0">
+            <AnalysisClassLegend
+              focusedClass={focusedClass}
+              lockedClass={lockedClass}
+              onHoverClass={onHoverClass}
+              onToggleClass={onToggleClass}
+            />
+          </CardContent>
+        </Card>
+      </div>
+
+      <div className="grid min-h-0 flex-1 auto-rows-fr items-stretch gap-4 xl:grid-cols-2">
+        {ANALYSIS_CARD_IDS.map((cardId) => (
+          <AnalysisComparisonCard
+            cardId={cardId}
+            key={cardId}
+            pausedRunId={pausedRunId}
+            focusedClass={focusedClass}
+            plotPalette={plotPalette}
+            schema={schema}
+            state={cards[cardId]}
+            onLoadCheckpoint={onLoadCheckpoint}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function TsneNumberField({
+  className,
+  disabled = false,
+  label,
+  max,
+  min,
+  step,
+  value,
+  onChange,
+}: {
+  className?: string
+  disabled?: boolean
+  label: string
+  max?: number
+  min?: number
+  step: number
+  value: number
+  onChange: (value: number) => void
+}) {
+  return (
+    <div className={cn("grid gap-1", className)}>
+      <Label className="text-xs leading-none">{label}</Label>
+      <Input
+        className="h-8"
+        disabled={disabled}
+        max={max}
+        min={min}
+        step={step}
+        type="number"
+        value={Number.isFinite(value) ? value : ""}
+        onChange={(event) =>
+          onChange(
+            event.currentTarget.value === ""
+              ? NaN
+              : Number(event.currentTarget.value)
+          )
+        }
+      />
+    </div>
+  )
+}
+
+type AnalysisComparisonCardProps = {
+  cardId: AnalysisCardId
+  focusedClass: number | null
+  pausedRunId: string | null | undefined
+  plotPalette: PlotPalette
+  schema: SchemaResponse
+  state: AnalysisCardState
+  onLoadCheckpoint: (
+    cardId: AnalysisCardId,
+    checkpoint: CheckpointSummary
+  ) => Promise<void>
+}
+
+function AnalysisComparisonCard({
+  cardId,
+  focusedClass,
+  pausedRunId,
+  plotPalette,
+  schema,
+  state,
+  onLoadCheckpoint,
+}: AnalysisComparisonCardProps) {
+  const testAccuracy = testAccuracyFor(state.response)
+
+  if (state.status === "empty") {
+    return (
+      <Card className="h-full min-h-[34rem] gap-0 [--card-spacing:--spacing(0)]">
+        <CardContent className="flex min-h-0 flex-1 p-4">
+          <CheckpointPicker
+            closeOnLoadStart
+            currentSelection={selectionFromCheckpoint(state.checkpoint)}
+            disabled={false}
+            mode="analysis"
+            pausedRunId={pausedRunId}
+            schema={schema}
+            trigger={<AnalysisEmptyState />}
+            onLoad={(checkpoint) => onLoadCheckpoint(cardId, checkpoint)}
+          />
+        </CardContent>
+      </Card>
+    )
+  }
+
+  return (
+    <Card className="h-full min-h-[34rem]">
+      <CardHeader className="gap-3">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <CardTitle className="text-xl">
+            {state.checkpoint?.optimizer ?? "Select checkpoint"}
+          </CardTitle>
+          <CheckpointPicker
+            closeOnLoadStart
+            currentSelection={selectionFromCheckpoint(state.checkpoint)}
+            disabled={state.status === "loading"}
+            mode="analysis"
+            pausedRunId={pausedRunId}
+            schema={schema}
+            onLoad={(checkpoint) => onLoadCheckpoint(cardId, checkpoint)}
+          />
+        </div>
+        {state.checkpoint ? (
+          <div className="flex flex-wrap gap-x-8 gap-y-2 text-sm">
+            <CheckpointMetric
+              label="Val. acc."
+              value={formatOptionalPercent(
+                state.checkpoint.best_acc ?? state.checkpoint.accuracy
+              )}
+            />
+            {state.status !== "loading" ? (
+              <CheckpointMetric
+                label="Test acc."
+                value={formatOptionalPercent(testAccuracy)}
+              />
+            ) : null}
+            <CheckpointMetric
+              label="Step"
+              value={formatInteger(state.checkpoint.step)}
+            />
+            <CheckpointMetric
+              label="Elapsed"
+              value={formatOptionalDuration(
+                state.checkpoint.total_elapsed_seconds
+              )}
+            />
+          </div>
+        ) : null}
+      </CardHeader>
+      <CardContent className="flex min-h-0 flex-1 flex-col">
+        {state.status === "loading" ? <AnalysisLoadingState /> : null}
+        {state.status === "error" ? (
+          <div className="grid min-h-80 flex-1 place-items-center rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center text-sm text-destructive">
+            {state.error ?? "Failed to compute t-SNE"}
+          </div>
+        ) : null}
+        {state.status === "ready" && state.response ? (
+          <AnalysisPlot
+            focusedClass={focusedClass}
+            response={state.response}
+            plotPalette={plotPalette}
+          />
+        ) : null}
+      </CardContent>
+    </Card>
+  )
+}
+
+const AnalysisEmptyState = forwardRef<
+  HTMLButtonElement,
+  ComponentPropsWithoutRef<"button">
+>(function AnalysisEmptyState({ className, ...props }, ref) {
+  return (
+    <button
+      {...props}
+      className={cn(
+        "flex min-h-0 w-full flex-1 cursor-pointer rounded-xl border border-dashed bg-transparent text-center transition-colors hover:bg-muted/20 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
+        className
+      )}
+      ref={ref}
+      type="button"
+    >
+      <Empty className="min-h-80 flex-1 border-0 bg-transparent">
+        <EmptyHeader>
+          <EmptyMedia className="mb-3 size-12" variant="icon">
+            <FolderOpen className="size-6" />
+          </EmptyMedia>
+          <EmptyTitle className="text-lg">Select checkpoint</EmptyTitle>
+          <EmptyDescription className="mt-0 text-sm">
+            t-SNE plots will appear here.
+          </EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    </button>
+  )
+})
+
+function AnalysisLoadingState() {
+  return (
+    <div className="grid min-h-80 flex-1 place-items-center rounded-lg">
+      <div className="grid justify-items-center gap-3 text-sm text-muted-foreground">
+        <LoaderCircle className="size-5 animate-spin" />
+        <span>Computing t-SNE</span>
+      </div>
+    </div>
+  )
+}
+
+function AnalysisPlot({
+  focusedClass,
+  response,
+  plotPalette,
+}: {
+  focusedClass: number | null
+  response: TsneAnalysisResponse
+  plotPalette: PlotPalette
+}) {
+  const { markerStates, revision } = useAnimatedClassMarkers(focusedClass)
+  const data = useMemo(
+    () => analysisPlotData(response, plotPalette, markerStates),
+    [markerStates, plotPalette, response]
+  )
+  const layout = useMemo(
+    () => analysisPlotLayout(plotPalette, response.checkpoint.run_id),
+    [plotPalette, response.checkpoint.run_id]
+  )
+
+  return (
+    <div className="flex min-h-80 flex-1 flex-col">
+      <div className="min-h-0 flex-1">
+        <Plot
+          className="h-full w-full"
+          config={{
+            displayModeBar: false,
+            displaylogo: false,
+            responsive: true,
+            scrollZoom: false,
+          }}
+          data={data}
+          layout={layout}
+          revision={revision}
+          style={{ height: "100%", width: "100%" }}
+          useResizeHandler
+        />
+      </div>
+    </div>
+  )
+}
+
+function AnalysisClassLegend({
+  focusedClass,
+  lockedClass,
+  onHoverClass,
+  onToggleClass,
+}: {
+  focusedClass: number | null
+  lockedClass: number | null
+  onHoverClass: (label: number | null) => void
+  onToggleClass: (label: number) => void
+}) {
+  return (
+    <div className="flex h-8 flex-wrap items-center justify-center gap-0">
+      {ANALYSIS_CLASS_COLORS.map((color, label) => {
+        const active = focusedClass === label
+        const locked = lockedClass === label
+        const dimmed = focusedClass !== null && !active
+
+        return (
+          <button
+            aria-label={`Toggle class ${label}`}
+            aria-pressed={active}
+            className={cn(
+              "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-sm text-muted-foreground transition-[background-color,color,opacity] duration-200 hover:bg-muted/70 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
+              locked ? "bg-muted text-foreground" : "",
+              dimmed ? "opacity-45" : "opacity-100"
+            )}
+            key={label}
+            type="button"
+            onBlur={() => onHoverClass(null)}
+            onClick={() => onToggleClass(label)}
+            onFocus={() => onHoverClass(label)}
+            onMouseEnter={() => onHoverClass(label)}
+            onMouseLeave={() => onHoverClass(null)}
+          >
+            <span
+              aria-hidden="true"
+              className="size-3 rounded-full"
+              style={{ backgroundColor: color }}
+            />
+            <span>{label}</span>
+          </button>
+        )
+      })}
     </div>
   )
 }
 
 type CheckpointPickerProps = {
+  closeOnLoadStart?: boolean
   currentSelection: CheckpointSelection | null
   disabled: boolean
+  mode?: CheckpointListMode
   pausedRunId: string | null | undefined
   schema: SchemaResponse
+  trigger?: ReactElement
   onLoad: (checkpoint: CheckpointSummary) => Promise<void>
 }
 
 function CheckpointPicker({
+  closeOnLoadStart = false,
   currentSelection,
   disabled,
+  mode = "training",
   pausedRunId,
   schema,
+  trigger,
   onLoad,
 }: CheckpointPickerProps) {
   const [open, setOpen] = useState(false)
@@ -854,7 +1590,7 @@ function CheckpointPicker({
 
     let ignore = false
 
-    fetchCheckpoints()
+    fetchCheckpoints(mode)
       .then((nextCheckpoints) => {
         if (ignore) {
           return
@@ -879,7 +1615,7 @@ function CheckpointPicker({
     return () => {
       ignore = true
     }
-  }, [open])
+  }, [mode, open])
 
   const optimizerOptions = useMemo(
     () =>
@@ -936,10 +1672,18 @@ function CheckpointPicker({
 
     setError(null)
     try {
+      if (closeOnLoadStart) {
+        setOpen(false)
+      }
       await onLoad(pendingCheckpoint)
-      setOpen(false)
+      if (!closeOnLoadStart) {
+        setOpen(false)
+      }
     } catch {
       setError("Failed to load checkpoint")
+      if (closeOnLoadStart) {
+        setOpen(true)
+      }
     }
   }
 
@@ -1021,14 +1765,16 @@ function CheckpointPicker({
     <>
       <Dialog open={open} onOpenChange={handleOpenChange}>
         <DialogTrigger asChild>
-          <Button
-            className="max-w-[18rem] justify-start"
-            disabled={disabled}
-            variant="outline"
-          >
-            <FolderOpen className="size-4" />
-            <span className="truncate">{buttonLabel}</span>
-          </Button>
+          {trigger ?? (
+            <Button
+              className="max-w-[18rem] justify-start"
+              disabled={disabled}
+              variant="outline"
+            >
+              <FolderOpen className="size-4" />
+              <span className="truncate">{buttonLabel}</span>
+            </Button>
+          )}
         </DialogTrigger>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
@@ -1505,6 +2251,277 @@ function readCssColor(
   return styles.getPropertyValue(propertyName).trim() || fallback
 }
 
+function validateTsneParams(params: TsneParams): string | null {
+  if (!isFiniteInRange(params.perplexity, 5, 50)) {
+    return "Perplexity must be between 5 and 50"
+  }
+
+  if (!Number.isFinite(params.max_iter) || params.max_iter < 250) {
+    return "Max iter must be at least 250"
+  }
+
+  if (!isFiniteInRange(params.angle, 0.2, 0.8)) {
+    return "Angle must be between 0.2 and 0.8"
+  }
+
+  if (
+    params.use_pca &&
+    (!Number.isFinite(params.pca_components) ||
+      params.pca_components < 2 ||
+      params.pca_components > 120)
+  ) {
+    return "PCA dims must be between 2 and 120"
+  }
+
+  if (
+    params.learning_rate_mode === "numeric" &&
+    (!Number.isFinite(params.learning_rate) || Number(params.learning_rate) <= 0)
+  ) {
+    return "Learning rate must be positive"
+  }
+
+  if (
+    params.seed !== null &&
+    params.seed !== undefined &&
+    !Number.isFinite(params.seed)
+  ) {
+    return "Seed must be a number"
+  }
+
+  return null
+}
+
+function isFiniteInRange(value: number, min: number, max: number): boolean {
+  return Number.isFinite(value) && value >= min && value <= max
+}
+
+function tsneRequestParams(params: TsneParams): TsneParams {
+  return {
+    ...params,
+    learning_rate:
+      params.learning_rate_mode === "numeric" ? params.learning_rate : null,
+    seed: params.seed ?? null,
+  }
+}
+
+function isAnalysisCardStale(
+  card: AnalysisCardState,
+  params: TsneParams
+): boolean {
+  return (
+    (card.status === "ready" || card.status === "error") &&
+    card.checkpoint !== null &&
+    card.requestParams !== null &&
+    !sameTsneParams(card.requestParams, params)
+  )
+}
+
+function sameTsneParams(left: TsneParams, right: TsneParams): boolean {
+  return (
+    JSON.stringify(normalizedTsneParams(left)) ===
+    JSON.stringify(normalizedTsneParams(right))
+  )
+}
+
+function normalizedTsneParams(params: TsneParams): Record<string, unknown> {
+  return {
+    angle: params.angle,
+    learning_rate:
+      params.learning_rate_mode === "numeric" ? params.learning_rate : null,
+    learning_rate_mode: params.learning_rate_mode,
+    max_iter: params.max_iter,
+    pca_components: params.use_pca ? params.pca_components : null,
+    perplexity: params.perplexity,
+    seed: params.seed ?? null,
+    use_pca: params.use_pca,
+  }
+}
+
+type AnalysisClassMarkerState = {
+  opacity: number
+  size: number
+}
+
+type AnalysisClassMarkerAnimation = {
+  markerStates: AnalysisClassMarkerState[]
+  revision: number
+}
+
+const ACTIVE_CLASS_MARKER: AnalysisClassMarkerState = { opacity: 0.86, size: 4 }
+const DIMMED_CLASS_MARKER: AnalysisClassMarkerState = { opacity: 0.06, size: 3.2 }
+const CLASS_HIGHLIGHT_ANIMATION_MS = 220
+
+function useAnimatedClassMarkers(
+  focusedClass: number | null
+): AnalysisClassMarkerAnimation {
+  const [animation, setAnimation] = useState<AnalysisClassMarkerAnimation>(
+    () => ({
+      markerStates: targetClassMarkers(focusedClass),
+      revision: 0,
+    })
+  )
+  const markersRef = useRef(animation.markerStates)
+  const revisionRef = useRef(animation.revision)
+
+  useEffect(() => {
+    markersRef.current = animation.markerStates
+  }, [animation.markerStates])
+
+  useEffect(() => {
+    const start = markersRef.current
+    const target = targetClassMarkers(focusedClass)
+    let frameId = 0
+    const startedAt = performance.now()
+
+    function animateFrame(now: number) {
+      const progress = Math.min(
+        1,
+        (now - startedAt) / CLASS_HIGHLIGHT_ANIMATION_MS
+      )
+      const easedProgress = easeInOutCubic(progress)
+      const nextMarkers = target.map((targetMarker, index) => ({
+        opacity: interpolate(
+          start[index]?.opacity ?? targetMarker.opacity,
+          targetMarker.opacity,
+          easedProgress
+        ),
+        size: interpolate(
+          start[index]?.size ?? targetMarker.size,
+          targetMarker.size,
+          easedProgress
+        ),
+      }))
+
+      const nextRevision = revisionRef.current + 1
+
+      markersRef.current = nextMarkers
+      revisionRef.current = nextRevision
+      setAnimation({
+        markerStates: nextMarkers,
+        revision: nextRevision,
+      })
+
+      if (progress < 1) {
+        frameId = requestAnimationFrame(animateFrame)
+      }
+    }
+
+    frameId = requestAnimationFrame(animateFrame)
+    return () => cancelAnimationFrame(frameId)
+  }, [focusedClass])
+
+  return animation
+}
+
+function targetClassMarkers(focusedClass: number | null): AnalysisClassMarkerState[] {
+  return ANALYSIS_CLASS_COLORS.map((_, label) =>
+    focusedClass === null || focusedClass === label
+      ? ACTIVE_CLASS_MARKER
+      : DIMMED_CLASS_MARKER
+  )
+}
+
+function interpolate(start: number, end: number, progress: number): number {
+  return start + (end - start) * progress
+}
+
+function easeInOutCubic(progress: number): number {
+  if (progress < 0.5) {
+    return 4 * progress * progress * progress
+  }
+
+  return 1 - (-2 * progress + 2) ** 3 / 2
+}
+
+function analysisPlotData(
+  response: TsneAnalysisResponse,
+  plotPalette: PlotPalette,
+  markerStates: AnalysisClassMarkerState[]
+): Data[] {
+  const points = response.points
+
+  return ANALYSIS_CLASS_COLORS.map((color, label) => {
+    const classPoints = points.filter((point) => point.label === label)
+    const markerState = markerStates[label] ?? ACTIVE_CLASS_MARKER
+
+    return {
+      type: "scattergl",
+      mode: "markers",
+      name: String(label),
+      uid: `${response.checkpoint.run_id}-${response.checkpoint.kind}-tsne-${label}`,
+      x: classPoints.map((point) => point.x),
+      y: classPoints.map((point) => point.y),
+      customdata: classPoints.map((point) => [
+        point.prediction,
+        point.correct ? "correct" : "incorrect",
+      ]),
+      hoverlabel: {
+        align: "left",
+        bgcolor: plotPalette.hoverBackground,
+        bordercolor: plotPalette.hoverBorder,
+        font: { color: plotPalette.hoverText, size: 12 },
+      },
+      hovertemplate: `<b>Label ${label}</b><br>Prediction %{customdata[0]}<br>%{customdata[1]}<extra></extra>`,
+      marker: {
+        color,
+        opacity: markerState.opacity,
+        size: markerState.size,
+      },
+      showlegend: false,
+    } satisfies Data
+  })
+}
+
+function analysisPlotLayout(
+  plotPalette: PlotPalette,
+  runId: string
+): Partial<Layout> {
+  return {
+    autosize: true,
+    dragmode: "pan",
+    font: { color: plotPalette.text, family: "Geist Variable, sans-serif" },
+    hoverlabel: {
+      align: "left",
+      bgcolor: plotPalette.hoverBackground,
+      bordercolor: plotPalette.hoverBorder,
+      font: {
+        color: plotPalette.hoverText,
+        family: "Geist Variable, sans-serif",
+        size: 12,
+      },
+    },
+    margin: { b: 0, l: 0, r: 0, t: 0 },
+    paper_bgcolor: "transparent",
+    plot_bgcolor: "transparent",
+    showlegend: false,
+    transition: {
+      duration: 220,
+      easing: "cubic-in-out",
+    },
+    uirevision: `analysis-tsne-${runId}`,
+    xaxis: {
+      automargin: false,
+      fixedrange: false,
+      visible: false,
+      showgrid: false,
+      showline: false,
+      showticklabels: false,
+      ticks: "",
+      zeroline: false,
+    },
+    yaxis: {
+      automargin: false,
+      fixedrange: false,
+      visible: false,
+      showgrid: false,
+      showline: false,
+      showticklabels: false,
+      ticks: "",
+      zeroline: false,
+    },
+  }
+}
+
 function selectionFromCheckpoint(
   checkpoint: CheckpointSummary | null
 ): CheckpointSelection | null {
@@ -1675,6 +2692,18 @@ function formatOptionalPercent(value: number | null | undefined): string {
   }
 
   return `${value.toFixed(2)}%`
+}
+
+function testAccuracyFor(response: TsneAnalysisResponse | null): number | null {
+  if (!response || response.points.length === 0) {
+    return null
+  }
+
+  const correctCount = response.points.reduce(
+    (total, point) => total + (point.correct ? 1 : 0),
+    0
+  )
+  return (correctCount / response.points.length) * 100
 }
 
 function formatOptionalDuration(seconds: number | null | undefined): string {

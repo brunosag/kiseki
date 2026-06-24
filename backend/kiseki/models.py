@@ -1,6 +1,11 @@
+from collections.abc import Iterable
+from typing import Literal
+
 import torch
 from torch import nn
 from torch.nn import functional as F
+
+ActivationName = Literal["fc1_relu"]
 
 
 class CNN2C2DMNIST(nn.Module):
@@ -27,7 +32,23 @@ class CNN2C2DMNIST(nn.Module):
         x = F.relu(self.fc1(x))
         return self.fc2(x)
 
+    def named_activations(
+        self,
+        x: torch.Tensor,
+        names: Iterable[ActivationName] = ("fc1_relu",),
+    ) -> dict[ActivationName, torch.Tensor]:
+        requested = set(names)
+        activations: dict[ActivationName, torch.Tensor] = {}
+
+        x = self.pool(F.relu(self.conv1(x)))
+        x = self.pool(F.relu(self.conv2(x)))
+        x = torch.flatten(x, 1)
+        x = F.relu(self.fc1(x))
+        if "fc1_relu" in requested:
+            activations["fc1_relu"] = x
+
+        return activations
+
 
 def count_parameters(model: nn.Module) -> int:
     return sum(parameter.numel() for parameter in model.parameters())
-

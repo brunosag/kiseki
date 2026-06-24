@@ -102,6 +102,35 @@ class CheckpointSaver:
             summaries, key=lambda summary: saved_at_sort_key(summary.saved_at), reverse=True
         )
 
+    def list_analysis_summaries(self) -> list[CheckpointSummary]:
+        summaries: list[CheckpointSummary] = []
+        if not self.directory.exists():
+            return summaries
+
+        for run_directory in self.directory.iterdir():
+            if not run_directory.is_dir():
+                continue
+
+            run_id = run_directory.name
+            for kind in ("best", "latest"):
+                pt_path = self.pt_path(run_id, kind)
+                metadata_path = self.metadata_path(run_id, kind)
+                if not pt_path.exists() or not metadata_path.exists():
+                    continue
+
+                try:
+                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                    if "total_elapsed_seconds" not in metadata:
+                        metadata = self._metadata_with_payload_elapsed(metadata, run_id, kind)
+                    summaries.append(checkpoint_summary_from_metadata(metadata, run_id, kind))
+                    break
+                except Exception:
+                    continue
+
+        return sorted(
+            summaries, key=lambda summary: saved_at_sort_key(summary.saved_at), reverse=True
+        )
+
     def has_latest(self, run_id: str) -> bool:
         return self.latest_pt_path(run_id).exists() and self.latest_metadata_path(run_id).exists()
 

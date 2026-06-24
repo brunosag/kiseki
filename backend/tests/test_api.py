@@ -2,10 +2,12 @@ import os
 import time
 from datetime import UTC, datetime
 
+import numpy as np
 import torch
 from fastapi.testclient import TestClient
 from torch.utils.data import DataLoader, TensorDataset
 
+from kiseki import analysis
 from kiseki.api import create_app
 from kiseki.checkpoint import CheckpointSaver
 from kiseki import experiment
@@ -31,6 +33,12 @@ class SyntheticLoaderFactory:
             DataLoader(dataset, batch_size=batch_size, shuffle=True),
             DataLoader(dataset, batch_size=batch_size, shuffle=False),
         )
+
+    def mnist_test(self) -> DataLoader:
+        generator = torch.Generator().manual_seed(123)
+        inputs = torch.randn(12, 1, 28, 28, generator=generator)
+        targets = torch.arange(12) % 10
+        return DataLoader(TensorDataset(inputs, targets), batch_size=5, shuffle=False)
 
 
 class SlowSGDRunner(SGDRunner):
@@ -146,6 +154,126 @@ def test_api_lists_only_complete_latest_checkpoints_sorted_newest_first(tmp_path
     assert checkpoints[0]["reproducibility_status"].startswith("best-effort")
     assert checkpoints[0]["config"]["iterations"] == 6
     assert checkpoints[0]["optimizer_params"] == {"SGD": {ETA: 0.02}}
+
+
+def test_api_analysis_checkpoint_list_prefers_best_then_latest(tmp_path) -> None:
+    saver = CheckpointSaver(tmp_path)
+    save_api_checkpoint(
+        saver,
+        run_id="latest-only-run",
+        saved_at="2026-06-20T12:02:00+00:00",
+        step=4,
+    )
+    save_api_checkpoint(
+        saver,
+        run_id="best-run",
+        saved_at="2026-06-20T12:00:00+00:00",
+        step=2,
+    )
+    save_api_checkpoint(
+        saver,
+        run_id="best-run",
+        saved_at="2026-06-20T12:03:00+00:00",
+        step=5,
+        kind="best",
+    )
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=saver,
+    )
+    client = TestClient(create_app(manager))
+
+    response = client.get("/api/checkpoints", params={"mode": "analysis"})
+
+    assert response.status_code == 200
+    assert [(item["run_id"], item["kind"]) for item in response.json()] == [
+        ("best-run", "best"),
+        ("latest-only-run", "latest"),
+    ]
+
+
+def test_api_tsne_validates_params_loads_checkpoint_and_returns_points(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class FakePCA:
+        def __init__(self, n_components: int, random_state: int) -> None:
+            self.n_components = n_components
+            self.random_state = random_state
+
+        def fit_transform(self, features):
+            return features[:, : self.n_components]
+
+    class FakeTSNE:
+        def __init__(self, **kwargs) -> None:
+            assert kwargs["method"] == "barnes_hut"
+            assert kwargs["learning_rate"] == 25.0
+            assert kwargs["random_state"] == 7
+            self.kwargs = kwargs
+
+        def fit_transform(self, features):
+            return np.column_stack(
+                (
+                    np.arange(features.shape[0], dtype=np.float32),
+                    -np.arange(features.shape[0], dtype=np.float32),
+                )
+            )
+
+    monkeypatch.setattr(analysis, "PCA", FakePCA)
+    monkeypatch.setattr(analysis, "TSNE", FakeTSNE)
+    saver = CheckpointSaver(tmp_path)
+    save_api_checkpoint(
+        saver,
+        run_id="analysis-run",
+        saved_at="2026-06-20T12:00:00+00:00",
+        step=2,
+    )
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=saver,
+    )
+    client = TestClient(create_app(manager))
+    before_status = client.get("/api/experiments/status").json()
+
+    response = client.post(
+        "/api/analysis/tsne",
+        json={
+            "checkpoint": {"run_id": "analysis-run", "kind": "latest"},
+            "params": {
+                "perplexity": 5,
+                "max_iter": 250,
+                "learning_rate_mode": "numeric",
+                "learning_rate": 25,
+                "angle": 0.3,
+                "pca_components": 2,
+                "seed": 7,
+                "use_pca": True,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["checkpoint"]["run_id"] == "analysis-run"
+    assert payload["params"]["seed"] == 7
+    assert len(payload["points"]) == 12
+    assert set(payload["points"][0]) == {"x", "y", "label", "prediction", "correct"}
+    assert payload["points"][0]["x"] == 0.0
+    assert payload["points"][1]["y"] == -1.0
+    assert client.get("/api/experiments/status").json() == before_status
+
+    invalid = client.post(
+        "/api/analysis/tsne",
+        json={
+            "checkpoint": {"run_id": "analysis-run", "kind": "latest"},
+            "params": {
+                "perplexity": 5,
+                "learning_rate_mode": "numeric",
+                "learning_rate": 0,
+            },
+        },
+    )
+    assert invalid.status_code == 422
 
 
 def test_api_delete_checkpoint_run_removes_latest_and_hidden_best(tmp_path) -> None:

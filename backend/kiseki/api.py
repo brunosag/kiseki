@@ -2,15 +2,19 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
+from .analysis import TSNEParameterError
 from .checkpoint import CheckpointNotFoundError
 from .experiment import ExperimentManager
 from .schemas import (
+    CheckpointListMode,
     CheckpointSelection,
     CheckpointSummary,
     ExperimentControlsUpdate,
     ExperimentStatus,
     SchemaResponse,
     StartExperimentRequest,
+    TSNEAnalysisRequest,
+    TSNEAnalysisResponse,
     schema_response,
 )
 
@@ -32,8 +36,8 @@ def create_app(manager: ExperimentManager | None = None) -> FastAPI:
         return schema_response()
 
     @app.get("/api/checkpoints", response_model=list[CheckpointSummary])
-    def list_checkpoints() -> list[CheckpointSummary]:
-        return experiment_manager.checkpoints()
+    def list_checkpoints(mode: CheckpointListMode = "training") -> list[CheckpointSummary]:
+        return experiment_manager.checkpoints(mode)
 
     @app.delete("/api/checkpoints/{run_id}", status_code=204)
     def delete_checkpoint(run_id: str) -> None:
@@ -52,6 +56,15 @@ def create_app(manager: ExperimentManager | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/api/analysis/tsne", response_model=TSNEAnalysisResponse)
+    def compute_tsne(request: TSNEAnalysisRequest) -> TSNEAnalysisResponse:
+        try:
+            return experiment_manager.tsne_analysis(request)
+        except CheckpointNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except TSNEParameterError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post("/api/experiments/start", response_model=ExperimentStatus)
     def start_experiment(request: StartExperimentRequest) -> ExperimentStatus:

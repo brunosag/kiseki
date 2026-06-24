@@ -31,6 +31,27 @@ def load_mnist(
     )
 
 
+def load_mnist_test(
+    data_dir: Path | str,
+    *,
+    download: bool = True,
+    num_workers: int = 0,
+    pin_memory: bool = False,
+) -> DataLoader:
+    raw_dataset = datasets.MNIST(root=Path(data_dir), train=False, download=download)
+    dataset = TensorDataset(
+        raw_dataset.data.unsqueeze(1).float().div(255.0),
+        torch.as_tensor(raw_dataset.targets, dtype=torch.long),
+    )
+    return DataLoader(
+        dataset,
+        batch_size=512,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )
+
+
 def make_regular_train_val_loaders(
     dataset: torch.utils.data.Dataset,
     batch_size: int,
@@ -168,6 +189,14 @@ class DataLoaderFactory:
             self.data_dir,
             batch_size=batch_size,
             seed=seed,
+            download=self.download,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+        )
+
+    def mnist_test(self) -> DataLoader:
+        return load_mnist_test(
+            self.data_dir,
             download=self.download,
             num_workers=self.num_workers,
             pin_memory=self.pin_memory,

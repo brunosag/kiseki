@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 ETA = "\u03b7"
@@ -69,11 +71,72 @@ class ExperimentConfig(BaseModel):
 
 
 CheckpointKind = Literal["latest", "best"]
+CheckpointListMode = Literal["training", "analysis"]
 
 
 class CheckpointSelection(BaseModel):
     run_id: str
     kind: CheckpointKind
+
+
+class TSNEParams(BaseModel):
+    perplexity: float = 30.0
+    max_iter: int = 1000
+    learning_rate_mode: Literal["auto", "numeric"] = "auto"
+    learning_rate: float | None = None
+    angle: float = 0.5
+    pca_components: int = 50
+    seed: int | None = None
+    use_pca: bool = True
+
+    @field_validator("perplexity")
+    @classmethod
+    def require_perplexity_range(cls, value: float) -> float:
+        if not 5 <= value <= 50:
+            raise ValueError("must be between 5 and 50")
+        return value
+
+    @field_validator("max_iter")
+    @classmethod
+    def require_minimum_iterations(cls, value: int) -> int:
+        if value < 250:
+            raise ValueError("must be at least 250")
+        return value
+
+    @field_validator("angle")
+    @classmethod
+    def require_angle_range(cls, value: float) -> float:
+        if not 0.2 <= value <= 0.8:
+            raise ValueError("must be between 0.2 and 0.8")
+        return value
+
+    @field_validator("pca_components")
+    @classmethod
+    def require_pca_component_range(cls, value: int) -> int:
+        if not 2 <= value <= 120:
+            raise ValueError("must be between 2 and 120")
+        return value
+
+    @model_validator(mode="after")
+    def require_positive_numeric_learning_rate(self) -> "TSNEParams":
+        if self.learning_rate_mode == "auto":
+            return self
+        if self.learning_rate is None or self.learning_rate <= 0:
+            raise ValueError("learning_rate must be positive when learning_rate_mode is numeric")
+        return self
+
+
+class TSNEAnalysisRequest(BaseModel):
+    checkpoint: CheckpointSelection
+    params: TSNEParams = Field(default_factory=TSNEParams)
+
+
+class TSNEPoint(BaseModel):
+    x: float
+    y: float
+    label: int
+    prediction: int
+    correct: bool
 
 
 class StartExperimentRequest(BaseModel):
@@ -130,6 +193,12 @@ class CheckpointSummary(BaseModel):
     compatibility_warnings: list[str] = Field(default_factory=list)
     config: ExperimentConfig
     optimizer_params: dict[str, dict[str, float]] = Field(default_factory=dict)
+
+
+class TSNEAnalysisResponse(BaseModel):
+    checkpoint: CheckpointSummary
+    params: TSNEParams
+    points: list[TSNEPoint]
 
 
 class AccuracyPoint(BaseModel):

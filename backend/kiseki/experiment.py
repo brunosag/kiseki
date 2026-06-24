@@ -13,6 +13,7 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
+from .analysis import AnalysisService
 from .checkpoint import (
     CheckpointSaver,
     build_runtime_manifest,
@@ -27,6 +28,7 @@ from .models import CNN2C2DMNIST
 from .optimizers import build_optimizer_runner
 from .schemas import (
     AccuracyPoint,
+    CheckpointListMode,
     CheckpointKind,
     CheckpointSelection,
     CheckpointSummary,
@@ -35,6 +37,8 @@ from .schemas import (
     ExperimentStatus,
     MutationStepPoint,
     StartExperimentRequest,
+    TSNEAnalysisRequest,
+    TSNEAnalysisResponse,
 )
 
 VAL_FREQ = 10
@@ -69,8 +73,13 @@ class ExperimentManager:
         with self.lock:
             return self._status.model_copy(deep=True)
 
-    def checkpoints(self) -> list[CheckpointSummary]:
+    def checkpoints(self, mode: CheckpointListMode = "training") -> list[CheckpointSummary]:
+        if mode == "analysis":
+            return self._analysis_service().checkpoint_summaries()
         return self.checkpoint_saver.list_summaries()
+
+    def tsne_analysis(self, request: TSNEAnalysisRequest) -> TSNEAnalysisResponse:
+        return self._analysis_service().tsne(request)
 
     def delete_checkpoint(self, run_id: str) -> None:
         with self.lock:
@@ -690,6 +699,12 @@ class ExperimentManager:
             subscribers = tuple(self.subscribers)
         for queue in subscribers:
             queue.put((event_type, status))
+
+    def _analysis_service(self) -> AnalysisService:
+        return AnalysisService(
+            data_loader_factory=self.data_loader_factory,
+            checkpoint_saver=self.checkpoint_saver,
+        )
 
 
 def seed_everything(seed: int, numeric_mode: NumericMode = "strict") -> None:

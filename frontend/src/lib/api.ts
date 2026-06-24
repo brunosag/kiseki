@@ -38,6 +38,7 @@ export type ExperimentConfig = {
 }
 
 export type CheckpointKind = "latest" | "best"
+export type CheckpointListMode = "training" | "analysis"
 
 export type CheckpointSelection = {
   run_id: string
@@ -111,6 +112,33 @@ export type ExperimentStatus = {
 }
 
 export type OptimizerParams = Record<string, Record<string, number>>
+
+export type TsneLearningRateMode = "auto" | "numeric"
+
+export type TsneParams = {
+  perplexity: number
+  max_iter: number
+  learning_rate_mode: TsneLearningRateMode
+  learning_rate?: number | null
+  angle: number
+  pca_components: number
+  seed?: number | null
+  use_pca: boolean
+}
+
+export type TsnePoint = {
+  x: number
+  y: number
+  label: number
+  prediction: number
+  correct: boolean
+}
+
+export type TsneAnalysisResponse = {
+  checkpoint: CheckpointSummary
+  params: TsneParams
+  points: TsnePoint[]
+}
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ""
 
@@ -340,10 +368,28 @@ export async function fetchSchema(): Promise<SchemaResponse> {
   return response.json()
 }
 
-export async function fetchCheckpoints(): Promise<CheckpointSummary[]> {
-  const response = await fetch(apiUrl("/api/checkpoints"))
+export async function fetchCheckpoints(
+  mode: CheckpointListMode = "training"
+): Promise<CheckpointSummary[]> {
+  const search = new URLSearchParams({ mode })
+  const response = await fetch(apiUrl(`/api/checkpoints?${search}`))
   if (!response.ok) {
     throw new Error("Failed to load checkpoints")
+  }
+  return response.json()
+}
+
+export async function computeTsneAnalysis(
+  checkpoint: CheckpointSelection,
+  params: TsneParams
+): Promise<TsneAnalysisResponse> {
+  const response = await fetch(apiUrl("/api/analysis/tsne"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ checkpoint, params }),
+  })
+  if (!response.ok) {
+    throw new Error("Failed to compute t-SNE")
   }
   return response.json()
 }
