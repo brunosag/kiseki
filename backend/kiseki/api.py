@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from .analysis import TSNEParameterError
+from .analysis import LRPParameterError, TSNEParameterError
 from .checkpoint import CheckpointNotFoundError
 from .experiment import ExperimentManager
 from .schemas import (
@@ -11,6 +11,8 @@ from .schemas import (
     CheckpointSummary,
     ExperimentControlsUpdate,
     ExperimentStatus,
+    LRPAnalysisRequest,
+    LRPAnalysisResponse,
     SchemaResponse,
     StartExperimentRequest,
     TSNEAnalysisRequest,
@@ -64,6 +66,15 @@ def create_app(manager: ExperimentManager | None = None) -> FastAPI:
         except CheckpointNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         except TSNEParameterError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.post("/api/analysis/lrp", response_model=LRPAnalysisResponse)
+    def compute_lrp(request: LRPAnalysisRequest) -> LRPAnalysisResponse:
+        try:
+            return experiment_manager.lrp_analysis(request)
+        except CheckpointNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except LRPParameterError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     @app.post("/api/experiments/start", response_model=ExperimentStatus)

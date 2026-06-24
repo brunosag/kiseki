@@ -142,6 +142,28 @@ export type TsneAnalysisResponse = {
   points: TsnePoint[]
 }
 
+export type LrpParams = {
+  sample_count: number
+}
+
+export type LrpSample = {
+  index: number
+  label: number
+  prediction: number
+  target: number
+  correct: boolean
+  score: number
+  delta: number
+  image: number[][][]
+  relevance: number[][]
+}
+
+export type LrpAnalysisResponse = {
+  checkpoint: CheckpointSummary
+  params: LrpParams
+  samples: LrpSample[]
+}
+
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ""
 
 export const fallbackSchema: SchemaResponse = {
@@ -396,6 +418,21 @@ export async function computeTsneAnalysis(
   })
   if (!response.ok) {
     throw new Error("Failed to compute t-SNE")
+  }
+  return response.json()
+}
+
+export async function computeLrpAnalysis(
+  checkpoint: CheckpointSelection,
+  params: LrpParams
+): Promise<LrpAnalysisResponse> {
+  const response = await fetch(apiUrl("/api/analysis/lrp"), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ checkpoint, params }),
+  })
+  if (!response.ok) {
+    throw new Error("Failed to compute LRP")
   }
   return response.json()
 }

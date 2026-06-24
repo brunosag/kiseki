@@ -80,6 +80,7 @@ import {
 import { useTheme } from "@/components/theme-provider"
 import {
   apiUrl,
+  computeLrpAnalysis,
   computeTsneAnalysis,
   configDefaults,
   deleteCheckpointRun,
@@ -97,6 +98,9 @@ import {
   type ConfigField,
   type ExperimentConfig,
   type ExperimentStatus,
+  type LrpAnalysisResponse,
+  type LrpParams,
+  type LrpSample,
   type OptimizerParams,
   type SchemaResponse,
   type SelectOption,
@@ -168,16 +172,19 @@ type SortDirection = "asc" | "desc"
 type CheckpointOptimizerFilter = ExperimentConfig["optimizer"] | "all"
 type CheckpointDatasetFilter = ExperimentConfig["dataset"] | "all"
 type AppTab = "training" | "analysis"
-type AnalysisMethod = "tsne"
+type AnalysisMethod = "tsne" | "lrp"
 type AnalysisCardId = "left" | "right"
 type AnalysisPlotStatus = "empty" | "loading" | "ready" | "error"
+type AnalysisParams = TsneParams | LrpParams
+type AnalysisResponse = TsneAnalysisResponse | LrpAnalysisResponse
 
 type AnalysisCardState = {
   checkpoint: CheckpointSummary | null
   error: string | null
+  method: AnalysisMethod | null
   requestId: number
-  requestParams: TsneParams | null
-  response: TsneAnalysisResponse | null
+  requestParams: AnalysisParams | null
+  response: AnalysisResponse | null
   status: AnalysisPlotStatus
 }
 
@@ -234,11 +241,15 @@ const DEFAULT_TSNE_PARAMS: TsneParams = {
   seed: null,
   use_pca: true,
 }
+const DEFAULT_LRP_PARAMS: LrpParams = {
+  sample_count: 20,
+}
 
 const defaultAnalysisCards: Record<AnalysisCardId, AnalysisCardState> = {
   left: {
     checkpoint: null,
     error: null,
+    method: null,
     requestId: 0,
     requestParams: null,
     response: null,
@@ -247,6 +258,7 @@ const defaultAnalysisCards: Record<AnalysisCardId, AnalysisCardState> = {
   right: {
     checkpoint: null,
     error: null,
+    method: null,
     requestId: 0,
     requestParams: null,
     response: null,
@@ -285,6 +297,7 @@ export function App() {
   const [analysisMethod, setAnalysisMethod] = useState<AnalysisMethod>("tsne")
   const [tsneParams, setTsneParams] =
     useState<TsneParams>(DEFAULT_TSNE_PARAMS)
+  const [lrpParams, setLrpParams] = useState<LrpParams>(DEFAULT_LRP_PARAMS)
   const [analysisLockedClass, setAnalysisLockedClass] = useState<
     number | null
   >(null)
@@ -434,12 +447,22 @@ export function App() {
     () => validateTsneParams(tsneParams),
     [tsneParams]
   )
+  const lrpValidationError = useMemo(
+    () => validateLrpParams(lrpParams),
+    [lrpParams]
+  )
+  const analysisValidationError =
+    analysisMethod === "tsne" ? tsneValidationError : lrpValidationError
   const staleAnalysisCards = useMemo(
     () =>
       ANALYSIS_CARD_IDS.filter((cardId) =>
-        isAnalysisCardStale(analysisCards[cardId], tsneParams)
+        isAnalysisCardStale(
+          analysisCards[cardId],
+          analysisMethod,
+          currentAnalysisParams(analysisMethod, tsneParams, lrpParams)
+        )
       ),
-    [analysisCards, tsneParams]
+    [analysisCards, analysisMethod, lrpParams, tsneParams]
   )
 
   const plotData = useMemo<Data[]>(() => {
@@ -735,6 +758,13 @@ export function App() {
     setTsneParams((current) => ({ ...current, [key]: value }))
   }
 
+  function updateLrpParam<K extends keyof LrpParams>(
+    key: K,
+    value: LrpParams[K]
+  ) {
+    setLrpParams((current) => ({ ...current, [key]: value }))
+  }
+
   const effectiveAnalysisClass = analysisHoveredClass ?? analysisLockedClass
 
   function toggleAnalysisClassLock(label: number) {
@@ -745,7 +775,12 @@ export function App() {
     cardId: AnalysisCardId,
     checkpoint: CheckpointSummary
   ) {
-    const error = validateTsneParams(tsneParams)
+    const method = analysisMethod
+    const requestParams = currentAnalysisParams(method, tsneParams, lrpParams)
+    const error =
+      method === "tsne"
+        ? validateTsneParams(requestParams as TsneParams)
+        : validateLrpParams(requestParams as LrpParams)
     if (error) {
       setAnalysisCards((current) => ({
         ...current,
@@ -753,6 +788,7 @@ export function App() {
           ...current[cardId],
           checkpoint,
           error,
+          method,
           requestParams: null,
           response: null,
           status: "error",
@@ -763,7 +799,10 @@ export function App() {
 
     const requestId = analysisRequestCounter.current + 1
     analysisRequestCounter.current = requestId
-    const requestParams = tsneRequestParams(tsneParams)
+    const normalizedRequestParams =
+      method === "tsne"
+        ? tsneRequestParams(requestParams as TsneParams)
+        : lrpRequestParams(requestParams as LrpParams)
 
     setAnalysisCards((current) => ({
       ...current,
@@ -771,21 +810,29 @@ export function App() {
         ...current[cardId],
         checkpoint,
         error: null,
+        method,
         requestId,
-        requestParams,
+        requestParams: normalizedRequestParams,
         response: null,
         status: "loading",
       },
     }))
 
     try {
-      const response = await computeTsneAnalysis(
-        selectionFromCheckpoint(checkpoint) ?? {
-          run_id: checkpoint.run_id,
-          kind: checkpoint.kind,
-        },
-        requestParams
-      )
+      const selection = selectionFromCheckpoint(checkpoint) ?? {
+        run_id: checkpoint.run_id,
+        kind: checkpoint.kind,
+      }
+      const response =
+        method === "tsne"
+          ? await computeTsneAnalysis(
+              selection,
+              normalizedRequestParams as TsneParams
+            )
+          : await computeLrpAnalysis(
+              selection,
+              normalizedRequestParams as LrpParams
+            )
       setAnalysisCards((current) => {
         if (current[cardId].requestId !== requestId) {
           return current
@@ -796,8 +843,9 @@ export function App() {
           [cardId]: {
             checkpoint: response.checkpoint,
             error: null,
+            method,
             requestId,
-            requestParams,
+            requestParams: normalizedRequestParams,
             response,
             status: "ready",
           },
@@ -814,9 +862,10 @@ export function App() {
           [cardId]: {
             ...current[cardId],
             checkpoint,
-            error: "Failed to compute t-SNE",
+            error: `Failed to compute ${analysisMethodLabel(method)}`,
             response: null,
-            requestParams,
+            method,
+            requestParams: normalizedRequestParams,
             status: "error",
           },
         }
@@ -889,6 +938,7 @@ export function App() {
                 position="popper"
               >
                 <SelectItem value="tsne">t-SNE</SelectItem>
+                <SelectItem value="lrp">LRP</SelectItem>
               </SelectContent>
             </Select>
           )}
@@ -1057,16 +1107,19 @@ export function App() {
         <AnalysisTab
           cards={analysisCards}
           focusedClass={effectiveAnalysisClass}
+          lrpParams={lrpParams}
           lockedClass={analysisLockedClass}
+          method={analysisMethod}
           pausedRunId={isPaused ? status.run_id : null}
           plotPalette={plotPalette}
           schema={schema}
           staleCardCount={staleAnalysisCards.length}
           tsneParams={tsneParams}
-          validationError={tsneValidationError}
+          validationError={analysisValidationError}
           onLoadCheckpoint={loadAnalysisCheckpoint}
           onRecomputeLoaded={recomputeLoadedAnalysisCards}
           onHoverClass={setAnalysisHoveredClass}
+          onUpdateLrpParam={updateLrpParam}
           onToggleClass={toggleAnalysisClassLock}
           onUpdateTsneParam={updateTsneParam}
         />
@@ -1078,7 +1131,9 @@ export function App() {
 type AnalysisTabProps = {
   cards: Record<AnalysisCardId, AnalysisCardState>
   focusedClass: number | null
+  lrpParams: LrpParams
   lockedClass: number | null
+  method: AnalysisMethod
   pausedRunId: string | null | undefined
   plotPalette: PlotPalette
   schema: SchemaResponse
@@ -1092,6 +1147,10 @@ type AnalysisTabProps = {
   onHoverClass: (label: number | null) => void
   onRecomputeLoaded: () => void
   onToggleClass: (label: number) => void
+  onUpdateLrpParam: <K extends keyof LrpParams>(
+    key: K,
+    value: LrpParams[K]
+  ) => void
   onUpdateTsneParam: <K extends keyof TsneParams>(
     key: K,
     value: TsneParams[K]
@@ -1101,7 +1160,9 @@ type AnalysisTabProps = {
 function AnalysisTab({
   cards,
   focusedClass,
+  lrpParams,
   lockedClass,
+  method,
   pausedRunId,
   plotPalette,
   schema,
@@ -1112,6 +1173,7 @@ function AnalysisTab({
   onHoverClass,
   onRecomputeLoaded,
   onToggleClass,
+  onUpdateLrpParam,
   onUpdateTsneParam,
 }: AnalysisTabProps) {
   const loadedCardCount = ANALYSIS_CARD_IDS.filter(
@@ -1125,113 +1187,27 @@ function AnalysisTab({
       <div className="mx-auto flex max-w-full shrink-0 flex-wrap items-center justify-center gap-3">
         <Card className="w-fit max-w-full" size="sm">
           <CardContent className="py-0">
-            <div className="flex flex-wrap items-end justify-center gap-x-3 gap-y-2">
-              <TsneNumberField
-                className="w-24"
-                label="Perplexity"
-                max={50}
-                min={5}
-                step={1}
-                value={tsneParams.perplexity}
-                onChange={(value) => onUpdateTsneParam("perplexity", value)}
+            {method === "tsne" ? (
+              <TsneControls
+                hasLoadingCard={hasLoadingCard}
+                loadedCardCount={loadedCardCount}
+                staleCardCount={staleCardCount}
+                tsneParams={tsneParams}
+                validationError={validationError}
+                onRecomputeLoaded={onRecomputeLoaded}
+                onUpdateTsneParam={onUpdateTsneParam}
               />
-              <TsneNumberField
-                className="w-24"
-                label="Max iter"
-                min={250}
-                step={50}
-                value={tsneParams.max_iter}
-                onChange={(value) => onUpdateTsneParam("max_iter", value)}
+            ) : (
+              <LrpControls
+                hasLoadingCard={hasLoadingCard}
+                loadedCardCount={loadedCardCount}
+                lrpParams={lrpParams}
+                staleCardCount={staleCardCount}
+                validationError={validationError}
+                onRecomputeLoaded={onRecomputeLoaded}
+                onUpdateLrpParam={onUpdateLrpParam}
               />
-              <TsneNumberField
-                className="w-20"
-                label="Angle"
-                max={0.8}
-                min={0.2}
-                step={0.05}
-                value={tsneParams.angle}
-                onChange={(value) => onUpdateTsneParam("angle", value)}
-              />
-              <div className="grid w-28 gap-1">
-                <Label className="text-xs leading-none">Learning rate</Label>
-                <Select
-                  value={tsneParams.learning_rate_mode}
-                  onValueChange={(value) =>
-                    onUpdateTsneParam(
-                      "learning_rate_mode",
-                      value as TsneLearningRateMode
-                    )
-                  }
-                >
-                  <SelectTrigger className="h-8">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent
-                    className="w-(--radix-select-trigger-width) min-w-(--radix-select-trigger-width)"
-                    position="popper"
-                  >
-                    <SelectItem value="auto">Auto</SelectItem>
-                    <SelectItem value="numeric">Numeric</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              {tsneParams.learning_rate_mode === "numeric" ? (
-                <TsneNumberField
-                  className="w-24"
-                  label="LR value"
-                  min={0}
-                  step={10}
-                  value={tsneParams.learning_rate ?? NaN}
-                  onChange={(value) =>
-                    onUpdateTsneParam(
-                      "learning_rate",
-                      Number.isFinite(value) ? value : null
-                    )
-                  }
-                />
-              ) : null}
-              <div className="flex h-8 items-center gap-2 px-1">
-                <Checkbox
-                  checked={tsneParams.use_pca}
-                  id="analysis-use-pca"
-                  onCheckedChange={(checked) =>
-                    onUpdateTsneParam("use_pca", checked === true)
-                  }
-                />
-                <Label
-                  className="whitespace-nowrap text-sm font-normal"
-                  htmlFor="analysis-use-pca"
-                >
-                  Use PCA
-                </Label>
-              </div>
-              {tsneParams.use_pca ? (
-                <TsneNumberField
-                  className="w-20"
-                  label="PCA dims"
-                  max={120}
-                  min={2}
-                  step={1}
-                  value={tsneParams.pca_components}
-                  onChange={(value) =>
-                    onUpdateTsneParam("pca_components", value)
-                  }
-                />
-              ) : null}
-              {loadedCardCount > 0 ? (
-                <Button
-                  className="h-8"
-                  disabled={
-                    staleCardCount === 0 ||
-                    hasLoadingCard ||
-                    validationError !== null
-                  }
-                  onClick={onRecomputeLoaded}
-                >
-                  Recompute
-                </Button>
-              ) : null}
-            </div>
+            )}
             {validationError ? (
               <div className="mt-3 rounded-lg border border-destructive/40 bg-destructive/10 p-2 text-sm text-destructive">
                 {validationError}
@@ -1239,16 +1215,18 @@ function AnalysisTab({
             ) : null}
           </CardContent>
         </Card>
-        <Card className="w-fit max-w-full" size="sm">
-          <CardContent className="py-0">
-            <AnalysisClassLegend
-              focusedClass={focusedClass}
-              lockedClass={lockedClass}
-              onHoverClass={onHoverClass}
-              onToggleClass={onToggleClass}
-            />
-          </CardContent>
-        </Card>
+        {method === "tsne" ? (
+          <Card className="w-fit max-w-full" size="sm">
+            <CardContent className="py-0">
+              <AnalysisClassLegend
+                focusedClass={focusedClass}
+                lockedClass={lockedClass}
+                onHoverClass={onHoverClass}
+                onToggleClass={onToggleClass}
+              />
+            </CardContent>
+          </Card>
+        ) : null}
       </div>
 
       <div className="grid min-h-0 flex-1 auto-rows-fr items-stretch gap-4 xl:grid-cols-2">
@@ -1256,6 +1234,7 @@ function AnalysisTab({
           <AnalysisComparisonCard
             cardId={cardId}
             key={cardId}
+            method={method}
             pausedRunId={pausedRunId}
             focusedClass={focusedClass}
             plotPalette={plotPalette}
@@ -1269,7 +1248,184 @@ function AnalysisTab({
   )
 }
 
-function TsneNumberField({
+function TsneControls({
+  hasLoadingCard,
+  loadedCardCount,
+  staleCardCount,
+  tsneParams,
+  validationError,
+  onRecomputeLoaded,
+  onUpdateTsneParam,
+}: {
+  hasLoadingCard: boolean
+  loadedCardCount: number
+  staleCardCount: number
+  tsneParams: TsneParams
+  validationError: string | null
+  onRecomputeLoaded: () => void
+  onUpdateTsneParam: <K extends keyof TsneParams>(
+    key: K,
+    value: TsneParams[K]
+  ) => void
+}) {
+  return (
+    <div className="flex flex-wrap items-end justify-center gap-x-3 gap-y-2">
+      <AnalysisNumberField
+        className="w-24"
+        label="Perplexity"
+        max={50}
+        min={5}
+        step={1}
+        value={tsneParams.perplexity}
+        onChange={(value) => onUpdateTsneParam("perplexity", value)}
+      />
+      <AnalysisNumberField
+        className="w-24"
+        label="Max iter"
+        min={250}
+        step={50}
+        value={tsneParams.max_iter}
+        onChange={(value) => onUpdateTsneParam("max_iter", value)}
+      />
+      <AnalysisNumberField
+        className="w-20"
+        label="Angle"
+        max={0.8}
+        min={0.2}
+        step={0.05}
+        value={tsneParams.angle}
+        onChange={(value) => onUpdateTsneParam("angle", value)}
+      />
+      <div className="grid w-28 gap-1">
+        <Label className="text-xs leading-none">Learning rate</Label>
+        <Select
+          value={tsneParams.learning_rate_mode}
+          onValueChange={(value) =>
+            onUpdateTsneParam(
+              "learning_rate_mode",
+              value as TsneLearningRateMode
+            )
+          }
+        >
+          <SelectTrigger className="h-8">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent
+            className="w-(--radix-select-trigger-width) min-w-(--radix-select-trigger-width)"
+            position="popper"
+          >
+            <SelectItem value="auto">Auto</SelectItem>
+            <SelectItem value="numeric">Numeric</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+      {tsneParams.learning_rate_mode === "numeric" ? (
+        <AnalysisNumberField
+          className="w-24"
+          label="LR value"
+          min={0}
+          step={10}
+          value={tsneParams.learning_rate ?? NaN}
+          onChange={(value) =>
+            onUpdateTsneParam(
+              "learning_rate",
+              Number.isFinite(value) ? value : null
+            )
+          }
+        />
+      ) : null}
+      <div className="flex h-8 items-center gap-2 px-1">
+        <Checkbox
+          checked={tsneParams.use_pca}
+          id="analysis-use-pca"
+          onCheckedChange={(checked) =>
+            onUpdateTsneParam("use_pca", checked === true)
+          }
+        />
+        <Label
+          className="whitespace-nowrap text-sm font-normal"
+          htmlFor="analysis-use-pca"
+        >
+          Use PCA
+        </Label>
+      </div>
+      {tsneParams.use_pca ? (
+        <AnalysisNumberField
+          className="w-20"
+          label="PCA dims"
+          max={120}
+          min={2}
+          step={1}
+          value={tsneParams.pca_components}
+          onChange={(value) => onUpdateTsneParam("pca_components", value)}
+        />
+      ) : null}
+      {loadedCardCount > 0 ? (
+        <Button
+          className="h-8"
+          disabled={
+            staleCardCount === 0 ||
+            hasLoadingCard ||
+            validationError !== null
+          }
+          onClick={onRecomputeLoaded}
+        >
+          Recompute
+        </Button>
+      ) : null}
+    </div>
+  )
+}
+
+function LrpControls({
+  hasLoadingCard,
+  loadedCardCount,
+  lrpParams,
+  staleCardCount,
+  validationError,
+  onRecomputeLoaded,
+  onUpdateLrpParam,
+}: {
+  hasLoadingCard: boolean
+  loadedCardCount: number
+  lrpParams: LrpParams
+  staleCardCount: number
+  validationError: string | null
+  onRecomputeLoaded: () => void
+  onUpdateLrpParam: <K extends keyof LrpParams>(
+    key: K,
+    value: LrpParams[K]
+  ) => void
+}) {
+  return (
+    <div className="flex flex-wrap items-end justify-center gap-x-3 gap-y-2">
+      <AnalysisNumberField
+        className="w-28"
+        label="Sample count"
+        max={50}
+        min={1}
+        step={1}
+        value={lrpParams.sample_count}
+        onChange={(value) => onUpdateLrpParam("sample_count", value)}
+      />
+      {loadedCardCount > 0 ? (
+        <Button
+          className="h-8"
+          disabled={
+            staleCardCount === 0 ||
+            hasLoadingCard ||
+            validationError !== null
+          }
+          onClick={onRecomputeLoaded}
+        >
+          Recompute
+        </Button>
+      ) : null}
+    </div>
+  )
+}
+
+function AnalysisNumberField({
   className,
   disabled = false,
   label,
@@ -1314,6 +1470,7 @@ function TsneNumberField({
 type AnalysisComparisonCardProps = {
   cardId: AnalysisCardId
   focusedClass: number | null
+  method: AnalysisMethod
   pausedRunId: string | null | undefined
   plotPalette: PlotPalette
   schema: SchemaResponse
@@ -1327,13 +1484,15 @@ type AnalysisComparisonCardProps = {
 function AnalysisComparisonCard({
   cardId,
   focusedClass,
+  method,
   pausedRunId,
   plotPalette,
   schema,
   state,
   onLoadCheckpoint,
 }: AnalysisComparisonCardProps) {
-  const testAccuracy = testAccuracyFor(state.response)
+  const resultAccuracy = analysisAccuracyFor(state.response)
+  const resultAccuracyLabel = state.method === "lrp" ? "Sample acc." : "Test acc."
 
   if (state.status === "empty") {
     return (
@@ -1346,7 +1505,7 @@ function AnalysisComparisonCard({
             mode="analysis"
             pausedRunId={pausedRunId}
             schema={schema}
-            trigger={<AnalysisEmptyState />}
+            trigger={<AnalysisEmptyState method={method} />}
             onLoad={(checkpoint) => onLoadCheckpoint(cardId, checkpoint)}
           />
         </CardContent>
@@ -1374,15 +1533,15 @@ function AnalysisComparisonCard({
         {state.checkpoint ? (
           <div className="flex flex-wrap gap-x-8 gap-y-2 text-sm">
             <CheckpointMetric
-              label="Val. acc."
-              value={formatOptionalPercent(
-                state.checkpoint.best_acc ?? state.checkpoint.accuracy
-              )}
-            />
+                label="Val. acc."
+                value={formatOptionalPercent(
+                  state.checkpoint.best_acc ?? state.checkpoint.accuracy
+                )}
+              />
             {state.status !== "loading" ? (
               <CheckpointMetric
-                label="Test acc."
-                value={formatOptionalPercent(testAccuracy)}
+                label={resultAccuracyLabel}
+                value={formatOptionalPercent(resultAccuracy)}
               />
             ) : null}
             <CheckpointMetric
@@ -1399,18 +1558,24 @@ function AnalysisComparisonCard({
         ) : null}
       </CardHeader>
       <CardContent className="flex min-h-0 flex-1 flex-col">
-        {state.status === "loading" ? <AnalysisLoadingState /> : null}
+        {state.status === "loading" ? (
+          <AnalysisLoadingState method={state.method ?? method} />
+        ) : null}
         {state.status === "error" ? (
           <div className="grid min-h-80 flex-1 place-items-center rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center text-sm text-destructive">
-            {state.error ?? "Failed to compute t-SNE"}
+            {state.error ??
+              `Failed to compute ${analysisMethodLabel(state.method ?? method)}`}
           </div>
         ) : null}
-        {state.status === "ready" && state.response ? (
+        {state.status === "ready" && isTsneResponse(state.response) ? (
           <AnalysisPlot
             focusedClass={focusedClass}
             response={state.response}
             plotPalette={plotPalette}
           />
+        ) : null}
+        {state.status === "ready" && isLrpResponse(state.response) ? (
+          <LrpGallery response={state.response} />
         ) : null}
       </CardContent>
     </Card>
@@ -1419,8 +1584,8 @@ function AnalysisComparisonCard({
 
 const AnalysisEmptyState = forwardRef<
   HTMLButtonElement,
-  ComponentPropsWithoutRef<"button">
->(function AnalysisEmptyState({ className, ...props }, ref) {
+  ComponentPropsWithoutRef<"button"> & { method: AnalysisMethod }
+>(function AnalysisEmptyState({ className, method, ...props }, ref) {
   return (
     <button
       {...props}
@@ -1438,7 +1603,7 @@ const AnalysisEmptyState = forwardRef<
           </EmptyMedia>
           <EmptyTitle className="text-lg">Select checkpoint</EmptyTitle>
           <EmptyDescription className="mt-0 text-sm">
-            t-SNE plots will appear here.
+            {analysisEmptyDescription(method)}
           </EmptyDescription>
         </EmptyHeader>
       </Empty>
@@ -1446,12 +1611,12 @@ const AnalysisEmptyState = forwardRef<
   )
 })
 
-function AnalysisLoadingState() {
+function AnalysisLoadingState({ method }: { method: AnalysisMethod }) {
   return (
     <div className="grid min-h-80 flex-1 place-items-center rounded-lg">
       <div className="grid justify-items-center gap-3 text-sm text-muted-foreground">
         <LoaderCircle className="size-5 animate-spin" />
-        <span>Computing t-SNE</span>
+        <span>Computing {analysisMethodLabel(method)}</span>
       </div>
     </div>
   )
@@ -1496,6 +1661,126 @@ function AnalysisPlot({
       </div>
     </div>
   )
+}
+
+function LrpGallery({ response }: { response: LrpAnalysisResponse }) {
+  if (response.samples.length === 0) {
+    return (
+      <div className="grid min-h-80 flex-1 place-items-center rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+        No LRP samples returned.
+      </div>
+    )
+  }
+
+  return (
+    <div className="min-h-0 flex-1 overflow-auto pr-1">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] gap-3">
+        {response.samples.map((sample) => (
+          <div
+            className={cn(
+              "rounded-lg border bg-background p-2",
+              sample.correct ? "border-border" : "border-destructive/50"
+            )}
+            key={sample.index}
+          >
+            <div className="aspect-square overflow-hidden rounded-md border bg-muted">
+              <LrpSampleCanvas sample={sample} />
+            </div>
+            <div className="mt-2 flex items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-sm leading-tight font-medium">
+                  True {sample.label}
+                </div>
+                <div
+                  className={cn(
+                    "text-xs",
+                    sample.correct
+                      ? "text-muted-foreground"
+                      : "text-destructive"
+                  )}
+                >
+                  Pred {sample.prediction}
+                </div>
+              </div>
+              <div className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                #{sample.index}
+              </div>
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+              <LrpSampleMetric label="Score" value={formatCompactNumber(sample.score)} />
+              <LrpSampleMetric label="Delta" value={formatCompactNumber(sample.delta)} />
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function LrpSampleCanvas({ sample }: { sample: LrpSample }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) {
+      return
+    }
+
+    drawLrpSample(canvas, sample)
+  }, [sample])
+
+  return (
+    <canvas
+      aria-label={`LRP relevance overlay for sample ${sample.index}`}
+      className="block h-full w-full"
+      ref={canvasRef}
+    />
+  )
+}
+
+function LrpSampleMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="min-w-0">
+      <div className="truncate font-medium tabular-nums">{value}</div>
+      <div className="text-muted-foreground">{label}</div>
+    </div>
+  )
+}
+
+function drawLrpSample(canvas: HTMLCanvasElement, sample: LrpSample) {
+  const height = sample.image.length
+  const width = sample.image[0]?.length ?? 0
+  if (height === 0 || width === 0) {
+    return
+  }
+
+  canvas.width = width
+  canvas.height = height
+  const context = canvas.getContext("2d")
+  if (!context) {
+    return
+  }
+
+  const imageData = context.createImageData(width, height)
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4
+      const base = sample.image[y]?.[x] ?? [0, 0, 0]
+      const relevance = clamp(sample.relevance[y]?.[x] ?? 0, -1, 1)
+      const overlay = relevance >= 0 ? [239, 68, 68] : [37, 99, 235]
+      const alpha = Math.abs(relevance) * 0.68
+
+      imageData.data[offset] = blendChannel(base[0] ?? 0, overlay[0], alpha)
+      imageData.data[offset + 1] = blendChannel(base[1] ?? 0, overlay[1], alpha)
+      imageData.data[offset + 2] = blendChannel(base[2] ?? 0, overlay[2], alpha)
+      imageData.data[offset + 3] = 255
+    }
+  }
+  context.putImageData(imageData, 0, 0)
+}
+
+function blendChannel(base: number, overlay: number, alpha: number): number {
+  return Math.round(clamp(base, 0, 1) * 255 * (1 - alpha) + overlay * alpha)
 }
 
 function AnalysisClassLegend({
@@ -2291,8 +2576,28 @@ function validateTsneParams(params: TsneParams): string | null {
   return null
 }
 
+function validateLrpParams(params: LrpParams): string | null {
+  if (
+    !Number.isInteger(params.sample_count) ||
+    params.sample_count < 1 ||
+    params.sample_count > 50
+  ) {
+    return "Sample count must be an integer between 1 and 50"
+  }
+
+  return null
+}
+
 function isFiniteInRange(value: number, min: number, max: number): boolean {
   return Number.isFinite(value) && value >= min && value <= max
+}
+
+function currentAnalysisParams(
+  method: AnalysisMethod,
+  tsneParams: TsneParams,
+  lrpParams: LrpParams
+): AnalysisParams {
+  return method === "tsne" ? tsneParams : lrpParams
 }
 
 function tsneRequestParams(params: TsneParams): TsneParams {
@@ -2304,15 +2609,45 @@ function tsneRequestParams(params: TsneParams): TsneParams {
   }
 }
 
+function lrpRequestParams(params: LrpParams): LrpParams {
+  return {
+    sample_count: params.sample_count,
+  }
+}
+
 function isAnalysisCardStale(
   card: AnalysisCardState,
-  params: TsneParams
+  method: AnalysisMethod,
+  params: AnalysisParams
 ): boolean {
+  if (
+    !(
+      (card.status === "ready" || card.status === "error") &&
+      card.checkpoint !== null
+    )
+  ) {
+    return false
+  }
+
+  if (card.method !== method) {
+    return true
+  }
+
+  if (card.requestParams === null) {
+    return true
+  }
+
+  if (method === "tsne") {
+    return !sameTsneParams(card.requestParams as TsneParams, params as TsneParams)
+  }
+
+  return !sameLrpParams(card.requestParams as LrpParams, params as LrpParams)
+}
+
+function sameLrpParams(left: LrpParams, right: LrpParams): boolean {
   return (
-    (card.status === "ready" || card.status === "error") &&
-    card.checkpoint !== null &&
-    card.requestParams !== null &&
-    !sameTsneParams(card.requestParams, params)
+    JSON.stringify(lrpRequestParams(left)) ===
+    JSON.stringify(lrpRequestParams(right))
   )
 }
 
@@ -2335,6 +2670,28 @@ function normalizedTsneParams(params: TsneParams): Record<string, unknown> {
     seed: params.seed ?? null,
     use_pca: params.use_pca,
   }
+}
+
+function isTsneResponse(
+  response: AnalysisResponse | null
+): response is TsneAnalysisResponse {
+  return Boolean(response && "points" in response)
+}
+
+function isLrpResponse(
+  response: AnalysisResponse | null
+): response is LrpAnalysisResponse {
+  return Boolean(response && "samples" in response)
+}
+
+function analysisMethodLabel(method: AnalysisMethod): string {
+  return method === "tsne" ? "t-SNE" : "LRP"
+}
+
+function analysisEmptyDescription(method: AnalysisMethod): string {
+  return method === "tsne"
+    ? "t-SNE plots will appear here."
+    : "LRP heatmaps will appear here."
 }
 
 type AnalysisClassMarkerState = {
@@ -2694,16 +3051,21 @@ function formatOptionalPercent(value: number | null | undefined): string {
   return `${value.toFixed(2)}%`
 }
 
-function testAccuracyFor(response: TsneAnalysisResponse | null): number | null {
-  if (!response || response.points.length === 0) {
+function analysisAccuracyFor(response: AnalysisResponse | null): number | null {
+  const outcomes = isTsneResponse(response)
+    ? response.points
+    : isLrpResponse(response)
+      ? response.samples
+      : []
+  if (outcomes.length === 0) {
     return null
   }
 
-  const correctCount = response.points.reduce(
-    (total, point) => total + (point.correct ? 1 : 0),
+  const correctCount = outcomes.reduce(
+    (total, item) => total + (item.correct ? 1 : 0),
     0
   )
-  return (correctCount / response.points.length) * 100
+  return (correctCount / outcomes.length) * 100
 }
 
 function formatOptionalDuration(seconds: number | null | undefined): string {
@@ -2769,6 +3131,28 @@ function formatParamValue(value: number): string {
   return new Intl.NumberFormat(undefined, {
     maximumFractionDigits: 6,
   }).format(value)
+}
+
+function formatCompactNumber(value: number): string {
+  if (!Number.isFinite(value)) {
+    return "n/a"
+  }
+
+  if (Math.abs(value) >= 1000 || (Math.abs(value) > 0 && Math.abs(value) < 0.001)) {
+    return value.toExponential(2)
+  }
+
+  return new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: 4,
+  }).format(value)
+}
+
+function clamp(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) {
+    return min
+  }
+
+  return Math.min(max, Math.max(min, value))
 }
 
 function formatCheckpointDate(savedAt: string): string {

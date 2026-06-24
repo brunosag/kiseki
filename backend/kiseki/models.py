@@ -2,6 +2,7 @@ from collections.abc import Iterable
 from typing import Literal
 
 import torch
+from captum.attr._utils.custom_modules import Addition_Module
 from torch import nn
 from torch.nn import functional as F
 
@@ -15,7 +16,11 @@ class CNN2C2DMNIST(nn.Module):
         super().__init__()
         self.conv1 = nn.Conv2d(1, 8, 3)
         self.conv2 = nn.Conv2d(8, 16, 3)
-        self.pool = nn.MaxPool2d(2)
+        self.relu1 = nn.ReLU()
+        self.relu2 = nn.ReLU()
+        self.relu3 = nn.ReLU()
+        self.pool1 = nn.MaxPool2d(2)
+        self.pool2 = nn.MaxPool2d(2)
         self.fc1 = nn.Linear(400, 120)
         self.fc2 = nn.Linear(120, 10)
         self.reset_parameters()
@@ -31,10 +36,10 @@ class CNN2C2DMNIST(nn.Module):
         return self.fc2(self.final_hidden(x))
 
     def final_hidden(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
+        x = self.pool1(self.relu1(self.conv1(x)))
+        x = self.pool2(self.relu2(self.conv2(x)))
         x = torch.flatten(x, 1)
-        return F.relu(self.fc1(x))
+        return self.relu3(self.fc1(x))
 
     def named_activations(
         self,
@@ -44,10 +49,10 @@ class CNN2C2DMNIST(nn.Module):
         requested = set(names)
         activations: dict[ActivationName, torch.Tensor] = {}
 
-        x = self.pool(F.relu(self.conv1(x)))
-        x = self.pool(F.relu(self.conv2(x)))
+        x = self.pool1(self.relu1(self.conv1(x)))
+        x = self.pool2(self.relu2(self.conv2(x)))
         x = torch.flatten(x, 1)
-        x = F.relu(self.fc1(x))
+        x = self.relu3(self.fc1(x))
         if "fc1_relu" in requested:
             activations["fc1_relu"] = x
         if "final_hidden" in requested:
@@ -79,14 +84,17 @@ class CIFARBasicBlock(nn.Module):
             bias=False,
         )
         self.bn2 = cifar_batch_norm(out_channels)
+        self.relu1 = nn.ReLU()
+        self.relu2 = nn.ReLU()
+        self.add = Addition_Module()
         self.stride = stride
         self.channel_padding = out_channels - in_channels
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = self.shortcut(x)
-        out = F.relu(self.bn1(self.conv1(x)))
+        out = self.relu1(self.bn1(self.conv1(x)))
         out = self.bn2(self.conv2(out))
-        return F.relu(out + residual)
+        return self.relu2(self.add(out, residual))
 
     def shortcut(self, x: torch.Tensor) -> torch.Tensor:
         if self.stride == 1 and self.channel_padding == 0:
@@ -107,9 +115,11 @@ class CIFARResNet20(nn.Module):
         self.in_channels = 16
         self.conv1 = nn.Conv2d(3, 16, kernel_size=3, stride=1, padding=1, bias=False)
         self.bn1 = cifar_batch_norm(16)
+        self.relu = nn.ReLU()
         self.layer1 = self._make_layer(16, block_count=3, stride=1)
         self.layer2 = self._make_layer(32, block_count=3, stride=2)
         self.layer3 = self._make_layer(64, block_count=3, stride=2)
+        self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
         self.fc = nn.Linear(64, 10)
         self.reset_parameters()
 
@@ -136,11 +146,11 @@ class CIFARResNet20(nn.Module):
         return self.fc(self.final_hidden(x))
 
     def final_hidden(self, x: torch.Tensor) -> torch.Tensor:
-        x = F.relu(self.bn1(self.conv1(x)))
+        x = self.relu(self.bn1(self.conv1(x)))
         x = self.layer1(x)
         x = self.layer2(x)
         x = self.layer3(x)
-        x = F.avg_pool2d(x, x.size()[3])
+        x = self.avg_pool(x)
         return torch.flatten(x, 1)
 
     def named_activations(

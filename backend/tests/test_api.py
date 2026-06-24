@@ -372,6 +372,144 @@ def test_api_tsne_uses_cifar_checkpoint_model_and_test_loader(
     assert data_loader_factory.cifar10_test_calls == 1
 
 
+def test_api_lrp_returns_balanced_predicted_class_samples_for_mnist(tmp_path) -> None:
+    saver = CheckpointSaver(tmp_path)
+    save_api_checkpoint(
+        saver,
+        run_id="lrp-analysis-run",
+        saved_at="2026-06-20T12:00:00+00:00",
+        step=2,
+    )
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=saver,
+    )
+    client = TestClient(create_app(manager))
+    before_status = client.get("/api/experiments/status").json()
+
+    response = client.post(
+        "/api/analysis/lrp",
+        json={
+            "checkpoint": {"run_id": "lrp-analysis-run", "kind": "latest"},
+            "params": {"sample_count": 10},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["checkpoint"]["run_id"] == "lrp-analysis-run"
+    assert payload["params"] == {"sample_count": 10}
+    assert len(payload["samples"]) == 10
+    assert [sample["label"] for sample in payload["samples"]] == list(range(10))
+    assert [sample["index"] for sample in payload["samples"]] == list(range(10))
+    assert all(sample["target"] == sample["prediction"] for sample in payload["samples"])
+
+    sample = payload["samples"][0]
+    assert set(sample) == {
+        "index",
+        "label",
+        "prediction",
+        "target",
+        "correct",
+        "score",
+        "delta",
+        "image",
+        "relevance",
+    }
+    assert sample["correct"] == (sample["label"] == sample["prediction"])
+    assert np.isfinite(sample["score"])
+    assert np.isfinite(sample["delta"])
+    assert len(sample["image"]) == 28
+    assert len(sample["image"][0]) == 28
+    assert len(sample["image"][0][0]) == 3
+    assert len(sample["relevance"]) == 28
+    assert len(sample["relevance"][0]) == 28
+    image_values = np.asarray(sample["image"])
+    relevance_values = np.asarray(sample["relevance"])
+    assert image_values.min() >= 0.0
+    assert image_values.max() <= 1.0
+    assert relevance_values.min() >= -1.0
+    assert relevance_values.max() <= 1.0
+    assert client.get("/api/experiments/status").json() == before_status
+
+    invalid = client.post(
+        "/api/analysis/lrp",
+        json={
+            "checkpoint": {"run_id": "lrp-analysis-run", "kind": "latest"},
+            "params": {"sample_count": 0},
+        },
+    )
+    assert invalid.status_code == 422
+
+
+def test_api_lrp_uses_cifar_checkpoint_model_and_returns_denormalized_rgb(
+    tmp_path,
+) -> None:
+    class TrackingLoaderFactory(SyntheticLoaderFactory):
+        def __init__(self) -> None:
+            self.cifar10_test_calls = 0
+            generator = torch.Generator().manual_seed(321)
+            self.raw_inputs = torch.rand(12, 3, 32, 32, generator=generator)
+
+        def cifar10_test(self) -> DataLoader:
+            self.cifar10_test_calls += 1
+            mean = torch.tensor([0.4914, 0.4822, 0.4465]).view(1, 3, 1, 1)
+            std = torch.tensor([0.2023, 0.1994, 0.2010]).view(1, 3, 1, 1)
+            normalized_inputs = (self.raw_inputs - mean) / std
+            targets = torch.arange(12) % 10
+            return DataLoader(
+                TensorDataset(normalized_inputs, targets),
+                batch_size=5,
+                shuffle=False,
+            )
+
+    saver = CheckpointSaver(tmp_path)
+    save_api_checkpoint(
+        saver,
+        run_id="cifar-lrp-analysis-run",
+        saved_at="2026-06-20T12:00:00+00:00",
+        step=2,
+        dataset="cifar10",
+    )
+    data_loader_factory = TrackingLoaderFactory()
+    manager = ExperimentManager(
+        data_loader_factory=data_loader_factory,
+        checkpoint_saver=saver,
+    )
+    client = TestClient(create_app(manager))
+
+    response = client.post(
+        "/api/analysis/lrp",
+        json={
+            "checkpoint": {"run_id": "cifar-lrp-analysis-run", "kind": "latest"},
+            "params": {"sample_count": 10},
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["checkpoint"]["dataset"] == "cifar10"
+    assert len(payload["samples"]) == 10
+    assert [sample["label"] for sample in payload["samples"]] == list(range(10))
+    assert all(sample["target"] == sample["prediction"] for sample in payload["samples"])
+    assert data_loader_factory.cifar10_test_calls == 1
+
+    sample = payload["samples"][0]
+    assert len(sample["image"]) == 32
+    assert len(sample["image"][0]) == 32
+    assert len(sample["image"][0][0]) == 3
+    assert len(sample["relevance"]) == 32
+    assert len(sample["relevance"][0]) == 32
+    np.testing.assert_allclose(
+        sample["image"][0][0],
+        data_loader_factory.raw_inputs[0, :, 0, 0].tolist(),
+        atol=1e-6,
+    )
+    relevance_values = np.asarray(sample["relevance"])
+    assert relevance_values.min() >= -1.0
+    assert relevance_values.max() <= 1.0
+
+
 def test_api_delete_checkpoint_run_removes_latest_and_hidden_best(tmp_path) -> None:
     saver = CheckpointSaver(tmp_path)
     save_api_checkpoint(

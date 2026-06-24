@@ -133,6 +133,22 @@ class TSNEAnalysisRequest(BaseModel):
     params: TSNEParams = Field(default_factory=TSNEParams)
 
 
+class LRPParams(BaseModel):
+    sample_count: int = 20
+
+    @field_validator("sample_count")
+    @classmethod
+    def require_sample_count_range(cls, value: int) -> int:
+        if not 1 <= value <= 50:
+            raise ValueError("must be between 1 and 50")
+        return value
+
+
+class LRPAnalysisRequest(BaseModel):
+    checkpoint: CheckpointSelection
+    params: LRPParams = Field(default_factory=LRPParams)
+
+
 class TSNEPoint(BaseModel):
     x: float
     y: float
@@ -201,6 +217,24 @@ class TSNEAnalysisResponse(BaseModel):
     checkpoint: CheckpointSummary
     params: TSNEParams
     points: list[TSNEPoint]
+
+
+class LRPSample(BaseModel):
+    index: int
+    label: int
+    prediction: int
+    target: int
+    correct: bool
+    score: float
+    delta: float
+    image: list[list[list[float]]]
+    relevance: list[list[float]]
+
+
+class LRPAnalysisResponse(BaseModel):
+    checkpoint: CheckpointSummary
+    params: LRPParams
+    samples: list[LRPSample]
 
 
 class AccuracyPoint(BaseModel):

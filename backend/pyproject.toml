@@ -5,6 +5,7 @@ description = "FastAPI and PyTorch service for Kiseki experiments"
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
+    "captum>=0.9.0",
     "fastapi[standard-no-fastapi-cloud-cli]>=0.137.1",
     "numpy>=2.4.6",
     "scikit-learn>=1.9.0",

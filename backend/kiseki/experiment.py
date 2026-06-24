@@ -35,6 +35,8 @@ from .schemas import (
     ExperimentConfig,
     ExperimentControlsUpdate,
     ExperimentStatus,
+    LRPAnalysisRequest,
+    LRPAnalysisResponse,
     MutationStepPoint,
     StartExperimentRequest,
     TSNEAnalysisRequest,
@@ -80,6 +82,9 @@ class ExperimentManager:
 
     def tsne_analysis(self, request: TSNEAnalysisRequest) -> TSNEAnalysisResponse:
         return self._analysis_service().tsne(request)
+
+    def lrp_analysis(self, request: LRPAnalysisRequest) -> LRPAnalysisResponse:
+        return self._analysis_service().lrp(request)
 
     def delete_checkpoint(self, run_id: str) -> None:
         with self.lock:

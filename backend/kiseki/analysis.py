@@ -2,15 +2,19 @@ from __future__ import annotations
 
 import numpy as np
 import torch
+from captum.attr import LRP
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 
 from .checkpoint import CheckpointSaver, checkpoint_summary_from_metadata
-from .data import DataLoaderFactory, test_loader
+from .data import CIFAR10_MEAN, CIFAR10_STD, DataLoaderFactory, test_loader
 from .models import build_model
 from .schemas import (
     CheckpointSummary,
     ExperimentConfig,
+    LRPAnalysisRequest,
+    LRPAnalysisResponse,
+    LRPSample,
     TSNEAnalysisRequest,
     TSNEAnalysisResponse,
     TSNEParams,
@@ -19,6 +23,10 @@ from .schemas import (
 
 
 class TSNEParameterError(ValueError):
+    pass
+
+
+class LRPParameterError(ValueError):
     pass
 
 
@@ -81,6 +89,78 @@ class AnalysisService:
             ],
         )
 
+    def lrp(self, request: LRPAnalysisRequest) -> LRPAnalysisResponse:
+        payload = self.checkpoint_saver.load(
+            request.checkpoint.run_id,
+            request.checkpoint.kind,
+            map_location="cpu",
+        )
+        config = ExperimentConfig.model_validate(payload["config"])
+
+        model = build_model(config.dataset)
+        model.load_state_dict(payload["model_state"])
+        model.eval()
+
+        inputs, labels = collect_lrp_inputs(
+            test_loader(self.data_loader_factory, config.dataset)
+        )
+        selected_indices = balanced_sample_indices(
+            labels.tolist(),
+            min(request.params.sample_count, labels.numel()),
+        )
+        if not selected_indices:
+            raise LRPParameterError("test loader did not return any samples")
+
+        selected_inputs = inputs[selected_indices].clone().requires_grad_(True)
+        selected_labels = labels[selected_indices]
+
+        with torch.no_grad():
+            logits = model(selected_inputs)
+            predictions = logits.argmax(dim=1)
+            scores = logits.gather(1, predictions.unsqueeze(1)).squeeze(1)
+
+        model.zero_grad(set_to_none=True)
+        attributions, deltas = LRP(model).attribute(
+            selected_inputs,
+            target=predictions,
+            return_convergence_delta=True,
+        )
+        if not isinstance(attributions, torch.Tensor):
+            raise LRPParameterError("LRP returned multiple attribution tensors")
+
+        return LRPAnalysisResponse(
+            checkpoint=checkpoint_summary_from_payload(
+                self.checkpoint_saver,
+                payload,
+                run_id=request.checkpoint.run_id,
+                kind=request.checkpoint.kind,
+            ),
+            params=request.params,
+            samples=[
+                LRPSample(
+                    index=int(source_index),
+                    label=int(label),
+                    prediction=int(prediction),
+                    target=int(prediction),
+                    correct=bool(label == prediction),
+                    score=float(score),
+                    delta=float(delta),
+                    image=rgb_image(sample_input, config.dataset),
+                    relevance=normalized_signed_relevance(attribution),
+                )
+                for source_index, label, prediction, score, delta, sample_input, attribution in zip(
+                    selected_indices,
+                    selected_labels.tolist(),
+                    predictions.tolist(),
+                    scores.tolist(),
+                    deltas.detach().cpu().tolist(),
+                    selected_inputs,
+                    attributions.detach().cpu(),
+                    strict=True,
+                )
+            ],
+        )
+
 
 def collect_final_hidden_activations(
     model: torch.nn.Module,
@@ -109,6 +189,78 @@ def collect_final_hidden_activations(
         torch.cat(label_batches).numpy(),
         torch.cat(prediction_batches).numpy(),
     )
+
+
+def collect_lrp_inputs(
+    loader: torch.utils.data.DataLoader,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    input_batches: list[torch.Tensor] = []
+    label_batches: list[torch.Tensor] = []
+
+    for inputs, targets in loader:
+        input_batches.append(inputs.detach().cpu())
+        label_batches.append(torch.as_tensor(targets, dtype=torch.long).detach().cpu())
+
+    if not input_batches:
+        raise LRPParameterError("test loader did not return any samples")
+
+    return torch.cat(input_batches), torch.cat(label_batches)
+
+
+def balanced_sample_indices(
+    labels: list[int],
+    sample_count: int,
+    *,
+    class_count: int = 10,
+) -> list[int]:
+    target_count = min(sample_count, len(labels))
+    desired_counts = [target_count // class_count] * class_count
+    for label in range(target_count % class_count):
+        desired_counts[label] += 1
+
+    buckets: list[list[int]] = [[] for _ in range(class_count)]
+    for index, label in enumerate(labels):
+        if 0 <= label < class_count:
+            buckets[label].append(index)
+
+    selected: list[int] = []
+    selected_set: set[int] = set()
+    for label, desired_count in enumerate(desired_counts):
+        for index in buckets[label][:desired_count]:
+            selected.append(index)
+            selected_set.add(index)
+
+    for index in range(len(labels)):
+        if len(selected) >= target_count:
+            break
+        if index not in selected_set:
+            selected.append(index)
+            selected_set.add(index)
+
+    return selected
+
+
+def rgb_image(input_tensor: torch.Tensor, dataset: str) -> list[list[list[float]]]:
+    image = input_tensor.detach().cpu().float()
+    if dataset == "cifar10":
+        mean = torch.tensor(CIFAR10_MEAN, dtype=image.dtype).view(3, 1, 1)
+        std = torch.tensor(CIFAR10_STD, dtype=image.dtype).view(3, 1, 1)
+        image = image * std + mean
+
+    if image.shape[0] == 1:
+        image = image.repeat(3, 1, 1)
+
+    image = torch.nan_to_num(image).clamp(0.0, 1.0)
+    return image.permute(1, 2, 0).tolist()
+
+
+def normalized_signed_relevance(attribution: torch.Tensor) -> list[list[float]]:
+    relevance = attribution.detach().cpu().float().sum(dim=0)
+    relevance = torch.nan_to_num(relevance)
+    max_abs = float(relevance.abs().max())
+    if max_abs > 0.0:
+        relevance = relevance / max_abs
+    return relevance.clamp(-1.0, 1.0).tolist()
 
 
 def validate_tsne_params(params: TSNEParams, *, sample_count: int) -> None:
