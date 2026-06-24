@@ -25,8 +25,10 @@ export type SchemaResponse = {
   optimizers_schema: Record<string, OptimizerParamField[]>
 }
 
+export type DatasetName = "mnist" | "cifar10"
+
 export type ExperimentConfig = {
-  dataset: "mnist"
+  dataset: DatasetName
   device: "cpu" | "gpu"
   seed: number
   batch_size: number
@@ -49,7 +51,7 @@ export type CheckpointSummary = CheckpointSelection & {
   saved_at: string
   step: number
   optimizer: "LEEA" | "SGD"
-  dataset: "mnist"
+  dataset: DatasetName
   seed: number
   requested_device?: string | null
   device: string
@@ -147,7 +149,11 @@ export const fallbackSchema: SchemaResponse = {
     dataset: {
       type: "select",
       label: "Dataset",
-      options: [{ label: "MNIST", value: "mnist" }],
+      default: "mnist",
+      options: [
+        { label: "MNIST", value: "mnist" },
+        { label: "CIFAR-10", value: "cifar10" },
+      ],
     },
     device: {
       type: "select",
@@ -312,7 +318,7 @@ export function apiUrl(path: string): string {
 
 export function configDefaults(schema: SchemaResponse): ExperimentConfig {
   return {
-    dataset: selectDefault(schema.config_schema.dataset, "mnist") as "mnist",
+    dataset: selectDefault(schema.config_schema.dataset, "mnist") as DatasetName,
     device: selectDefault(schema.config_schema.device, "gpu") as "cpu" | "gpu",
     seed: numberDefault(schema.config_schema.seed, 42),
     batch_size: numberDefault(schema.config_schema.batch_size, 512),

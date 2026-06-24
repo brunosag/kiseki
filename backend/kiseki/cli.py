@@ -65,7 +65,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     benchmark.add_argument(
         "--benchmark",
-        choices=("synthetic", "mnist", "both"),
+        choices=("synthetic", "mnist", "cifar10", "both"),
         default=defaults.benchmark,
     )
     benchmark.add_argument("--iterations", type=positive_int, default=defaults.iterations)

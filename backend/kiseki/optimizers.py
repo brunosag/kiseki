@@ -11,6 +11,9 @@ from torch.nn import functional as F
 
 from .schemas import ETA, ETA_0, GAMMA, LAMBDA, P_M, RHO, RHO_X, TAU_PAT
 
+CUDA_REPRODUCTION_WORK_CHUNK_BYTES = 64 * 1024 * 1024
+CPU_REPRODUCTION_WORK_CHUNK_BYTES = 256 * 1024 * 1024
+
 
 class OptimizerRunner(Protocol):
     def step(self, inputs: torch.Tensor, targets: torch.Tensor) -> float:
@@ -474,22 +477,52 @@ class LEEARunner:
             self._next_population = next_population
 
         if self.asexual_count:
-            next_population[: self.asexual_count] = self._reproduce_asexual(asexual)
+            self._reproduce_asexual(asexual, out=next_population[: self.asexual_count])
 
         if self.sexual_count:
             sexual_start = self.asexual_count
-            next_population[sexual_start:] = self._reproduce_sexual(sexual_1, sexual_2)
+            self._reproduce_sexual(
+                sexual_1,
+                sexual_2,
+                out=next_population[sexual_start:],
+            )
 
         return next_population
 
-    def _reproduce_asexual(self, parent_indices: torch.Tensor) -> torch.Tensor:
-        children = self.population[parent_indices].clone()
+    def _reproduce_asexual(
+        self,
+        parent_indices: torch.Tensor,
+        *,
+        out: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        children = out
+        if children is None:
+            children = torch.empty(
+                (parent_indices.numel(), self.num_parameters),
+                device=self.device,
+                dtype=self.population.dtype,
+            )
+
+        chunk_rows = reproduction_chunk_size(
+            self.num_parameters,
+            self.population.element_size(),
+            self.device,
+        )
+        for start in range(0, parent_indices.numel(), chunk_rows):
+            end = min(start + chunk_rows, parent_indices.numel())
+            child_slice = children[start:end]
+            child_slice.copy_(self.population[parent_indices[start:end]])
+            self._mutate_asexual_children(child_slice)
+
+        return children
+
+    def _mutate_asexual_children(self, children: torch.Tensor) -> None:
         if (
             children.numel() == 0
             or self.config.mutation_probability <= 0.0
             or self.mutation_step == 0.0
         ):
-            return children
+            return
 
         mutation_mask = (
             torch.rand(
@@ -502,7 +535,7 @@ class LEEARunner:
         mutation_coordinates = mutation_mask.nonzero(as_tuple=True)
         mutation_count = mutation_coordinates[0].numel()
         if mutation_count == 0:
-            return children
+            return
 
         mutation = (
             2.0
@@ -514,24 +547,42 @@ class LEEARunner:
             - 1.0
         ) * self.mutation_step
         children[mutation_coordinates] += mutation.to(dtype=children.dtype)
-        return children
 
     def _reproduce_sexual(
         self,
         parent_1_indices: torch.Tensor,
         parent_2_indices: torch.Tensor,
+        *,
+        out: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        parent_1 = self.population[parent_1_indices]
-        parent_2 = self.population[parent_2_indices]
-        crossover_mask = (
-            torch.rand(
-                parent_1.shape,
-                generator=self.generator,
+        children = out
+        if children is None:
+            children = torch.empty(
+                (parent_1_indices.numel(), self.num_parameters),
                 device=self.device,
+                dtype=self.population.dtype,
             )
-            < 0.5
+
+        chunk_rows = reproduction_chunk_size(
+            self.num_parameters,
+            self.population.element_size(),
+            self.device,
         )
-        return torch.where(crossover_mask, parent_1, parent_2)
+        for start in range(0, parent_1_indices.numel(), chunk_rows):
+            end = min(start + chunk_rows, parent_1_indices.numel())
+            parent_1 = self.population[parent_1_indices[start:end]]
+            parent_2 = self.population[parent_2_indices[start:end]]
+            crossover_mask = (
+                torch.rand(
+                    parent_1.shape,
+                    generator=self.generator,
+                    device=self.device,
+                )
+                < 0.5
+            )
+            torch.where(crossover_mask, parent_1, parent_2, out=children[start:end])
+
+        return children
 
 
 def population_cross_entropy_losses(
@@ -550,6 +601,20 @@ def population_cross_entropy_losses(
 def split_reproduction_counts(population_size: int, crossover_fraction: float) -> tuple[int, int]:
     sexual_count = min(population_size, max(0, int(round(crossover_fraction * population_size))))
     return population_size - sexual_count, sexual_count
+
+
+def reproduction_chunk_size(
+    num_parameters: int,
+    element_size: int,
+    device: torch.device,
+) -> int:
+    target_bytes = (
+        CUDA_REPRODUCTION_WORK_CHUNK_BYTES
+        if device.type == "cuda"
+        else CPU_REPRODUCTION_WORK_CHUNK_BYTES
+    )
+    bytes_per_individual = max(1, num_parameters * element_size)
+    return max(1, target_bytes // bytes_per_individual)
 
 
 def find_largest_safe_chunk_size(

@@ -268,6 +268,41 @@ def test_leea_sexual_reproduction_crosses_without_mutation() -> None:
     assert set(torch.unique(children).tolist()).issubset({0.0, 1.0})
 
 
+def test_leea_reproduction_writes_children_in_chunks(monkeypatch) -> None:
+    monkeypatch.setattr(optimizers, "reproduction_chunk_size", lambda *args: 2)
+    model = TinyClassifier()
+    runner = LEEARunner(
+        model,
+        LEEAConfig(population_size=6, crossover_fraction=0.5, mutation_probability=0.0),
+        device=torch.device("cpu"),
+        seed=21,
+    )
+    runner.population = torch.arange(
+        runner.population_size * runner.num_parameters,
+        dtype=runner.population.dtype,
+    ).reshape(runner.population_size, runner.num_parameters)
+    parent_indices = (
+        torch.tensor([0, 1, 2]),
+        torch.tensor([0, 1, 2]),
+        torch.tensor([3, 4, 5]),
+    )
+
+    next_population = runner._reproduce(parent_indices)
+
+    assert next_population.data_ptr() == runner._next_population.data_ptr()
+    assert next_population.shape == runner.population.shape
+    assert torch.equal(next_population[:3], runner.population[:3])
+    for row, parent_1_index, parent_2_index in zip(
+        next_population[3:],
+        parent_indices[1],
+        parent_indices[2],
+        strict=True,
+    ):
+        parent_1 = runner.population[parent_1_index]
+        parent_2 = runner.population[parent_2_index]
+        assert torch.all((row == parent_1) | (row == parent_2))
+
+
 def test_leea_scheduler_decays_only_after_validation_patience() -> None:
     model = TinyClassifier()
     runner = LEEARunner(

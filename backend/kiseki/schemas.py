@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from .dataset_types import DatasetName
+
 
 ETA = "\u03b7"
 P_M = "p\u2098"
@@ -38,7 +40,7 @@ class OptimizerParamField(BaseModel):
 
 
 class ExperimentConfig(BaseModel):
-    dataset: Literal["mnist"] = "mnist"
+    dataset: DatasetName = "mnist"
     device: Literal["cpu", "gpu"] = "gpu"
     seed: int = 42
     batch_size: int = 512
@@ -178,7 +180,7 @@ class CheckpointSummary(BaseModel):
     saved_at: str
     step: int
     optimizer: Literal["LEEA", "SGD"]
-    dataset: Literal["mnist"]
+    dataset: DatasetName
     seed: int
     requested_device: str | None = None
     device: str
@@ -255,7 +257,11 @@ CONFIG_SCHEMA: dict[str, ConfigField] = {
     "dataset": ConfigField(
         type="select",
         label="Dataset",
-        options=[SelectOption(label="MNIST", value="mnist")],
+        default="mnist",
+        options=[
+            SelectOption(label="MNIST", value="mnist"),
+            SelectOption(label="CIFAR-10", value="cifar10"),
+        ],
     ),
     "device": ConfigField(
         type="select",

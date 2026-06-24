@@ -2730,6 +2730,10 @@ function bestAccuracyStepFor(
 }
 
 function formatDatasetName(dataset: string): string {
+  if (dataset === "cifar10") {
+    return "CIFAR-10"
+  }
+
   return dataset.toUpperCase()
 }
 

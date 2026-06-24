@@ -9,13 +9,14 @@ from typing import Any, Literal
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
-from .data import cycle_loader, load_mnist
+from .data import cycle_loader, load_cifar10, load_mnist
+from .dataset_types import DatasetName, REAL_DATASETS
 from .experiment import NumericMode, move_batch, seed_everything
-from .models import CNN2C2DMNIST
+from .models import build_model
 from .optimizers import build_optimizer_runner
 from .schemas import ETA, ETA_0, OPTIMIZERS_SCHEMA, P_M, ExperimentConfig
 
-BenchmarkName = Literal["synthetic", "mnist"]
+BenchmarkName = Literal["synthetic", "mnist", "cifar10"]
 OptimizerName = Literal["LEEA", "SGD"]
 RequestedDevice = Literal["auto", "both", "cpu", "gpu"]
 
@@ -40,7 +41,7 @@ class BenchmarkError(RuntimeError):
 class BenchmarkOptions:
     device: RequestedDevice = "both"
     optimizer: Literal["LEEA", "SGD", "both"] = "both"
-    benchmark: Literal["synthetic", "mnist", "both"] = FRONTEND_DEFAULT_CONFIG.dataset
+    benchmark: Literal["synthetic", "mnist", "cifar10", "both"] = FRONTEND_DEFAULT_CONFIG.dataset
     iterations: int = 10
     batch_size: int = FRONTEND_DEFAULT_CONFIG.batch_size
     seed: int = FRONTEND_DEFAULT_CONFIG.seed
@@ -76,7 +77,7 @@ def run_single_benchmark(
     seed_everything(options.seed, numeric_mode=options.numeric_mode)
     pin_memory = device.type == "cuda"
     train_loader = build_benchmark_loader(benchmark_name, options, pin_memory=pin_memory)
-    model = CNN2C2DMNIST().to(device)
+    model = build_model(model_dataset_for_benchmark(benchmark_name)).to(device)
     should_profile_leea = options.leea_profile and optimizer_name == "LEEA"
     runner = build_optimizer_runner(
         optimizer_name,
@@ -169,7 +170,20 @@ def build_benchmark_loader(
                 pin_memory=pin_memory,
             )
         except RuntimeError as exc:
-            raise BenchmarkError(mnist_unavailable_message(exc)) from exc
+            raise BenchmarkError(real_dataset_unavailable_message("MNIST", exc)) from exc
+        return train_loader
+    if benchmark_name == "cifar10":
+        try:
+            train_loader, _ = load_cifar10(
+                Path("data"),
+                batch_size=options.batch_size,
+                seed=options.seed,
+                download=True,
+                num_workers=options.num_workers,
+                pin_memory=pin_memory,
+            )
+        except RuntimeError as exc:
+            raise BenchmarkError(real_dataset_unavailable_message("CIFAR-10", exc)) from exc
         return train_loader
     raise BenchmarkError(f"Unsupported benchmark: {benchmark_name}")
 
@@ -217,9 +231,9 @@ def resolve_benchmark_devices(requested: RequestedDevice | str) -> tuple[torch.d
     raise BenchmarkError(message)
 
 
-def mnist_unavailable_message(exc: RuntimeError) -> str:
+def real_dataset_unavailable_message(dataset_label: str, exc: RuntimeError) -> str:
     return (
-        "MNIST is not available in data/ and torchvision could not download it. "
+        f"{dataset_label} is not available in data/ and torchvision could not download it. "
         "If you are using direnv, run `direnv allow` at the repository root so shell.nix exports "
         "the system CA bundle before Python starts.\n"
         f"Original error: {exc}"
@@ -249,10 +263,16 @@ def expand_optimizer(choice: str) -> tuple[OptimizerName, ...]:
 
 def expand_benchmark(choice: str) -> tuple[BenchmarkName, ...]:
     if choice == "both":
-        return ("synthetic", "mnist")
-    if choice in {"synthetic", "mnist"}:
+        return ("synthetic", *REAL_DATASETS)
+    if choice in {"synthetic", *REAL_DATASETS}:
         return (choice,)
     raise BenchmarkError(f"Unsupported benchmark: {choice}")
+
+
+def model_dataset_for_benchmark(benchmark_name: BenchmarkName) -> DatasetName:
+    if benchmark_name == "synthetic":
+        return "mnist"
+    return benchmark_name
 
 
 def write_jsonl(results: list[dict[str, Any]], output: Path) -> None:

@@ -23,8 +23,8 @@ from .checkpoint import (
     restore_rng_state,
     utc_now_iso,
 )
-from .data import DataLoaderFactory, cycle_loader, deterministic_batch_stream
-from .models import CNN2C2DMNIST
+from .data import DataLoaderFactory, cycle_loader, deterministic_batch_stream, train_val_loaders
+from .models import build_model
 from .optimizers import build_optimizer_runner
 from .schemas import (
     AccuracyPoint,
@@ -324,11 +324,13 @@ class ExperimentManager:
 
             if hasattr(self.data_loader_factory, "pin_memory"):
                 self.data_loader_factory.pin_memory = device.type == "cuda"
-            train_loader, val_loader = self.data_loader_factory.mnist(
+            train_loader, val_loader = train_val_loaders(
+                self.data_loader_factory,
+                config.dataset,
                 batch_size=config.batch_size,
                 seed=config.seed,
             )
-            model = CNN2C2DMNIST().to(device)
+            model = build_model(config.dataset).to(device)
             runner = build_optimizer_runner(
                 config.optimizer,
                 model,

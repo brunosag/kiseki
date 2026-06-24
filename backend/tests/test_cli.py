@@ -67,6 +67,14 @@ def test_benchmark_argument_parsing() -> None:
     assert args.numeric_mode == "fast"
 
 
+def test_benchmark_accepts_cifar10_and_expands_both() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["benchmark", "--benchmark", "cifar10"])
+
+    assert args.benchmark == "cifar10"
+    assert benchmark.expand_benchmark("both") == ("synthetic", "mnist", "cifar10")
+
+
 def test_benchmark_cli_writes_synthetic_jsonl(tmp_path, capsys) -> None:
     output = tmp_path / "results.jsonl"
 
@@ -210,6 +218,35 @@ def test_explicit_mnist_failure_returns_error(monkeypatch, capsys) -> None:
 
     assert exit_code == 1
     assert "MNIST is not available" in captured.err
+    assert "certificate verify failed" in captured.err
+
+
+def test_explicit_cifar10_failure_returns_error(monkeypatch, capsys) -> None:
+    def fail_cifar10(*args, **kwargs):
+        raise RuntimeError("certificate verify failed")
+
+    monkeypatch.setattr(benchmark, "load_cifar10", fail_cifar10)
+
+    exit_code = main(
+        [
+            "benchmark",
+            "--device",
+            "cpu",
+            "--benchmark",
+            "cifar10",
+            "--optimizer",
+            "SGD",
+            "--iterations",
+            "1",
+            "--batch-size",
+            "4",
+        ]
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "CIFAR-10 is not available" in captured.err
     assert "certificate verify failed" in captured.err
 
 

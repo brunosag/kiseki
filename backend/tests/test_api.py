@@ -18,7 +18,8 @@ from kiseki.experiment import (
     resolve_device,
     seed_everything,
 )
-from kiseki.models import CNN2C2DMNIST
+from kiseki.dataset_types import DatasetName
+from kiseki.models import CIFARResNet20, build_model
 from kiseki.schemas import ETA, ETA_0, ExperimentConfig, ExperimentStatus
 from kiseki.optimizers import SGDConfig, SGDRunner
 
@@ -37,6 +38,22 @@ class SyntheticLoaderFactory:
     def mnist_test(self) -> DataLoader:
         generator = torch.Generator().manual_seed(123)
         inputs = torch.randn(12, 1, 28, 28, generator=generator)
+        targets = torch.arange(12) % 10
+        return DataLoader(TensorDataset(inputs, targets), batch_size=5, shuffle=False)
+
+    def cifar10(self, batch_size: int, seed: int) -> tuple[DataLoader, DataLoader]:
+        generator = torch.Generator().manual_seed(seed)
+        inputs = torch.randn(24, 3, 32, 32, generator=generator)
+        targets = torch.randint(0, 10, (24,), generator=generator)
+        dataset = TensorDataset(inputs, targets)
+        return (
+            DataLoader(dataset, batch_size=batch_size, shuffle=True),
+            DataLoader(dataset, batch_size=batch_size, shuffle=False),
+        )
+
+    def cifar10_test(self) -> DataLoader:
+        generator = torch.Generator().manual_seed(123)
+        inputs = torch.randn(12, 3, 32, 32, generator=generator)
         targets = torch.arange(12) % 10
         return DataLoader(TensorDataset(inputs, targets), batch_size=5, shuffle=False)
 
@@ -65,8 +82,10 @@ def save_api_checkpoint(
     kind: str = "latest",
     iterations: int = 6,
     accuracy: float | None = 12.0,
+    dataset: DatasetName = "mnist",
 ) -> None:
     config = ExperimentConfig(
+        dataset=dataset,
         device="cpu",
         seed=19,
         batch_size=4,
@@ -91,7 +110,7 @@ def save_api_checkpoint(
         best_checkpoint_path=str(saver.best_pt_path(run_id)) if kind == "best" else None,
     )
     saver.save(
-        model=CNN2C2DMNIST(),
+        model=build_model(dataset),
         status=status,
         config=config,
         optimizer="SGD",
@@ -192,6 +211,22 @@ def test_api_analysis_checkpoint_list_prefers_best_then_latest(tmp_path) -> None
     ]
 
 
+def test_api_schema_includes_supported_datasets(tmp_path) -> None:
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=CheckpointSaver(tmp_path),
+    )
+    client = TestClient(create_app(manager))
+
+    response = client.get("/api/schema")
+
+    assert response.status_code == 200
+    assert response.json()["config_schema"]["dataset"]["options"] == [
+        {"label": "MNIST", "value": "mnist"},
+        {"label": "CIFAR-10", "value": "cifar10"},
+    ]
+
+
 def test_api_tsne_validates_params_loads_checkpoint_and_returns_points(
     tmp_path,
     monkeypatch,
@@ -274,6 +309,67 @@ def test_api_tsne_validates_params_loads_checkpoint_and_returns_points(
         },
     )
     assert invalid.status_code == 422
+
+
+def test_api_tsne_uses_cifar_checkpoint_model_and_test_loader(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class FakeTSNE:
+        def __init__(self, **kwargs) -> None:
+            self.kwargs = kwargs
+
+        def fit_transform(self, features):
+            assert features.shape == (12, 64)
+            return np.column_stack(
+                (
+                    np.arange(features.shape[0], dtype=np.float32),
+                    np.arange(features.shape[0], dtype=np.float32),
+                )
+            )
+
+    class TrackingLoaderFactory(SyntheticLoaderFactory):
+        def __init__(self) -> None:
+            self.cifar10_test_calls = 0
+
+        def cifar10_test(self) -> DataLoader:
+            self.cifar10_test_calls += 1
+            return super().cifar10_test()
+
+    monkeypatch.setattr(analysis, "TSNE", FakeTSNE)
+    saver = CheckpointSaver(tmp_path)
+    save_api_checkpoint(
+        saver,
+        run_id="cifar-analysis-run",
+        saved_at="2026-06-20T12:00:00+00:00",
+        step=2,
+        dataset="cifar10",
+    )
+    data_loader_factory = TrackingLoaderFactory()
+    manager = ExperimentManager(
+        data_loader_factory=data_loader_factory,
+        checkpoint_saver=saver,
+    )
+    client = TestClient(create_app(manager))
+
+    response = client.post(
+        "/api/analysis/tsne",
+        json={
+            "checkpoint": {"run_id": "cifar-analysis-run", "kind": "latest"},
+            "params": {
+                "perplexity": 5,
+                "max_iter": 250,
+                "angle": 0.3,
+                "seed": 7,
+                "use_pca": False,
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["checkpoint"]["dataset"] == "cifar10"
+    assert len(response.json()["points"]) == 12
+    assert data_loader_factory.cifar10_test_calls == 1
 
 
 def test_api_delete_checkpoint_run_removes_latest_and_hidden_best(tmp_path) -> None:
@@ -590,6 +686,88 @@ def test_api_start_status_stop_flow(tmp_path) -> None:
     stop_response = client.post("/api/experiments/stop")
     assert stop_response.status_code == 200
     wait_for_status(client, lambda status: not status["is_running"])
+
+
+def test_api_start_cifar10_experiment_uses_cifar_loader_and_model(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    class TrackingLoaderFactory(SyntheticLoaderFactory):
+        def __init__(self) -> None:
+            self.cifar10_calls: list[tuple[int, int]] = []
+
+        def cifar10(self, batch_size: int, seed: int) -> tuple[DataLoader, DataLoader]:
+            self.cifar10_calls.append((batch_size, seed))
+            return super().cifar10(batch_size, seed)
+
+    captured: dict[str, torch.nn.Module] = {}
+
+    def build_tracking_runner(optimizer_name, model, raw_params, *, device, seed, **kwargs):
+        assert optimizer_name == "SGD"
+        captured["model"] = model
+        return SGDRunner(model, SGDConfig(eta=float(raw_params.get(ETA, 0.01))))
+
+    monkeypatch.setattr(experiment, "build_optimizer_runner", build_tracking_runner)
+    data_loader_factory = TrackingLoaderFactory()
+    manager = ExperimentManager(
+        data_loader_factory=data_loader_factory,
+        checkpoint_saver=CheckpointSaver(tmp_path),
+    )
+    client = TestClient(create_app(manager))
+
+    response = client.post(
+        "/api/experiments/start",
+        json={
+            "config": {
+                "dataset": "cifar10",
+                "device": "cpu",
+                "seed": 5,
+                "batch_size": 4,
+                "iterations": 1,
+                "target_acc": 100.0,
+                "optimizer": "SGD",
+            },
+            "opt_params": {"SGD": {ETA: 0.01}},
+        },
+    )
+
+    assert response.status_code == 200
+    status = wait_for_status(client, lambda status: not status["is_running"])
+    assert status["run_id"].startswith("cifar10-sgd-cpu-seed5-")
+    assert status["current_step"] == 1
+    assert data_loader_factory.cifar10_calls == [(4, 5)]
+    assert isinstance(captured["model"], CIFARResNet20)
+
+
+def test_api_lists_and_resumes_cifar10_checkpoint(tmp_path) -> None:
+    saver = CheckpointSaver(tmp_path)
+    save_api_checkpoint(
+        saver,
+        run_id="cifar-resume-run",
+        saved_at="2026-06-20T12:00:00+00:00",
+        step=1,
+        iterations=2,
+        dataset="cifar10",
+    )
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=saver,
+    )
+    client = TestClient(create_app(manager))
+
+    checkpoints = client.get("/api/checkpoints").json()
+    assert checkpoints[0]["dataset"] == "cifar10"
+    assert checkpoints[0]["config"]["dataset"] == "cifar10"
+
+    response = client.post(
+        "/api/experiments/start",
+        json={"checkpoint": {"run_id": "cifar-resume-run", "kind": "latest"}},
+    )
+
+    assert response.status_code == 200
+    status = wait_for_status(client, lambda status: not status["is_running"])
+    assert status["run_id"] == "cifar-resume-run"
+    assert status["current_step"] == 2
 
 
 def test_api_applies_paused_nontrajectory_controls_on_resume(tmp_path, monkeypatch) -> None:

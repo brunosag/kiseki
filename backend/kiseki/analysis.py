@@ -6,8 +6,8 @@ from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 
 from .checkpoint import CheckpointSaver, checkpoint_summary_from_metadata
-from .data import DataLoaderFactory
-from .models import CNN2C2DMNIST
+from .data import DataLoaderFactory, test_loader
+from .models import build_model
 from .schemas import (
     CheckpointSummary,
     ExperimentConfig,
@@ -45,13 +45,13 @@ class AnalysisService:
         seed = config.seed if request.params.seed is None else request.params.seed
         params = request.params.model_copy(update={"seed": seed})
 
-        model = CNN2C2DMNIST()
+        model = build_model(config.dataset)
         model.load_state_dict(payload["model_state"])
         model.eval()
 
         features, labels, predictions = collect_final_hidden_activations(
             model,
-            self.data_loader_factory.mnist_test(),
+            test_loader(self.data_loader_factory, config.dataset),
         )
         validate_tsne_params(params, sample_count=features.shape[0])
         coordinates = tsne_embedding(features, params)
@@ -83,7 +83,7 @@ class AnalysisService:
 
 
 def collect_final_hidden_activations(
-    model: CNN2C2DMNIST,
+    model: torch.nn.Module,
     loader: torch.utils.data.DataLoader,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     feature_batches: list[torch.Tensor] = []
@@ -92,8 +92,11 @@ def collect_final_hidden_activations(
 
     with torch.no_grad():
         for inputs, targets in loader:
-            hidden = model.named_activations(inputs, ("fc1_relu",))["fc1_relu"]
-            logits = model.fc2(hidden)
+            final_hidden = getattr(model, "final_hidden", None)
+            if not callable(final_hidden):
+                raise TSNEParameterError("model does not expose final_hidden activations")
+            hidden = final_hidden(inputs)
+            logits = model(inputs)
             feature_batches.append(hidden.detach().cpu())
             label_batches.append(targets.detach().cpu())
             prediction_batches.append(logits.argmax(dim=1).detach().cpu())

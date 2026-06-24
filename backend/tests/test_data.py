@@ -1,7 +1,9 @@
 from pathlib import Path
 
+import numpy as np
 import torch
 import pytest
+from PIL import Image
 from torch.utils.data import (
     DataLoader,
     RandomSampler,
@@ -9,8 +11,15 @@ from torch.utils.data import (
     TensorDataset,
     WeightedRandomSampler,
 )
+from torchvision import transforms
 
-from kiseki.data import deterministic_batch_stream, load_mnist, load_mnist_test
+from kiseki.data import (
+    deterministic_batch_stream,
+    load_cifar10,
+    load_cifar10_test,
+    load_mnist,
+    load_mnist_test,
+)
 
 
 def test_mnist_loader_shape_and_regular_shuffle() -> None:
@@ -51,6 +60,87 @@ def test_mnist_test_loader_is_fixed_batch_and_not_shuffled(tmp_path, monkeypatch
     assert torch.equal(first_targets, torch.arange(20) % 10)
     assert torch.equal(first_inputs, second_inputs)
     assert torch.equal(first_targets, second_targets)
+
+
+def test_cifar10_loader_split_shape_and_transforms(tmp_path, monkeypatch) -> None:
+    class FakeCIFAR10:
+        def __init__(self, root, train: bool, download: bool, transform=None) -> None:
+            assert root == tmp_path
+            assert train is True
+            assert download is False
+            self.transform = transform
+
+        def __len__(self) -> int:
+            return 50000
+
+        def __getitem__(self, index: int):
+            image = Image.fromarray(
+                np.full((32, 32, 3), index % 256, dtype=np.uint8),
+                mode="RGB",
+            )
+            if self.transform is not None:
+                image = self.transform(image)
+            return image, index % 10
+
+    monkeypatch.setattr("kiseki.data.datasets.CIFAR10", FakeCIFAR10)
+
+    train_loader, val_loader = load_cifar10(tmp_path, batch_size=16, seed=123, download=False)
+    inputs, targets = next(iter(train_loader))
+
+    assert inputs.shape == (16, 3, 32, 32)
+    assert targets.shape == (16,)
+    assert isinstance(train_loader.sampler, RandomSampler)
+    assert isinstance(val_loader.sampler, SequentialSampler)
+    assert len(train_loader.dataset) == 45000
+    assert len(val_loader.dataset) == 5000
+
+    train_transform = train_loader.dataset.dataset.transform
+    val_transform = val_loader.dataset.dataset.transform
+    assert [type(transform) for transform in train_transform.transforms] == [
+        transforms.RandomCrop,
+        transforms.RandomHorizontalFlip,
+        transforms.ToTensor,
+        transforms.Normalize,
+    ]
+    assert [type(transform) for transform in val_transform.transforms] == [
+        transforms.ToTensor,
+        transforms.Normalize,
+    ]
+
+
+def test_cifar10_test_loader_is_fixed_batch_and_not_shuffled(tmp_path, monkeypatch) -> None:
+    class FakeCIFAR10:
+        def __init__(self, root, train: bool, download: bool, transform=None) -> None:
+            assert root == tmp_path
+            assert train is False
+            assert download is False
+            self.transform = transform
+
+        def __len__(self) -> int:
+            return 20
+
+        def __getitem__(self, index: int):
+            image = Image.fromarray(
+                np.full((32, 32, 3), index % 256, dtype=np.uint8),
+                mode="RGB",
+            )
+            if self.transform is not None:
+                image = self.transform(image)
+            return image, index % 10
+
+    monkeypatch.setattr("kiseki.data.datasets.CIFAR10", FakeCIFAR10)
+
+    loader = load_cifar10_test(tmp_path, download=False)
+    inputs, targets = next(iter(loader))
+
+    assert loader.batch_size == 512
+    assert isinstance(loader.sampler, SequentialSampler)
+    assert inputs.shape == (20, 3, 32, 32)
+    assert torch.equal(targets, torch.arange(20) % 10)
+    assert [type(transform) for transform in loader.dataset.transform.transforms] == [
+        transforms.ToTensor,
+        transforms.Normalize,
+    ]
 
 
 def test_deterministic_batch_stream_restores_exact_next_batch() -> None:
