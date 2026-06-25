@@ -4,29 +4,41 @@ FastAPI and PyTorch backend for the Kiseki dashboard.
 
 Run the API locally:
 
-```powershell
+```bash
 uv run fastapi dev main.py
 ```
 
 Run checks:
 
-```powershell
+```bash
 uv run pytest
 uv run ruff check .
 ```
 
-Run backend benchmarks:
+Run headless training directly:
 
-```powershell
-uv run kiseki benchmark
+```bash
+uv run kiseki train --device cpu --optimizer SGD --iterations 100 --checkpoint-interval 10
 ```
 
-Benchmark defaults use MNIST with the dashboard batch size, seed, and LEEA
-parameters. By default, the benchmark runs both LEEA and SGD for 10 iterations
-on CPU and, when CUDA is available, GPU. For a quick smoke run, use:
+For unstable SSH sessions, use the repository-level tmux helper:
 
-```powershell
-uv run kiseki benchmark --device cpu --benchmark synthetic --optimizer SGD --iterations 1 --batch-size 4
+```bash
+npm run train -- --device gpu --optimizer LEEA --iterations 100000
+```
+
+The helper starts a `kiseki-train` tmux session, runs `uv run kiseki train`
+from `backend/`, tees output to `logs/`, and attaches immediately. Detach with
+`Ctrl-b d` and reattach with:
+
+```bash
+tmux attach -t kiseki-train
+```
+
+Resume from a saved checkpoint with:
+
+```bash
+npm run train -- --resume <run_id>
 ```
 
 On NixOS, allow direnv once from the repository root so `shell.nix` exposes CUDA
@@ -36,8 +48,8 @@ and the system CA bundle before Python starts:
 direnv allow
 ```
 
-Then run GPU benchmarks normally:
+Then run GPU training normally:
 
 ```bash
-uv run kiseki benchmark --device gpu
+npm run train -- --device gpu
 ```

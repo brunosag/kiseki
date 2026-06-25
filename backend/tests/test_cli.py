@@ -1,273 +1,319 @@
+import io
 import json
+import os
+import signal
+import subprocess
 from pathlib import Path
 
 import pytest
+import torch
+from torch.utils.data import DataLoader, TensorDataset
 
-from kiseki import benchmark
-from kiseki.cli import build_parser, main
-from kiseki.schemas import ETA_0, OPTIMIZERS_SCHEMA, P_M, ExperimentConfig
+import kiseki.cli as cli
+from kiseki.checkpoint import CheckpointSaver
+from kiseki.experiment import ExperimentManager
+from kiseki.schemas import (
+    ETA,
+    ETA_0,
+    GAMMA,
+    LAMBDA,
+    OPTIMIZERS_SCHEMA,
+    P_M,
+    RHO,
+    RHO_X,
+    TAU_PAT,
+    ExperimentConfig,
+)
+from kiseki.train import (
+    TrainError,
+    TrainOptions,
+    TrainingSignalHandler,
+    build_resume_update,
+    build_start_request,
+    run_training,
+    train_options_from_args,
+)
 
 
-def test_benchmark_defaults_match_frontend_schema() -> None:
-    parser = build_parser()
-    args = parser.parse_args(["benchmark"])
+class SyntheticLoaderFactory:
+    def mnist(self, batch_size: int, seed: int) -> tuple[DataLoader, DataLoader]:
+        generator = torch.Generator().manual_seed(seed)
+        inputs = torch.randn(24, 1, 28, 28, generator=generator)
+        targets = torch.randint(0, 10, (24,), generator=generator)
+        dataset = TensorDataset(inputs, targets)
+        return (
+            DataLoader(dataset, batch_size=batch_size, shuffle=True),
+            DataLoader(dataset, batch_size=batch_size, shuffle=False),
+        )
+
+
+def test_train_defaults_match_frontend_schema() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(["train"])
+    request = build_start_request(train_options_from_args(args))
     config = ExperimentConfig()
     leea_defaults = {field.key: field.default for field in OPTIMIZERS_SCHEMA["LEEA"]}
 
-    assert args.device == "both"
-    assert args.optimizer == "both"
-    assert args.benchmark == config.dataset
-    assert args.iterations == 10
-    assert args.batch_size == config.batch_size
-    assert args.seed == config.seed
-    assert args.population_size == leea_defaults["N"]
-    assert args.mutation_probability == leea_defaults[P_M]
-    assert args.mutation_step == leea_defaults[ETA_0]
-    assert args.leea_chunk_size is None
-    assert args.leea_profile is False
-    assert args.numeric_mode == "strict"
+    assert request.config == config
+    assert request.opt_params["LEEA"]["N"] == leea_defaults["N"]
+    assert request.opt_params["LEEA"][P_M] == leea_defaults[P_M]
+    assert request.opt_params["LEEA"][ETA_0] == leea_defaults[ETA_0]
+    assert request.opt_params["LEEA"][GAMMA] == leea_defaults[GAMMA]
+    assert request.opt_params["LEEA"][RHO] == leea_defaults[RHO]
+    assert request.opt_params["LEEA"][RHO_X] == leea_defaults[RHO_X]
+    assert request.opt_params["LEEA"][LAMBDA] == leea_defaults[LAMBDA]
+    assert request.opt_params["LEEA"][TAU_PAT] == leea_defaults[TAU_PAT]
 
 
-def test_benchmark_argument_parsing() -> None:
-    parser = build_parser()
+def test_train_argument_parsing_builds_start_request() -> None:
+    parser = cli.build_parser()
     args = parser.parse_args(
         [
-            "benchmark",
+            "train",
+            "--dataset",
+            "cifar10",
             "--device",
             "cpu",
             "--optimizer",
             "LEEA",
-            "--benchmark",
-            "synthetic",
             "--iterations",
-            "2",
+            "20",
+            "--target-acc",
+            "95.5",
             "--batch-size",
-            "4",
+            "8",
+            "--seed",
+            "7",
+            "--deterministic",
+            "--checkpoint-interval",
+            "2",
+            "--log-every",
+            "3",
             "--population-size",
-            "6",
+            "12",
             "--mutation-probability",
             "0.2",
             "--mutation-step",
             "0.01",
-            "--leea-chunk-size",
-            "3",
-            "--leea-profile",
-            "--numeric-mode",
-            "fast",
+            "--mutation-decay",
+            "0.9",
+            "--retention-fraction",
+            "0.3",
+            "--crossover-fraction",
+            "0.4",
+            "--fitness-decay",
+            "0.1",
+            "--validation-patience",
+            "7",
         ]
     )
+    options = train_options_from_args(args)
+    request = build_start_request(options)
 
-    assert args.command == "benchmark"
-    assert args.optimizer == "LEEA"
-    assert args.benchmark == "synthetic"
-    assert args.population_size == 6
-    assert args.mutation_probability == 0.2
-    assert args.leea_chunk_size == 3
-    assert args.leea_profile is True
-    assert args.numeric_mode == "fast"
+    assert options.log_every == 3
+    assert request.config.dataset == "cifar10"
+    assert request.config.device == "cpu"
+    assert request.config.optimizer == "LEEA"
+    assert request.config.iterations == 20
+    assert request.config.target_acc == 95.5
+    assert request.config.batch_size == 8
+    assert request.config.seed == 7
+    assert request.config.deterministic is True
+    assert request.config.checkpoint_interval == 2
+    assert request.opt_params["LEEA"] == {
+        "N": 12.0,
+        P_M: 0.2,
+        ETA_0: 0.01,
+        GAMMA: 0.9,
+        RHO: 0.3,
+        RHO_X: 0.4,
+        LAMBDA: 0.1,
+        TAU_PAT: 7.0,
+    }
 
 
-def test_benchmark_accepts_cifar10_and_expands_both() -> None:
-    parser = build_parser()
-    args = parser.parse_args(["benchmark", "--benchmark", "cifar10"])
-
-    assert args.benchmark == "cifar10"
-    assert benchmark.expand_benchmark("both") == ("synthetic", "mnist", "cifar10")
-
-
-def test_benchmark_cli_writes_synthetic_jsonl(tmp_path, capsys) -> None:
-    output = tmp_path / "results.jsonl"
-
-    exit_code = main(
-        [
-            "benchmark",
-            "--device",
-            "cpu",
-            "--benchmark",
-            "synthetic",
-            "--optimizer",
-            "SGD",
-            "--iterations",
-            "1",
-            "--batch-size",
-            "4",
-            "--output",
-            str(output),
-        ]
+def test_train_sgd_params_and_rejects_leea_only_flags() -> None:
+    request = build_start_request(
+        TrainOptions(
+            device="cpu",
+            optimizer="SGD",
+            iterations=1,
+            learning_rate=0.05,
+        )
     )
 
-    captured = capsys.readouterr()
-    result = json.loads(output.read_text(encoding="utf-8").strip())
+    assert request.opt_params == {"SGD": {ETA: 0.05}}
+
+    with pytest.raises(TrainError, match="--population-size"):
+        build_start_request(TrainOptions(optimizer="SGD", population_size=4))
+
+
+def test_train_leea_rejects_sgd_only_flags() -> None:
+    with pytest.raises(TrainError, match="--learning-rate"):
+        build_start_request(TrainOptions(optimizer="LEEA", learning_rate=0.05))
+
+
+def test_run_training_saves_checkpoint(tmp_path) -> None:
+    saver = CheckpointSaver(tmp_path)
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=saver,
+    )
+    output = io.StringIO()
+    errors = io.StringIO()
+
+    exit_code = run_training(
+        TrainOptions(
+            device="cpu",
+            optimizer="SGD",
+            iterations=2,
+            batch_size=4,
+            checkpoint_interval=1,
+            learning_rate=0.01,
+            log_every=1,
+        ),
+        manager=manager,
+        stream=output,
+        error_stream=errors,
+        poll_interval=0.001,
+        enable_signal_handlers=False,
+    )
+
+    status = manager.status()
+    checkpoint = saver.load_latest(status.run_id)
 
     assert exit_code == 0
-    assert "Benchmark results" in captured.out
-    assert result["benchmark"] == "synthetic"
-    assert result["optimizer"] == "SGD"
-    assert result["device"] == "cpu"
-    assert result["iterations"] == 1
-    assert result["batch_size"] == 4
-    assert "speed_mode" not in result
-    assert result["numeric_mode"] == "strict"
-    assert result["numeric_mode_trajectory_changing"] is False
-    assert result["duration_seconds"] > 0
-    assert result["iterations_per_second"] > 0
-    assert result["average_iteration_seconds"] > 0
-    assert result["median_iteration_seconds"] > 0
-    assert isinstance(result["final_loss"], float)
-    assert result["status"] == "ok"
-    assert "avg=" in captured.out
-    assert "median=" in captured.out
-    assert "steady_median=" in captured.out
+    assert errors.getvalue() == ""
+    assert "Started run_id=" in output.getvalue()
+    assert "Finished run_id=" in output.getvalue()
+    assert status.current_step == 2
+    assert status.checkpoint_path == str(tmp_path / status.run_id / "latest.pt")
+    assert checkpoint["config"]["iterations"] == 2
+    assert checkpoint["optimizer_params"] == {"SGD": {ETA: 0.01}}
 
 
-def test_benchmark_cli_writes_leea_profile_jsonl(tmp_path, capsys) -> None:
-    output = tmp_path / "profile.jsonl"
-
-    exit_code = main(
-        [
-            "benchmark",
-            "--device",
-            "cpu",
-            "--benchmark",
-            "synthetic",
-            "--optimizer",
-            "LEEA",
-            "--iterations",
-            "1",
-            "--batch-size",
-            "4",
-            "--population-size",
-            "4",
-            "--leea-chunk-size",
-            "2",
-            "--leea-profile",
-            "--numeric-mode",
-            "fast",
-            "--output",
-            str(output),
-        ]
+def test_run_training_resumes_checkpoint_with_allowed_overrides(tmp_path) -> None:
+    saver = CheckpointSaver(tmp_path)
+    first_manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=saver,
     )
 
-    captured = capsys.readouterr()
-    result = json.loads(output.read_text(encoding="utf-8").strip())
+    assert (
+        run_training(
+            TrainOptions(
+                device="cpu",
+                optimizer="SGD",
+                iterations=1,
+                batch_size=4,
+                checkpoint_interval=1,
+                learning_rate=0.01,
+            ),
+            manager=first_manager,
+            stream=io.StringIO(),
+            error_stream=io.StringIO(),
+            poll_interval=0.001,
+            enable_signal_handlers=False,
+        )
+        == 0
+    )
+    run_id = first_manager.status().run_id
+
+    second_manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=saver,
+    )
+    output = io.StringIO()
+    exit_code = run_training(
+        TrainOptions(
+            resume=run_id,
+            iterations=3,
+            checkpoint_interval=1,
+            log_every=1,
+        ),
+        manager=second_manager,
+        stream=output,
+        error_stream=io.StringIO(),
+        poll_interval=0.001,
+        enable_signal_handlers=False,
+    )
+
+    status = second_manager.status()
+    checkpoint = saver.load_latest(run_id)
 
     assert exit_code == 0
-    assert result["leea_profile"] is True
-    assert result["leea_profile_steps"][0]["iteration"] == 1
-    assert result["leea_profile_summary"]["evaluation_seconds_mean"] >= 0.0
-    assert result["numeric_mode"] == "fast"
-    assert result["numeric_mode_trajectory_changing"] is True
-    assert "profile_eval_avg=" in captured.out
-    assert "trajectory-changing" in captured.out
+    assert "Resumed run_id=" in output.getvalue()
+    assert status.current_step == 3
+    assert checkpoint["config"]["iterations"] == 3
+    assert checkpoint["config"]["checkpoint_interval"] == 1
 
 
-def test_benchmark_cli_prints_nixos_cuda_hint(monkeypatch, tmp_path, capsys) -> None:
-    cuda_library = tmp_path / "libcuda.so.1"
-    cuda_library.touch()
-    monkeypatch.setattr(benchmark.torch.cuda, "is_available", lambda: False)
-    monkeypatch.setattr(benchmark, "NIXOS_CUDA_LIBRARY", cuda_library)
-
-    exit_code = main(
-        [
-            "benchmark",
-            "--device",
-            "gpu",
-            "--benchmark",
-            "synthetic",
-            "--optimizer",
-            "SGD",
-            "--iterations",
-            "1",
-            "--batch-size",
-            "4",
-        ]
-    )
-
-    captured = capsys.readouterr()
-
-    assert exit_code == 1
-    assert "NixOS CUDA driver library found" in captured.err
-    assert "repository root" in captured.err
-    assert "direnv allow" in captured.err
-    assert "uv run kiseki benchmark --device gpu" in captured.err
+def test_resume_rejects_trajectory_changing_overrides() -> None:
+    with pytest.raises(TrainError, match="--optimizer"):
+        build_resume_update(TrainOptions(resume="run-1", optimizer="SGD", iterations=10))
 
 
-def test_explicit_mnist_failure_returns_error(monkeypatch, capsys) -> None:
-    def fail_mnist(*args, **kwargs):
-        raise RuntimeError("certificate verify failed")
+def test_signal_handler_pauses_then_stops() -> None:
+    class FakeManager:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
 
-    monkeypatch.setattr(benchmark, "load_mnist", fail_mnist)
+        def pause(self) -> None:
+            self.calls.append("pause")
 
-    exit_code = main(
-        [
-            "benchmark",
-            "--device",
-            "cpu",
-            "--benchmark",
-            "mnist",
-            "--optimizer",
-            "SGD",
-            "--iterations",
-            "1",
-            "--batch-size",
-            "4",
-        ]
-    )
+        def stop(self) -> None:
+            self.calls.append("stop")
 
-    captured = capsys.readouterr()
+    manager = FakeManager()
+    stream = io.StringIO()
+    handler = TrainingSignalHandler(manager, stream=stream)  # type: ignore[arg-type]
 
-    assert exit_code == 1
-    assert "MNIST is not available" in captured.err
-    assert "certificate verify failed" in captured.err
+    handler(signal.SIGTERM, None)
+    handler(signal.SIGTERM, None)
+
+    assert manager.calls == ["pause", "stop"]
+    assert handler.interrupted is True
+    assert "pausing" in stream.getvalue()
+    assert "stopping" in stream.getvalue()
 
 
-def test_explicit_cifar10_failure_returns_error(monkeypatch, capsys) -> None:
-    def fail_cifar10(*args, **kwargs):
-        raise RuntimeError("certificate verify failed")
+def test_main_dispatches_train(monkeypatch) -> None:
+    captured: dict[str, TrainOptions] = {}
 
-    monkeypatch.setattr(benchmark, "load_cifar10", fail_cifar10)
+    def fake_run_training(options: TrainOptions) -> int:
+        captured["options"] = options
+        return 7
 
-    exit_code = main(
-        [
-            "benchmark",
-            "--device",
-            "cpu",
-            "--benchmark",
-            "cifar10",
-            "--optimizer",
-            "SGD",
-            "--iterations",
-            "1",
-            "--batch-size",
-            "4",
-        ]
-    )
+    monkeypatch.setattr(cli, "run_training", fake_run_training)
 
-    captured = capsys.readouterr()
-
-    assert exit_code == 1
-    assert "CIFAR-10 is not available" in captured.err
-    assert "certificate verify failed" in captured.err
+    assert cli.main(["train", "--device", "cpu", "--optimizer", "SGD"]) == 7
+    assert captured["options"].device == "cpu"
+    assert captured["options"].optimizer == "SGD"
 
 
-@pytest.mark.parametrize(
-    ("argv", "message"),
-    [
-        (["--data-dir", "mnist-cache"], "unrecognized arguments: --data-dir"),
-        (["--no-download"], "unrecognized arguments: --no-download"),
-        (["--speed-mode", "fast"], "unrecognized arguments: --speed-mode"),
-        (["--leea-evaluator", "on"], "unrecognized arguments: --leea-evaluator"),
-        (["--leea-eval-backend", "generic"], "unrecognized arguments: --leea-eval-backend"),
-    ],
-)
-def test_benchmark_parser_rejects_removed_options(argv, message, capsys) -> None:
+def test_removed_command_is_rejected(capsys) -> None:
     with pytest.raises(SystemExit) as exc_info:
-        main(["benchmark", *argv])
+        cli.main(["benchmark"])
 
     captured = capsys.readouterr()
 
     assert exc_info.value.code == 2
-    assert message in captured.err
+    assert "invalid choice" in captured.err
+
+
+def test_train_tmux_script_and_npm_alias_are_configured() -> None:
+    repo_root = Path(__file__).parents[2]
+    script = repo_root / "scripts" / "train-tmux.sh"
+    package_json = json.loads((repo_root / "package.json").read_text(encoding="utf-8"))
+    script_text = script.read_text(encoding="utf-8")
+
+    subprocess.run(["bash", "-n", str(script)], check=True)
+
+    assert os.access(script, os.X_OK)
+    assert package_json["scripts"]["train"] == "bash scripts/train-tmux.sh"
+    assert "uv run kiseki train" in script_text
+    assert "tmux new-session" in script_text
+    assert "tmux attach" in script_text
 
 
 def test_direnv_shell_sets_nixos_environment() -> None:
@@ -281,30 +327,3 @@ def test_direnv_shell_sets_nixos_environment() -> None:
     assert "TRITON_LIBCUDA_PATH" in text
     assert "CUBLAS_WORKSPACE_CONFIG" in text
     assert "SSL_CERT_FILE" in text
-
-
-def test_auto_device_prefers_cuda_when_available(monkeypatch) -> None:
-    monkeypatch.setattr(benchmark.torch.cuda, "is_available", lambda: True)
-
-    assert benchmark.resolve_benchmark_devices("auto") == (benchmark.torch.device("cuda"),)
-
-
-def test_auto_device_falls_back_to_cpu(monkeypatch) -> None:
-    monkeypatch.setattr(benchmark.torch.cuda, "is_available", lambda: False)
-
-    assert benchmark.resolve_benchmark_devices("auto") == (benchmark.torch.device("cpu"),)
-
-
-def test_both_device_includes_cpu_and_available_cuda(monkeypatch) -> None:
-    monkeypatch.setattr(benchmark.torch.cuda, "is_available", lambda: True)
-
-    assert benchmark.resolve_benchmark_devices("both") == (
-        benchmark.torch.device("cpu"),
-        benchmark.torch.device("cuda"),
-    )
-
-
-def test_both_device_falls_back_to_cpu(monkeypatch) -> None:
-    monkeypatch.setattr(benchmark.torch.cuda, "is_available", lambda: False)
-
-    assert benchmark.resolve_benchmark_devices("both") == (benchmark.torch.device("cpu"),)

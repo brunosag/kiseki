@@ -1,6 +1,6 @@
 # `kiseki`
 
-A Julia-based machine learning framework designed to investigate whether gradient-based and evolutionary optimization algorithms produce distinct learning patterns and internal representations in structurally identical artificial neural networks. By facilitating the training and comparison of models across both paradigms, the framework aims to expand deep learning theory and clarify how the choice of optimizer influences network behavior, decision rules, and interpretability. The repository features a command-line interface for headless execution and a reactive web application for real-time telemetry.  
+A PyTorch-based machine learning framework designed to investigate whether gradient-based and evolutionary optimization algorithms produce distinct learning patterns and internal representations in structurally identical artificial neural networks. By facilitating the training and comparison of models across both paradigms, the framework aims to expand deep learning theory and clarify how the choice of optimizer influences network behavior, decision rules, and interpretability. The repository features a command-line interface for headless execution and a reactive web application for real-time telemetry.
 
 > **/kiseki/** `noun`
 > 
@@ -9,11 +9,11 @@ A Julia-based machine learning framework designed to investigate whether gradien
 
 ## Architecture and core modules
 
-* **Models:** Neural network architectures are implemented utilizing the Lux.jl ecosystem. The default reference model is a ~50K-parameter Convolutional Neural Network (`CNN_2C2D_MNIST`) based on LeNet-5.
-* **Optimizers:** The framework exports `SGD` for standard gradient descent via Zygote.jl and `LEEA`, a population-based evolutionary optimization algorithm. `LEEA` maintains a parameter matrix, applying asynchronous reproduction mechanisms such as mutation, crossover, and fitness decay.
-* **Data handling:** The system implements a custom `BalancedDataLoader` to ensure proportional class representation during training batches. The data ingestion pipeline defaults to the MNIST dataset via MLDatasets.jl.
-* **Experiment management:** The `Experiment` struct coordinates model initialization, hardware device mapping (CPU or GPU via LuxCUDA), batch sizing, and early stopping based on defined target accuracy thresholds.
-* **Callbacks:** Training loops support extensible callbacks, including `ConsoleLogger` for standard output telemetry, `Tracker` for in-memory metric history, and `CheckpointSaver` for serialized state persistence using JSON metadata and JLS files.
+* **Models:** Neural network architectures are implemented in PyTorch. The backend supports MNIST and CIFAR-10 models.
+* **Optimizers:** The framework exports `SGD` for standard gradient descent and `LEEA`, a population-based evolutionary optimization algorithm with mutation, crossover, retention, and fitness decay controls.
+* **Data handling:** The backend loads MNIST and CIFAR-10 through torchvision and creates deterministic streams when exact reproducibility is requested.
+* **Experiment management:** `ExperimentManager` coordinates model initialization, CPU/GPU device mapping, batch sizing, checkpointing, pause/resume, and early stopping based on target accuracy.
+* **Checkpoints:** Training checkpoints are stored under `backend/checkpoints/` with model state, optimizer state, status, config, runtime metadata, and JSON summaries.
 
 ## Interfaces
 
@@ -44,8 +44,27 @@ The repository features a reactive web user interface built with GenieFramework 
 
 ### Command-line interface
 
-The `scripts/train.jl` script provides a robust CLI via ArgParse for batch or remote execution. Supported arguments include device selection (`--device`), optimizer designation (`--optimizer`), execution length (`--iterations`), validation 
-frequency (`--val-freq`), and state resumption from checkpoint files (`--resume`).
+For SSH-safe headless training, start the tmux helper from the repository root:
+
+```bash
+npm run train -- --device gpu --optimizer LEEA --iterations 100000
+```
+
+This creates and attaches to a `kiseki-train` tmux session, runs
+`uv run kiseki train` from `backend/`, and writes a matching log under `logs/`.
+Detach with `Ctrl-b d`; reattach with `tmux attach -t kiseki-train`.
+
+Resume from a checkpoint:
+
+```bash
+npm run train -- --resume <run_id>
+```
+
+Run the Python CLI directly from `backend/` when tmux is not needed:
+
+```bash
+uv run kiseki train --device cpu --optimizer SGD --iterations 100
+```
 
 ## Development Roadmap
 
@@ -60,11 +79,10 @@ frequency (`--val-freq`), and state resumption from checkpoint files (`--resume`
 * [ ] Integrate post-hoc interpretability algorithms, including LRP, DeepLIFT, and Shapley values, for relevance attribution.
 * [ ] Implement shortcut learning evaluation protocols to test generalization robustness.
 * [ ] Engineer an automated report compiler to aggregate metrics and visual renders into static exportable formats.
-* [ ] Draft comprehensive technical documentation covering the API, interpretability tools, and benchmark replication.
+* [ ] Draft comprehensive technical documentation covering the API, interpretability tools, and training replication.
 
 ## Dependencies
 
-* **Lux.jl & LuxCUDA.jl:** Neural network parameterization and GPU acceleration.
-* **Zygote.jl:** Algorithmic differentiation for the gradient-based SGD optimizer.
-* **GenieFramework:** Web server execution and reactive frontend.
-* **PlotlyBase:** Graphical metric visualization.
+* **PyTorch & torchvision:** Neural network training, GPU acceleration, and dataset loading.
+* **FastAPI:** Backend API and server-sent experiment events.
+* **React & Vite:** Dashboard frontend.
