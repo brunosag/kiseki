@@ -135,12 +135,20 @@ class TSNEAnalysisRequest(BaseModel):
 
 class LRPParams(BaseModel):
     sample_count: int = 20
+    seed: int | None = None
 
     @field_validator("sample_count")
     @classmethod
     def require_sample_count_range(cls, value: int) -> int:
         if not 1 <= value <= 50:
             raise ValueError("must be between 1 and 50")
+        return value
+
+    @field_validator("seed")
+    @classmethod
+    def require_seed_range(cls, value: int | None) -> int | None:
+        if value is not None and not 0 <= value <= 2_147_483_647:
+            raise ValueError("must be between 0 and 2147483647")
         return value
 
 

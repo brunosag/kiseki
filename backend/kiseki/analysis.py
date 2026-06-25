@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import secrets
+
 import numpy as np
 import torch
 from captum.attr import LRP
@@ -28,6 +30,9 @@ class TSNEParameterError(ValueError):
 
 class LRPParameterError(ValueError):
     pass
+
+
+LRP_SEED_UPPER_BOUND = 2_147_483_647
 
 
 class AnalysisService:
@@ -96,6 +101,12 @@ class AnalysisService:
             map_location="cpu",
         )
         config = ExperimentConfig.model_validate(payload["config"])
+        seed = (
+            request.params.seed
+            if request.params.seed is not None
+            else secrets.randbelow(LRP_SEED_UPPER_BOUND + 1)
+        )
+        params = request.params.model_copy(update={"seed": seed})
 
         model = build_model(config.dataset)
         model.load_state_dict(payload["model_state"])
@@ -106,7 +117,8 @@ class AnalysisService:
         )
         selected_indices = balanced_sample_indices(
             labels.tolist(),
-            min(request.params.sample_count, labels.numel()),
+            min(params.sample_count, labels.numel()),
+            seed=seed,
         )
         if not selected_indices:
             raise LRPParameterError("test loader did not return any samples")
@@ -135,7 +147,7 @@ class AnalysisService:
                 run_id=request.checkpoint.run_id,
                 kind=request.checkpoint.kind,
             ),
-            params=request.params,
+            params=params,
             samples=[
                 LRPSample(
                     index=int(source_index),
@@ -211,9 +223,11 @@ def balanced_sample_indices(
     labels: list[int],
     sample_count: int,
     *,
+    seed: int,
     class_count: int = 10,
 ) -> list[int]:
     target_count = min(sample_count, len(labels))
+    rng = np.random.default_rng(seed)
     desired_counts = [target_count // class_count] * class_count
     for label in range(target_count % class_count):
         desired_counts[label] += 1
@@ -226,11 +240,12 @@ def balanced_sample_indices(
     selected: list[int] = []
     selected_set: set[int] = set()
     for label, desired_count in enumerate(desired_counts):
-        for index in buckets[label][:desired_count]:
+        bucket = rng.permutation(buckets[label]).tolist()
+        for index in bucket[:desired_count]:
             selected.append(index)
             selected_set.add(index)
 
-    for index in range(len(labels)):
+    for index in rng.permutation(len(labels)).tolist():
         if len(selected) >= target_count:
             break
         if index not in selected_set:

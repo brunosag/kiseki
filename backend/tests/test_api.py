@@ -391,17 +391,28 @@ def test_api_lrp_returns_balanced_predicted_class_samples_for_mnist(tmp_path) ->
         "/api/analysis/lrp",
         json={
             "checkpoint": {"run_id": "lrp-analysis-run", "kind": "latest"},
-            "params": {"sample_count": 10},
+            "params": {"sample_count": 10, "seed": 8},
         },
     )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["checkpoint"]["run_id"] == "lrp-analysis-run"
-    assert payload["params"] == {"sample_count": 10}
+    assert payload["params"] == {"sample_count": 10, "seed": 8}
     assert len(payload["samples"]) == 10
     assert [sample["label"] for sample in payload["samples"]] == list(range(10))
-    assert [sample["index"] for sample in payload["samples"]] == list(range(10))
+    assert [sample["index"] for sample in payload["samples"]] == [
+        10,
+        11,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+    ]
     assert all(sample["target"] == sample["prediction"] for sample in payload["samples"])
 
     sample = payload["samples"][0]
@@ -482,7 +493,7 @@ def test_api_lrp_uses_cifar_checkpoint_model_and_returns_denormalized_rgb(
         "/api/analysis/lrp",
         json={
             "checkpoint": {"run_id": "cifar-lrp-analysis-run", "kind": "latest"},
-            "params": {"sample_count": 10},
+            "params": {"sample_count": 10, "seed": 8},
         },
     )
 
@@ -500,14 +511,48 @@ def test_api_lrp_uses_cifar_checkpoint_model_and_returns_denormalized_rgb(
     assert len(sample["image"][0][0]) == 3
     assert len(sample["relevance"]) == 32
     assert len(sample["relevance"][0]) == 32
+    source_index = sample["index"]
     np.testing.assert_allclose(
         sample["image"][0][0],
-        data_loader_factory.raw_inputs[0, :, 0, 0].tolist(),
+        data_loader_factory.raw_inputs[source_index, :, 0, 0].tolist(),
         atol=1e-6,
     )
     relevance_values = np.asarray(sample["relevance"])
     assert relevance_values.min() >= -1.0
     assert relevance_values.max() <= 1.0
+
+
+def test_lrp_balanced_sample_indices_are_seeded_and_class_balanced() -> None:
+    labels = [label for label in range(10) for _ in range(5)]
+
+    first = analysis.balanced_sample_indices(labels, 20, seed=1)
+    second = analysis.balanced_sample_indices(labels, 20, seed=1)
+    resampled = analysis.balanced_sample_indices(labels, 20, seed=2)
+
+    assert first == second
+    assert first != resampled
+    assert [labels[index] for index in first] == [
+        0,
+        0,
+        1,
+        1,
+        2,
+        2,
+        3,
+        3,
+        4,
+        4,
+        5,
+        5,
+        6,
+        6,
+        7,
+        7,
+        8,
+        8,
+        9,
+        9,
+    ]
 
 
 def test_api_delete_checkpoint_run_removes_latest_and_hidden_best(tmp_path) -> None:

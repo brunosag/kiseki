@@ -177,6 +177,10 @@ type AnalysisCardId = "left" | "right"
 type AnalysisPlotStatus = "empty" | "loading" | "ready" | "error"
 type AnalysisParams = TsneParams | LrpParams
 type AnalysisResponse = TsneAnalysisResponse | LrpAnalysisResponse
+type AnalysisLoadOptions = {
+  method?: AnalysisMethod
+  params?: AnalysisParams
+}
 
 type AnalysisCardState = {
   checkpoint: CheckpointSummary | null
@@ -243,6 +247,7 @@ const DEFAULT_TSNE_PARAMS: TsneParams = {
 }
 const DEFAULT_LRP_PARAMS: LrpParams = {
   sample_count: 20,
+  seed: null,
 }
 
 const defaultAnalysisCards: Record<AnalysisCardId, AnalysisCardState> = {
@@ -278,6 +283,19 @@ const ANALYSIS_CLASS_COLORS = [
   "#7c3aed",
   "#475569",
 ]
+const CIFAR10_CLASS_LABELS = [
+  "airplane",
+  "automobile",
+  "bird",
+  "cat",
+  "deer",
+  "dog",
+  "frog",
+  "horse",
+  "ship",
+  "truck",
+]
+const LRP_SEED_MAX = 2_147_483_647
 
 export function App() {
   const { theme } = useTheme()
@@ -297,7 +315,10 @@ export function App() {
   const [analysisMethod, setAnalysisMethod] = useState<AnalysisMethod>("tsne")
   const [tsneParams, setTsneParams] =
     useState<TsneParams>(DEFAULT_TSNE_PARAMS)
-  const [lrpParams, setLrpParams] = useState<LrpParams>(DEFAULT_LRP_PARAMS)
+  const [lrpParams, setLrpParams] = useState<LrpParams>(() => ({
+    ...DEFAULT_LRP_PARAMS,
+    seed: randomAnalysisSeed(),
+  }))
   const [analysisLockedClass, setAnalysisLockedClass] = useState<
     number | null
   >(null)
@@ -773,10 +794,17 @@ export function App() {
 
   async function loadAnalysisCheckpoint(
     cardId: AnalysisCardId,
-    checkpoint: CheckpointSummary
+    checkpoint: CheckpointSummary,
+    options: AnalysisLoadOptions = {}
   ) {
-    const method = analysisMethod
-    const requestParams = currentAnalysisParams(method, tsneParams, lrpParams)
+    const method = options.method ?? analysisMethod
+    let requestParams =
+      options.params ?? currentAnalysisParams(method, tsneParams, lrpParams)
+    if (method === "lrp" && (requestParams as LrpParams).seed == null) {
+      const seed = randomAnalysisSeed()
+      requestParams = { ...(requestParams as LrpParams), seed }
+      setLrpParams((current) => ({ ...current, seed }))
+    }
     const error =
       method === "tsne"
         ? validateTsneParams(requestParams as TsneParams)
@@ -874,10 +902,24 @@ export function App() {
   }
 
   function recomputeLoadedAnalysisCards() {
+    const options =
+      analysisMethod === "lrp"
+        ? {
+            method: "lrp" as const,
+            params: lrpRequestParams({
+              ...lrpParams,
+              seed: randomAnalysisSeed(),
+            }),
+          }
+        : undefined
+    if (options) {
+      setLrpParams(options.params as LrpParams)
+    }
+
     for (const cardId of ANALYSIS_CARD_IDS) {
       const checkpoint = analysisCards[cardId].checkpoint
       if (checkpoint) {
-        void loadAnalysisCheckpoint(cardId, checkpoint)
+        void loadAnalysisCheckpoint(cardId, checkpoint, options)
       }
     }
   }
@@ -1180,7 +1222,8 @@ function AnalysisTab({
     (cardId) => cards[cardId].checkpoint !== null
   ).length
   const hasLoadingCard = ANALYSIS_CARD_IDS.some(
-    (cardId) => cards[cardId].status === "loading"
+    (cardId) =>
+      cards[cardId].status === "loading" && cards[cardId].method === method
   )
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
@@ -1199,11 +1242,8 @@ function AnalysisTab({
               />
             ) : (
               <LrpControls
-                hasLoadingCard={hasLoadingCard}
                 loadedCardCount={loadedCardCount}
                 lrpParams={lrpParams}
-                staleCardCount={staleCardCount}
-                validationError={validationError}
                 onRecomputeLoaded={onRecomputeLoaded}
                 onUpdateLrpParam={onUpdateLrpParam}
               />
@@ -1378,19 +1418,13 @@ function TsneControls({
 }
 
 function LrpControls({
-  hasLoadingCard,
   loadedCardCount,
   lrpParams,
-  staleCardCount,
-  validationError,
   onRecomputeLoaded,
   onUpdateLrpParam,
 }: {
-  hasLoadingCard: boolean
   loadedCardCount: number
   lrpParams: LrpParams
-  staleCardCount: number
-  validationError: string | null
   onRecomputeLoaded: () => void
   onUpdateLrpParam: <K extends keyof LrpParams>(
     key: K,
@@ -1409,16 +1443,8 @@ function LrpControls({
         onChange={(value) => onUpdateLrpParam("sample_count", value)}
       />
       {loadedCardCount > 0 ? (
-        <Button
-          className="h-8"
-          disabled={
-            staleCardCount === 0 ||
-            hasLoadingCard ||
-            validationError !== null
-          }
-          onClick={onRecomputeLoaded}
-        >
-          Recompute
+        <Button className="h-8" onClick={onRecomputeLoaded}>
+          Resample
         </Button>
       ) : null}
     </div>
@@ -1491,8 +1517,12 @@ function AnalysisComparisonCard({
   state,
   onLoadCheckpoint,
 }: AnalysisComparisonCardProps) {
-  const resultAccuracy = analysisAccuracyFor(state.response)
-  const resultAccuracyLabel = state.method === "lrp" ? "Sample acc." : "Test acc."
+  const hasCurrentMethodResult = state.method === method
+  const currentResponse = hasCurrentMethodResult ? state.response : null
+  const resultAccuracy = analysisAccuracyFor(currentResponse)
+  const resultAccuracyLabel = method === "lrp" ? "Sample acc." : "Test acc."
+  const isMethodStale =
+    state.checkpoint !== null && state.method !== null && state.method !== method
 
   if (state.status === "empty") {
     return (
@@ -1533,11 +1563,11 @@ function AnalysisComparisonCard({
         {state.checkpoint ? (
           <div className="flex flex-wrap gap-x-8 gap-y-2 text-sm">
             <CheckpointMetric
-                label="Val. acc."
-                value={formatOptionalPercent(
-                  state.checkpoint.best_acc ?? state.checkpoint.accuracy
-                )}
-              />
+              label="Val. acc."
+              value={formatOptionalPercent(
+                state.checkpoint.best_acc ?? state.checkpoint.accuracy
+              )}
+            />
             {state.status !== "loading" ? (
               <CheckpointMetric
                 label={resultAccuracyLabel}
@@ -1558,23 +1588,35 @@ function AnalysisComparisonCard({
         ) : null}
       </CardHeader>
       <CardContent className="flex min-h-0 flex-1 flex-col">
-        {state.status === "loading" ? (
+        {isMethodStale && state.checkpoint ? (
+          <AnalysisMethodPendingState
+            method={method}
+            onCompute={() => onLoadCheckpoint(cardId, state.checkpoint!)}
+          />
+        ) : null}
+        {!isMethodStale && state.status === "loading" ? (
           <AnalysisLoadingState method={state.method ?? method} />
         ) : null}
-        {state.status === "error" ? (
+        {!isMethodStale && state.status === "error" ? (
           <div className="grid min-h-80 flex-1 place-items-center rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center text-sm text-destructive">
             {state.error ??
               `Failed to compute ${analysisMethodLabel(state.method ?? method)}`}
           </div>
         ) : null}
-        {state.status === "ready" && isTsneResponse(state.response) ? (
+        {!isMethodStale &&
+        state.status === "ready" &&
+        method === "tsne" &&
+        isTsneResponse(state.response) ? (
           <AnalysisPlot
             focusedClass={focusedClass}
             response={state.response}
             plotPalette={plotPalette}
           />
         ) : null}
-        {state.status === "ready" && isLrpResponse(state.response) ? (
+        {!isMethodStale &&
+        state.status === "ready" &&
+        method === "lrp" &&
+        isLrpResponse(state.response) ? (
           <LrpGallery response={state.response} />
         ) : null}
       </CardContent>
@@ -1617,6 +1659,27 @@ function AnalysisLoadingState({ method }: { method: AnalysisMethod }) {
       <div className="grid justify-items-center gap-3 text-sm text-muted-foreground">
         <LoaderCircle className="size-5 animate-spin" />
         <span>Computing {analysisMethodLabel(method)}</span>
+      </div>
+    </div>
+  )
+}
+
+function AnalysisMethodPendingState({
+  method,
+  onCompute,
+}: {
+  method: AnalysisMethod
+  onCompute: () => void
+}) {
+  return (
+    <div className="grid min-h-80 flex-1 place-items-center rounded-lg border border-dashed p-6 text-center">
+      <div className="grid justify-items-center gap-3">
+        <div className="text-sm font-medium">
+          {analysisMethodLabel(method)} not computed
+        </div>
+        <Button className="h-8" onClick={onCompute}>
+          Compute {analysisMethodLabel(method)}
+        </Button>
       </div>
     </div>
   )
@@ -1675,43 +1738,57 @@ function LrpGallery({ response }: { response: LrpAnalysisResponse }) {
   return (
     <div className="min-h-0 flex-1 overflow-auto pr-1">
       <div className="grid grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] gap-3">
-        {response.samples.map((sample) => (
-          <div
-            className={cn(
-              "rounded-lg border bg-background p-2",
-              sample.correct ? "border-border" : "border-destructive/50"
-            )}
-            key={sample.index}
-          >
-            <div className="aspect-square overflow-hidden rounded-md border bg-muted">
-              <LrpSampleCanvas sample={sample} />
-            </div>
-            <div className="mt-2 flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <div className="text-sm leading-tight font-medium">
-                  True {sample.label}
+        {response.samples.map((sample) => {
+          const label = classLabelFor(response.checkpoint.dataset, sample.label)
+          const prediction = classLabelFor(
+            response.checkpoint.dataset,
+            sample.prediction
+          )
+
+          return (
+            <div
+              className={cn(
+                "rounded-lg border bg-background p-2",
+                sample.correct ? "border-border" : "border-destructive/50"
+              )}
+              key={sample.index}
+            >
+              <div className="aspect-square overflow-hidden rounded-md border bg-muted">
+                <LrpSampleCanvas sample={sample} />
+              </div>
+              <div className="mt-2 flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="truncate text-sm leading-tight font-medium">
+                    {label}
+                  </div>
+                  <div
+                    className={cn(
+                      "truncate text-xs",
+                      sample.correct
+                        ? "text-muted-foreground"
+                        : "text-destructive"
+                    )}
+                  >
+                    {prediction}
+                  </div>
                 </div>
-                <div
-                  className={cn(
-                    "text-xs",
-                    sample.correct
-                      ? "text-muted-foreground"
-                      : "text-destructive"
-                  )}
-                >
-                  Pred {sample.prediction}
+                <div className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
+                  #{sample.index}
                 </div>
               </div>
-              <div className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                #{sample.index}
+              <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                <LrpSampleMetric
+                  label="Score"
+                  value={formatCompactNumber(sample.score)}
+                />
+                <LrpSampleMetric
+                  label="Delta"
+                  value={formatCompactNumber(sample.delta)}
+                />
               </div>
             </div>
-            <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
-              <LrpSampleMetric label="Score" value={formatCompactNumber(sample.score)} />
-              <LrpSampleMetric label="Delta" value={formatCompactNumber(sample.delta)} />
-            </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
     </div>
   )
@@ -1734,6 +1811,7 @@ function LrpSampleCanvas({ sample }: { sample: LrpSample }) {
       aria-label={`LRP relevance overlay for sample ${sample.index}`}
       className="block h-full w-full"
       ref={canvasRef}
+      style={{ imageRendering: "pixelated" }}
     />
   )
 }
@@ -1760,6 +1838,7 @@ function drawLrpSample(canvas: HTMLCanvasElement, sample: LrpSample) {
   if (!context) {
     return
   }
+  context.imageSmoothingEnabled = false
 
   const imageData = context.createImageData(width, height)
   for (let y = 0; y < height; y += 1) {
@@ -2585,6 +2664,16 @@ function validateLrpParams(params: LrpParams): string | null {
     return "Sample count must be an integer between 1 and 50"
   }
 
+  if (
+    params.seed !== null &&
+    params.seed !== undefined &&
+    (!Number.isInteger(params.seed) ||
+      params.seed < 0 ||
+      params.seed > LRP_SEED_MAX)
+  ) {
+    return "Seed must be an integer between 0 and 2147483647"
+  }
+
   return null
 }
 
@@ -2612,7 +2701,19 @@ function tsneRequestParams(params: TsneParams): TsneParams {
 function lrpRequestParams(params: LrpParams): LrpParams {
   return {
     sample_count: params.sample_count,
+    seed: params.seed ?? null,
   }
+}
+
+function randomAnalysisSeed(): number {
+  const cryptoApi = globalThis.crypto
+  if (cryptoApi) {
+    const values = new Uint32Array(1)
+    cryptoApi.getRandomValues(values)
+    return values[0] & LRP_SEED_MAX
+  }
+
+  return Math.floor(Math.random() * (LRP_SEED_MAX + 1))
 }
 
 function isAnalysisCardStale(
@@ -3097,6 +3198,14 @@ function formatDatasetName(dataset: string): string {
   }
 
   return dataset.toUpperCase()
+}
+
+function classLabelFor(dataset: CheckpointSummary["dataset"], label: number): string {
+  if (dataset === "cifar10") {
+    return CIFAR10_CLASS_LABELS[label] ?? String(label)
+  }
+
+  return String(label)
 }
 
 function formatInteger(value: number): string {

@@ -144,6 +144,7 @@ export type TsneAnalysisResponse = {
 
 export type LrpParams = {
   sample_count: number
+  seed?: number | null
 }
 
 export type LrpSample = {
