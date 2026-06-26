@@ -19,7 +19,7 @@ from kiseki.experiment import (
     seed_everything,
 )
 from kiseki.dataset_types import DatasetName
-from kiseki.models import CIFARResNet20, build_model
+from kiseki.models import CIFAR10CNN, build_model
 from kiseki.schemas import ETA, ETA_0, ExperimentConfig, ExperimentStatus
 from kiseki.optimizers import SGDConfig, SGDRunner
 
@@ -320,7 +320,7 @@ def test_api_tsne_uses_cifar_checkpoint_model_and_test_loader(
             self.kwargs = kwargs
 
         def fit_transform(self, features):
-            assert features.shape == (12, 64)
+            assert features.shape == (12, 128)
             return np.column_stack(
                 (
                     np.arange(features.shape[0], dtype=np.float32),
@@ -919,7 +919,7 @@ def test_api_start_cifar10_experiment_uses_cifar_loader_and_model(
     assert status["run_id"].startswith("cifar10-sgd-cpu-seed5-")
     assert status["current_step"] == 1
     assert data_loader_factory.cifar10_calls == [(4, 5)]
-    assert isinstance(captured["model"], CIFARResNet20)
+    assert isinstance(captured["model"], CIFAR10CNN)
 
 
 def test_api_lists_and_resumes_cifar10_checkpoint(tmp_path) -> None:
