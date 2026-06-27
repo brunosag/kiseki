@@ -72,10 +72,12 @@ class CIFAR10CNN(nn.Module):
         self.relu3 = nn.ReLU()
         self.relu4 = nn.ReLU()
         self.relu5 = nn.ReLU()
+        self.relu6 = nn.ReLU()
         self.pool1 = nn.MaxPool2d(2)
         self.pool2 = nn.MaxPool2d(2)
-        self.global_avg_pool = nn.AdaptiveAvgPool2d((1, 1))
-        self.fc = nn.Linear(128, 10)
+        self.pool3 = nn.MaxPool2d(2)
+        self.fc1 = nn.Linear(128, 256)
+        self.fc2 = nn.Linear(256, 10)
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
@@ -89,7 +91,7 @@ class CIFAR10CNN(nn.Module):
                 nn.init.zeros_(module.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.fc(self.final_hidden(x))
+        return self.fc2(self.final_hidden(x))
 
     def predict_proba(self, x: torch.Tensor) -> torch.Tensor:
         return torch.softmax(self.forward(x), dim=1)
@@ -102,8 +104,9 @@ class CIFAR10CNN(nn.Module):
         x = self.relu4(self.conv4(x))
         x = self.pool2(x)
         x = self.relu5(self.conv5(x))
-        x = self.global_avg_pool(x)
-        return torch.flatten(x, 1)
+        x = self.pool3(x)
+        x = torch.flatten(x, 1)
+        return self.relu6(self.fc1(x))
 
     def named_activations(
         self,
