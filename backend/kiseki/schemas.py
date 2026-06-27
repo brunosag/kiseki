@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -81,88 +81,292 @@ class CheckpointSelection(BaseModel):
     kind: CheckpointKind
 
 
-class TSNEParams(BaseModel):
-    perplexity: float = 30.0
-    max_iter: int = 1000
-    learning_rate_mode: Literal["auto", "numeric"] = "auto"
-    learning_rate: float | None = None
-    angle: float = 0.5
-    pca_components: int = 50
-    seed: int | None = None
-    use_pca: bool = True
+class AnalysisComparisonParams(BaseModel):
+    tsne_perplexity: float = 30.0
+    tsne_max_iter: int = 1000
+    tsne_learning_rate_mode: Literal["auto", "numeric"] = "auto"
+    tsne_learning_rate: float | None = None
+    tsne_angle: float = 0.5
+    tsne_pca_components: int = 50
+    tsne_seed: int | None = None
+    calibration_bins: int = 15
+    lrp_gallery_sample_count: int = 24
+    robustness_noise_levels: list[float] = Field(default_factory=lambda: [0.0, 0.05, 0.1, 0.2])
+    robustness_brightness_levels: list[float] = Field(default_factory=lambda: [0.0, 0.1, 0.2])
+    robustness_cutout_levels: list[float] = Field(default_factory=lambda: [0.0, 0.125, 0.25])
 
-    @field_validator("perplexity")
+    @field_validator("tsne_perplexity")
     @classmethod
-    def require_perplexity_range(cls, value: float) -> float:
+    def require_tsne_perplexity_range(cls, value: float) -> float:
         if not 5 <= value <= 50:
             raise ValueError("must be between 5 and 50")
         return value
 
-    @field_validator("max_iter")
+    @field_validator("tsne_max_iter")
     @classmethod
-    def require_minimum_iterations(cls, value: int) -> int:
+    def require_minimum_tsne_iterations(cls, value: int) -> int:
         if value < 250:
             raise ValueError("must be at least 250")
         return value
 
-    @field_validator("angle")
+    @field_validator("tsne_angle")
     @classmethod
-    def require_angle_range(cls, value: float) -> float:
+    def require_tsne_angle_range(cls, value: float) -> float:
         if not 0.2 <= value <= 0.8:
             raise ValueError("must be between 0.2 and 0.8")
         return value
 
-    @field_validator("pca_components")
+    @field_validator("tsne_pca_components")
     @classmethod
-    def require_pca_component_range(cls, value: int) -> int:
+    def require_tsne_pca_component_range(cls, value: int) -> int:
         if not 2 <= value <= 120:
             raise ValueError("must be between 2 and 120")
         return value
 
+    @field_validator("calibration_bins")
+    @classmethod
+    def require_calibration_bin_range(cls, value: int) -> int:
+        if not 5 <= value <= 50:
+            raise ValueError("must be between 5 and 50")
+        return value
+
+    @field_validator("lrp_gallery_sample_count")
+    @classmethod
+    def require_lrp_gallery_sample_count_range(cls, value: int) -> int:
+        if not 1 <= value <= 60:
+            raise ValueError("must be between 1 and 60")
+        return value
+
+    @field_validator(
+        "robustness_noise_levels",
+        "robustness_brightness_levels",
+        "robustness_cutout_levels",
+    )
+    @classmethod
+    def require_nonnegative_robustness_levels(cls, value: list[float]) -> list[float]:
+        if not value:
+            raise ValueError("must include at least one level")
+        for level in value:
+            if level < 0:
+                raise ValueError("levels must be non-negative")
+        return value
+
     @model_validator(mode="after")
-    def require_positive_numeric_learning_rate(self) -> "TSNEParams":
-        if self.learning_rate_mode == "auto":
+    def require_positive_numeric_tsne_learning_rate(self) -> "AnalysisComparisonParams":
+        if self.tsne_learning_rate_mode == "auto":
             return self
-        if self.learning_rate is None or self.learning_rate <= 0:
-            raise ValueError("learning_rate must be positive when learning_rate_mode is numeric")
+        if self.tsne_learning_rate is None or self.tsne_learning_rate <= 0:
+            raise ValueError(
+                "tsne_learning_rate must be positive when tsne_learning_rate_mode is numeric"
+            )
         return self
 
 
-class TSNEAnalysisRequest(BaseModel):
-    checkpoint: CheckpointSelection
-    params: TSNEParams = Field(default_factory=TSNEParams)
+class AnalysisComparisonJobRequest(BaseModel):
+    left: CheckpointSelection
+    right: CheckpointSelection
+    params: AnalysisComparisonParams = Field(default_factory=AnalysisComparisonParams)
+    force_recompute: bool = False
 
 
-class LRPParams(BaseModel):
-    sample_count: int = 20
-    seed: int | None = None
-
-    @field_validator("sample_count")
-    @classmethod
-    def require_sample_count_range(cls, value: int) -> int:
-        if not 1 <= value <= 50:
-            raise ValueError("must be between 1 and 50")
-        return value
-
-    @field_validator("seed")
-    @classmethod
-    def require_seed_range(cls, value: int | None) -> int | None:
-        if value is not None and not 0 <= value <= 2_147_483_647:
-            raise ValueError("must be between 0 and 2147483647")
-        return value
+class AnalysisProgressEvent(BaseModel):
+    stage: str
+    message: str
+    progress: float
 
 
-class LRPAnalysisRequest(BaseModel):
-    checkpoint: CheckpointSelection
-    params: LRPParams = Field(default_factory=LRPParams)
+class AnalysisTableRow(BaseModel):
+    label: str
+    left: str
+    right: str
+    comparable: bool | None = None
 
 
-class TSNEPoint(BaseModel):
+class AnalysisCurvePoint(BaseModel):
+    i: int
+    value: float
+
+
+class AnalysisCurves(BaseModel):
+    training_loss: list[float] = Field(default_factory=list)
+    validation_accuracy: list[AnalysisCurvePoint] = Field(default_factory=list)
+    training_accuracy: list[AnalysisCurvePoint] = Field(default_factory=list)
+    validation_loss: list[AnalysisCurvePoint] = Field(default_factory=list)
+
+
+class AnalysisPerClassMetric(BaseModel):
+    label: int
+    name: str
+    precision: float
+    recall: float
+    f1: float
+    support: int
+
+
+class AnalysisCalibrationBin(BaseModel):
+    lower: float
+    upper: float
+    count: int
+    confidence: float
+    accuracy: float
+
+
+class AnalysisCalibration(BaseModel):
+    bins: list[AnalysisCalibrationBin]
+    ece: float
+    brier_score: float
+    nll: float
+
+
+class AnalysisModelMetrics(BaseModel):
+    accuracy: float
+    loss: float
+    macro_f1: float
+    per_class_f1: list[AnalysisPerClassMetric]
+    confusion_matrix: list[list[int]]
+    calibration: AnalysisCalibration
+
+
+class AnalysisOverlap(BaseModel):
+    total: int
+    correct_both: int
+    left_only_correct: int
+    right_only_correct: int
+    error_both: int
+    disagreements: int
+    both_error_same_prediction: int
+    both_error_different_prediction: int
+    upset: list[dict[str, Any]]
+
+
+class AnalysisEmbeddingPoint(BaseModel):
+    index: int
     x: float
     y: float
     label: int
     prediction: int
     correct: bool
+
+
+class AnalysisEmbeddingProjection(BaseModel):
+    left: list[AnalysisEmbeddingPoint]
+    right: list[AnalysisEmbeddingPoint]
+
+
+class AnalysisEmbeddings(BaseModel):
+    pca: AnalysisEmbeddingProjection
+    tsne: AnalysisEmbeddingProjection
+
+
+class AnalysisLrpSample(BaseModel):
+    index: int
+    label: int
+    label_name: str
+    group: str
+    left_prediction: int
+    right_prediction: int
+    left_confidence: float
+    right_confidence: float
+    image: list[list[list[float]]]
+    left_relevance: list[list[float]]
+    right_relevance: list[list[float]]
+    difference_relevance: list[list[float]]
+
+
+class AnalysisClassAverageRelevance(BaseModel):
+    label: int
+    name: str
+    left_relevance: list[list[float]]
+    right_relevance: list[list[float]]
+    difference_relevance: list[list[float]]
+
+
+class AnalysisLrpReport(BaseModel):
+    samples: list[AnalysisLrpSample]
+    class_averages: list[AnalysisClassAverageRelevance]
+
+
+class AnalysisHistogram(BaseModel):
+    bins: list[float]
+    counts: list[int]
+
+
+class AnalysisActivationLayerStats(BaseModel):
+    name: str
+    sparsity: float
+    mean: float
+    std: float
+    q05: float
+    q50: float
+    q95: float
+    histogram: AnalysisHistogram
+
+
+class AnalysisActivationReport(BaseModel):
+    left: list[AnalysisActivationLayerStats]
+    right: list[AnalysisActivationLayerStats]
+
+
+class AnalysisWeightLayerComparison(BaseModel):
+    name: str
+    left_norm: float
+    right_norm: float
+    distance: float
+    relative_distance: float
+
+
+class AnalysisRobustnessPoint(BaseModel):
+    level: float
+    left_accuracy: float
+    right_accuracy: float
+    left_loss: float
+    right_loss: float
+
+
+class AnalysisRobustnessCurve(BaseModel):
+    perturbation: str
+    points: list[AnalysisRobustnessPoint]
+
+
+class AnalysisRuntimeReport(BaseModel):
+    rows: list[AnalysisTableRow]
+
+
+class AnalysisComparisonReport(BaseModel):
+    analysis_version: str
+    generated_at: str
+    analysis_device: str
+    left: CheckpointSummary
+    right: CheckpointSummary
+    params: AnalysisComparisonParams
+    metadata: list[AnalysisTableRow]
+    comparability: list[AnalysisTableRow]
+    curves: dict[str, AnalysisCurves]
+    metrics: dict[str, AnalysisModelMetrics]
+    confusion_difference: list[list[int]]
+    overlap: AnalysisOverlap
+    embeddings: AnalysisEmbeddings
+    lrp: AnalysisLrpReport
+    activations: AnalysisActivationReport
+    weights: list[AnalysisWeightLayerComparison]
+    robustness: list[AnalysisRobustnessCurve]
+    runtime: AnalysisRuntimeReport
+
+
+AnalysisJobStatus = Literal["queued", "running", "completed", "failed"]
+AnalysisCacheState = Literal["miss", "fresh", "stale", "recomputed"]
+
+
+class AnalysisComparisonJobStatus(BaseModel):
+    job_id: str
+    status: AnalysisJobStatus
+    progress: float
+    stage: str
+    message: str
+    cache_state: AnalysisCacheState
+    stale_sides: list[Literal["left", "right"]] = Field(default_factory=list)
+    report: AnalysisComparisonReport | None = None
+    error: str | None = None
 
 
 class StartExperimentRequest(BaseModel):
@@ -221,30 +425,6 @@ class CheckpointSummary(BaseModel):
     optimizer_params: dict[str, dict[str, float]] = Field(default_factory=dict)
 
 
-class TSNEAnalysisResponse(BaseModel):
-    checkpoint: CheckpointSummary
-    params: TSNEParams
-    points: list[TSNEPoint]
-
-
-class LRPSample(BaseModel):
-    index: int
-    label: int
-    prediction: int
-    target: int
-    correct: bool
-    score: float
-    delta: float
-    image: list[list[list[float]]]
-    relevance: list[list[float]]
-
-
-class LRPAnalysisResponse(BaseModel):
-    checkpoint: CheckpointSummary
-    params: LRPParams
-    samples: list[LRPSample]
-
-
 class AccuracyPoint(BaseModel):
     i: int
     value: float
@@ -258,6 +438,9 @@ class MutationStepPoint(BaseModel):
 class TrainingHistory(BaseModel):
     loss: list[float] = Field(default_factory=list)
     acc: list[AccuracyPoint] = Field(default_factory=list)
+    train_acc: list[AccuracyPoint] = Field(default_factory=list)
+    val_loss: list[AccuracyPoint] = Field(default_factory=list)
+    memory_mb: list[AccuracyPoint] = Field(default_factory=list)
     mutation_step: list[MutationStepPoint] = Field(default_factory=list)
 
 

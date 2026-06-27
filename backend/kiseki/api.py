@@ -2,21 +2,19 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from .analysis import LRPParameterError, TSNEParameterError
+from .analysis import AnalysisComparisonError, AnalysisParameterError
 from .checkpoint import CheckpointNotFoundError
 from .experiment import ExperimentManager
 from .schemas import (
+    AnalysisComparisonJobRequest,
+    AnalysisComparisonJobStatus,
     CheckpointListMode,
     CheckpointSelection,
     CheckpointSummary,
     ExperimentControlsUpdate,
     ExperimentStatus,
-    LRPAnalysisRequest,
-    LRPAnalysisResponse,
     SchemaResponse,
     StartExperimentRequest,
-    TSNEAnalysisRequest,
-    TSNEAnalysisResponse,
     schema_response,
 )
 
@@ -59,23 +57,41 @@ def create_app(manager: ExperimentManager | None = None) -> FastAPI:
         except RuntimeError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    @app.post("/api/analysis/tsne", response_model=TSNEAnalysisResponse)
-    def compute_tsne(request: TSNEAnalysisRequest) -> TSNEAnalysisResponse:
+    @app.post(
+        "/api/analysis/comparisons/jobs",
+        response_model=AnalysisComparisonJobStatus,
+    )
+    def create_analysis_comparison_job(
+        request: AnalysisComparisonJobRequest,
+    ) -> AnalysisComparisonJobStatus:
         try:
-            return experiment_manager.tsne_analysis(request)
+            return experiment_manager.create_analysis_comparison_job(request)
         except CheckpointNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except TSNEParameterError as exc:
+        except (AnalysisComparisonError, AnalysisParameterError) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    @app.post("/api/analysis/lrp", response_model=LRPAnalysisResponse)
-    def compute_lrp(request: LRPAnalysisRequest) -> LRPAnalysisResponse:
+    @app.get(
+        "/api/analysis/comparisons/jobs/{job_id}",
+        response_model=AnalysisComparisonJobStatus,
+    )
+    def get_analysis_comparison_job(job_id: str) -> AnalysisComparisonJobStatus:
         try:
-            return experiment_manager.lrp_analysis(request)
-        except CheckpointNotFoundError as exc:
+            return experiment_manager.get_analysis_comparison_job(job_id)
+        except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        except LRPParameterError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    @app.get("/api/analysis/comparisons/jobs/{job_id}/events")
+    def stream_analysis_comparison_events(job_id: str) -> StreamingResponse:
+        try:
+            events = experiment_manager.analysis_comparison_events(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return StreamingResponse(
+            events,
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache"},
+        )
 
     @app.post("/api/experiments/start", response_model=ExperimentStatus)
     def start_experiment(request: StartExperimentRequest) -> ExperimentStatus:

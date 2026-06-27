@@ -81,6 +81,9 @@ export type MutationStepPoint = {
 export type TrainingHistory = {
   loss: number[]
   acc: AccuracyPoint[]
+  train_acc: AccuracyPoint[]
+  val_loss: AccuracyPoint[]
+  memory_mb: AccuracyPoint[]
   mutation_step: MutationStepPoint[]
 }
 
@@ -117,18 +120,82 @@ export type OptimizerParams = Record<string, Record<string, number>>
 
 export type TsneLearningRateMode = "auto" | "numeric"
 
-export type TsneParams = {
-  perplexity: number
-  max_iter: number
-  learning_rate_mode: TsneLearningRateMode
-  learning_rate?: number | null
-  angle: number
-  pca_components: number
-  seed?: number | null
-  use_pca: boolean
+export type AnalysisComparisonParams = {
+  tsne_perplexity: number
+  tsne_max_iter: number
+  tsne_learning_rate_mode: TsneLearningRateMode
+  tsne_learning_rate?: number | null
+  tsne_angle: number
+  tsne_pca_components: number
+  tsne_seed?: number | null
+  calibration_bins: number
+  lrp_gallery_sample_count: number
+  robustness_noise_levels: number[]
+  robustness_brightness_levels: number[]
+  robustness_cutout_levels: number[]
 }
 
-export type TsnePoint = {
+export type AnalysisTableRow = {
+  label: string
+  left: string
+  right: string
+  comparable?: boolean | null
+}
+
+export type AnalysisCurves = {
+  training_loss: number[]
+  validation_accuracy: AccuracyPoint[]
+  training_accuracy: AccuracyPoint[]
+  validation_loss: AccuracyPoint[]
+}
+
+export type AnalysisPerClassMetric = {
+  label: number
+  name: string
+  precision: number
+  recall: number
+  f1: number
+  support: number
+}
+
+export type AnalysisCalibrationBin = {
+  lower: number
+  upper: number
+  count: number
+  confidence: number
+  accuracy: number
+}
+
+export type AnalysisCalibration = {
+  bins: AnalysisCalibrationBin[]
+  ece: number
+  brier_score: number
+  nll: number
+}
+
+export type AnalysisModelMetrics = {
+  accuracy: number
+  loss: number
+  macro_f1: number
+  per_class_f1: AnalysisPerClassMetric[]
+  confusion_matrix: number[][]
+  calibration: AnalysisCalibration
+}
+
+export type AnalysisOverlap = {
+  total: number
+  correct_both: number
+  left_only_correct: number
+  right_only_correct: number
+  error_both: number
+  disagreements: number
+  both_error_same_prediction: number
+  both_error_different_prediction: number
+  upset: { set: string; count: number }[]
+}
+
+export type AnalysisEmbeddingPoint = {
+  index: number
   x: number
   y: number
   label: number
@@ -136,33 +203,124 @@ export type TsnePoint = {
   correct: boolean
 }
 
-export type TsneAnalysisResponse = {
-  checkpoint: CheckpointSummary
-  params: TsneParams
-  points: TsnePoint[]
+export type AnalysisEmbeddingProjection = {
+  left: AnalysisEmbeddingPoint[]
+  right: AnalysisEmbeddingPoint[]
 }
 
-export type LrpParams = {
-  sample_count: number
-  seed?: number | null
+export type AnalysisEmbeddings = {
+  pca: AnalysisEmbeddingProjection
+  tsne: AnalysisEmbeddingProjection
 }
 
-export type LrpSample = {
+export type AnalysisLrpSample = {
   index: number
   label: number
-  prediction: number
-  target: number
-  correct: boolean
-  score: number
-  delta: number
+  label_name: string
+  group: string
+  left_prediction: number
+  right_prediction: number
+  left_confidence: number
+  right_confidence: number
   image: number[][][]
-  relevance: number[][]
+  left_relevance: number[][]
+  right_relevance: number[][]
+  difference_relevance: number[][]
 }
 
-export type LrpAnalysisResponse = {
-  checkpoint: CheckpointSummary
-  params: LrpParams
-  samples: LrpSample[]
+export type AnalysisClassAverageRelevance = {
+  label: number
+  name: string
+  left_relevance: number[][]
+  right_relevance: number[][]
+  difference_relevance: number[][]
+}
+
+export type AnalysisLrpReport = {
+  samples: AnalysisLrpSample[]
+  class_averages: AnalysisClassAverageRelevance[]
+}
+
+export type AnalysisHistogram = {
+  bins: number[]
+  counts: number[]
+}
+
+export type AnalysisActivationLayerStats = {
+  name: string
+  sparsity: number
+  mean: number
+  std: number
+  q05: number
+  q50: number
+  q95: number
+  histogram: AnalysisHistogram
+}
+
+export type AnalysisActivationReport = {
+  left: AnalysisActivationLayerStats[]
+  right: AnalysisActivationLayerStats[]
+}
+
+export type AnalysisWeightLayerComparison = {
+  name: string
+  left_norm: number
+  right_norm: number
+  distance: number
+  relative_distance: number
+}
+
+export type AnalysisRobustnessPoint = {
+  level: number
+  left_accuracy: number
+  right_accuracy: number
+  left_loss: number
+  right_loss: number
+}
+
+export type AnalysisRobustnessCurve = {
+  perturbation: string
+  points: AnalysisRobustnessPoint[]
+}
+
+export type AnalysisRuntimeReport = {
+  rows: AnalysisTableRow[]
+}
+
+export type AnalysisComparisonReport = {
+  analysis_version: string
+  generated_at: string
+  analysis_device: string
+  left: CheckpointSummary
+  right: CheckpointSummary
+  params: AnalysisComparisonParams
+  metadata: AnalysisTableRow[]
+  comparability: AnalysisTableRow[]
+  curves: Record<"left" | "right", AnalysisCurves>
+  metrics: Record<"left" | "right", AnalysisModelMetrics>
+  confusion_difference: number[][]
+  overlap: AnalysisOverlap
+  embeddings: AnalysisEmbeddings
+  lrp: AnalysisLrpReport
+  activations: AnalysisActivationReport
+  weights: AnalysisWeightLayerComparison[]
+  robustness: AnalysisRobustnessCurve[]
+  runtime: AnalysisRuntimeReport
+}
+
+export type AnalysisJobStatus = "queued" | "running" | "completed" | "failed"
+export type AnalysisCacheState = "miss" | "fresh" | "stale" | "recomputed"
+
+export type AnalysisComparisonJobStatus = {
+  job_id: string
+  status: AnalysisJobStatus
+  progress: number
+  stage: string
+  message: string
+  cache_state: AnalysisCacheState
+  stale_sides: ("left" | "right")[]
+  report?: AnalysisComparisonReport | null
+  error?: string | null
 }
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? ""
@@ -321,7 +479,14 @@ export const defaultStatus: ExperimentStatus = {
   requested_device: "cpu",
   device: "cpu",
   device_name: "cpu",
-  history: { loss: [], acc: [], mutation_step: [] },
+  history: {
+    loss: [],
+    acc: [],
+    train_acc: [],
+    val_loss: [],
+    memory_mb: [],
+    mutation_step: [],
+  },
   error: null,
   last_checkpoint_step: null,
   last_checkpoint_acc: null,
@@ -408,34 +573,39 @@ export async function fetchCheckpoints(
   return response.json()
 }
 
-export async function computeTsneAnalysis(
-  checkpoint: CheckpointSelection,
-  params: TsneParams
-): Promise<TsneAnalysisResponse> {
-  const response = await fetch(apiUrl("/api/analysis/tsne"), {
+export async function createAnalysisComparisonJob(
+  left: CheckpointSelection,
+  right: CheckpointSelection,
+  params: AnalysisComparisonParams,
+  force_recompute = false
+): Promise<AnalysisComparisonJobStatus> {
+  const response = await fetch(apiUrl("/api/analysis/comparisons/jobs"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ checkpoint, params }),
+    body: JSON.stringify({ left, right, params, force_recompute }),
   })
   if (!response.ok) {
-    throw new Error("Failed to compute t-SNE")
+    throw new Error("Failed to start comparison")
   }
   return response.json()
 }
 
-export async function computeLrpAnalysis(
-  checkpoint: CheckpointSelection,
-  params: LrpParams
-): Promise<LrpAnalysisResponse> {
-  const response = await fetch(apiUrl("/api/analysis/lrp"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ checkpoint, params }),
-  })
+export async function fetchAnalysisComparisonJob(
+  jobId: string
+): Promise<AnalysisComparisonJobStatus> {
+  const response = await fetch(
+    apiUrl(`/api/analysis/comparisons/jobs/${encodeURIComponent(jobId)}`)
+  )
   if (!response.ok) {
-    throw new Error("Failed to compute LRP")
+    throw new Error("Failed to load comparison")
   }
   return response.json()
+}
+
+export function analysisComparisonEventsUrl(jobId: string): string {
+  return apiUrl(
+    `/api/analysis/comparisons/jobs/${encodeURIComponent(jobId)}/events`
+  )
 }
 
 export async function loadCheckpointStatus(

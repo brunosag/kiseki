@@ -28,6 +28,8 @@ from .models import build_model
 from .optimizers import build_optimizer_runner
 from .schemas import (
     AccuracyPoint,
+    AnalysisComparisonJobRequest,
+    AnalysisComparisonJobStatus,
     CheckpointListMode,
     CheckpointKind,
     CheckpointSelection,
@@ -35,12 +37,8 @@ from .schemas import (
     ExperimentConfig,
     ExperimentControlsUpdate,
     ExperimentStatus,
-    LRPAnalysisRequest,
-    LRPAnalysisResponse,
     MutationStepPoint,
     StartExperimentRequest,
-    TSNEAnalysisRequest,
-    TSNEAnalysisResponse,
 )
 
 VAL_FREQ = 10
@@ -70,6 +68,11 @@ class ExperimentManager:
         self.worker: threading.Thread | None = None
         self._status = ExperimentStatus()
         self._resume_checkpoint_kind: CheckpointKind = "latest"
+        self.analysis_service = AnalysisService(
+            data_loader_factory=self.data_loader_factory,
+            checkpoint_saver=self.checkpoint_saver,
+            is_experiment_running=self._is_experiment_running,
+        )
 
     def status(self) -> ExperimentStatus:
         with self.lock:
@@ -77,14 +80,20 @@ class ExperimentManager:
 
     def checkpoints(self, mode: CheckpointListMode = "training") -> list[CheckpointSummary]:
         if mode == "analysis":
-            return self._analysis_service().checkpoint_summaries()
+            return self.analysis_service.checkpoint_summaries()
         return self.checkpoint_saver.list_summaries()
 
-    def tsne_analysis(self, request: TSNEAnalysisRequest) -> TSNEAnalysisResponse:
-        return self._analysis_service().tsne(request)
+    def create_analysis_comparison_job(
+        self,
+        request: AnalysisComparisonJobRequest,
+    ) -> AnalysisComparisonJobStatus:
+        return self.analysis_service.create_comparison_job(request)
 
-    def lrp_analysis(self, request: LRPAnalysisRequest) -> LRPAnalysisResponse:
-        return self._analysis_service().lrp(request)
+    def get_analysis_comparison_job(self, job_id: str) -> AnalysisComparisonJobStatus:
+        return self.analysis_service.get_comparison_job(job_id)
+
+    def analysis_comparison_events(self, job_id: str) -> Iterator[str]:
+        return self.analysis_service.comparison_events(job_id)
 
     def delete_checkpoint(self, run_id: str) -> None:
         with self.lock:
@@ -380,6 +389,7 @@ class ExperimentManager:
                 inputs, targets = next(train_batches)
                 inputs, targets = move_batch(inputs, targets, device)
                 loss = runner.step(inputs, targets)
+                train_accuracy = batch_accuracy(model, inputs, targets)
                 iteration_seconds = time.perf_counter() - iteration_started_at
                 elapsed_seconds = elapsed_offset + time.perf_counter() - started_at
                 status = self._update_step(
@@ -388,6 +398,8 @@ class ExperimentManager:
                     elapsed_seconds=elapsed_seconds,
                     last_iteration_seconds=iteration_seconds,
                     mutation_step=current_mutation_step(runner),
+                    train_accuracy=train_accuracy,
+                    peak_memory_mb=peak_memory_mb(device),
                 )
                 self._publish("step", status)
 
@@ -396,6 +408,7 @@ class ExperimentManager:
                 target_reached = False
                 if step % VAL_FREQ == 0:
                     accuracy = evaluate(model, val_loader, device)
+                    validation_loss = evaluate_mean_loss(model, val_loader, device)
                     best_accuracy_surpassed = accuracy > status.best_acc
                     update_scheduler = getattr(runner, "update_scheduler", None)
                     if callable(update_scheduler):
@@ -403,8 +416,10 @@ class ExperimentManager:
                     status = self._update_accuracy(
                         step,
                         accuracy,
+                        validation_loss=validation_loss,
                         elapsed_seconds=elapsed_offset + time.perf_counter() - started_at,
                         mutation_step=current_mutation_step(runner),
+                        peak_memory_mb=peak_memory_mb(device),
                     )
                     self._publish("validation", status)
                     checkpoint_accuracy = accuracy
@@ -421,8 +436,10 @@ class ExperimentManager:
                         status = self._update_accuracy(
                             step,
                             checkpoint_accuracy,
+                            validation_loss=evaluate_mean_loss(model, val_loader, device),
                             elapsed_seconds=elapsed_offset + time.perf_counter() - started_at,
                             mutation_step=current_mutation_step(runner),
+                            peak_memory_mb=peak_memory_mb(device),
                         )
                         self._publish("validation", status)
 
@@ -458,8 +475,10 @@ class ExperimentManager:
                         status = self._update_accuracy(
                             step,
                             pause_accuracy,
+                            validation_loss=evaluate_mean_loss(model, val_loader, device),
                             elapsed_seconds=elapsed_offset + time.perf_counter() - started_at,
                             mutation_step=current_mutation_step(runner),
+                            peak_memory_mb=peak_memory_mb(device),
                         )
                         self._publish("validation", status)
 
@@ -572,6 +591,8 @@ class ExperimentManager:
         elapsed_seconds: float,
         last_iteration_seconds: float,
         mutation_step: float | None,
+        train_accuracy: float | None,
+        peak_memory_mb: float | None,
     ) -> ExperimentStatus:
         with self.lock:
             self._status.current_step = step
@@ -579,6 +600,14 @@ class ExperimentManager:
             self._status.total_elapsed_seconds = max(elapsed_seconds, 0.0)
             self._status.last_iteration_seconds = max(last_iteration_seconds, 0.0)
             self._status.history.loss.append(loss)
+            if train_accuracy is not None:
+                self._status.history.train_acc.append(
+                    AccuracyPoint(i=step, value=train_accuracy)
+                )
+            if peak_memory_mb is not None:
+                self._status.history.memory_mb.append(
+                    AccuracyPoint(i=step, value=peak_memory_mb)
+                )
             self._record_mutation_step(step, mutation_step)
             return self._status.model_copy(deep=True)
 
@@ -587,13 +616,23 @@ class ExperimentManager:
         step: int,
         accuracy: float,
         *,
+        validation_loss: float | None,
         elapsed_seconds: float,
         mutation_step: float | None,
+        peak_memory_mb: float | None,
     ) -> ExperimentStatus:
         with self.lock:
             self._status.best_acc = max(self._status.best_acc, accuracy)
             self._status.total_elapsed_seconds = max(elapsed_seconds, 0.0)
             self._status.history.acc.append(AccuracyPoint(i=step, value=accuracy))
+            if validation_loss is not None:
+                self._status.history.val_loss.append(
+                    AccuracyPoint(i=step, value=validation_loss)
+                )
+            if peak_memory_mb is not None:
+                self._status.history.memory_mb.append(
+                    AccuracyPoint(i=step, value=peak_memory_mb)
+                )
             self._record_mutation_step(step, mutation_step)
             return self._status.model_copy(deep=True)
 
@@ -707,11 +746,9 @@ class ExperimentManager:
         for queue in subscribers:
             queue.put((event_type, status))
 
-    def _analysis_service(self) -> AnalysisService:
-        return AnalysisService(
-            data_loader_factory=self.data_loader_factory,
-            checkpoint_saver=self.checkpoint_saver,
-        )
+    def _is_experiment_running(self) -> bool:
+        with self.lock:
+            return self._status.is_running
 
 
 def seed_everything(seed: int, numeric_mode: NumericMode = "strict") -> None:
@@ -837,6 +874,48 @@ def evaluate(
             correct += int((predictions == targets).sum().cpu())
             total += targets.numel()
     return 100.0 * correct / max(total, 1)
+
+
+def evaluate_mean_loss(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+) -> float:
+    was_training = model.training
+    model.eval()
+    loss_sum = 0.0
+    total = 0
+    with torch.no_grad():
+        for inputs, targets in loader:
+            inputs, targets = move_batch(inputs, targets, device)
+            logits = model(inputs)
+            loss_sum += float(
+                torch.nn.functional.cross_entropy(logits, targets, reduction="sum").cpu()
+            )
+            total += targets.numel()
+    model.train(was_training)
+    return loss_sum / max(total, 1)
+
+
+def batch_accuracy(
+    model: torch.nn.Module,
+    inputs: torch.Tensor,
+    targets: torch.Tensor,
+) -> float:
+    was_training = model.training
+    model.eval()
+    with torch.no_grad():
+        predictions = model(inputs).argmax(dim=1)
+        correct = int((predictions == targets).sum().cpu())
+        total = int(targets.numel())
+    model.train(was_training)
+    return 100.0 * correct / max(total, 1)
+
+
+def peak_memory_mb(device: torch.device) -> float | None:
+    if device.type != "cuda":
+        return None
+    return torch.cuda.max_memory_allocated(device) / (1024 * 1024)
 
 
 def format_sse(event_type: str, payload: ExperimentStatus | dict[str, Any]) -> str:

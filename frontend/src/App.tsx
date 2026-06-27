@@ -1,7 +1,8 @@
-import { forwardRef, useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import ReactPlotly from "react-plotly.js"
 import katex from "katex"
 import {
+  AlertTriangle,
   ArrowDown,
   ArrowUpDown,
   Funnel,
@@ -17,7 +18,6 @@ import {
 } from "lucide-react"
 import type {
   ChangeEvent,
-  ComponentPropsWithoutRef,
   ComponentType,
   KeyboardEvent,
   ReactElement,
@@ -37,6 +37,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
+import {
+  Alert,
+  AlertAction,
+  AlertDescription,
+  AlertTitle,
+} from "@/components/ui/alert"
+import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -63,6 +70,7 @@ import {
   InputGroupInput,
 } from "@/components/ui/input-group"
 import { Label } from "@/components/ui/label"
+import { Progress } from "@/components/ui/progress"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import {
   Select,
@@ -73,19 +81,28 @@ import {
 } from "@/components/ui/select"
 import { Skeleton } from "@/components/ui/skeleton"
 import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table"
+import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
 import { useTheme } from "@/components/theme-provider"
 import {
+  analysisComparisonEventsUrl,
   apiUrl,
-  computeLrpAnalysis,
-  computeTsneAnalysis,
   configDefaults,
+  createAnalysisComparisonJob,
   deleteCheckpointRun,
   defaultStatus,
   fallbackSchema,
+  fetchAnalysisComparisonJob,
   fetchCheckpoints,
   fetchSchema,
   fetchStatus,
@@ -95,18 +112,18 @@ import {
   type CheckpointSummary,
   optimizerParamDefaults,
   resetExperimentStatus,
+  type AnalysisComparisonJobStatus,
+  type AnalysisComparisonParams,
+  type AnalysisComparisonReport,
+  type AnalysisEmbeddingProjection,
+  type AnalysisLrpSample,
+  type AnalysisTableRow,
   type ConfigField,
   type ExperimentConfig,
   type ExperimentStatus,
-  type LrpAnalysisResponse,
-  type LrpParams,
-  type LrpSample,
   type OptimizerParams,
   type SchemaResponse,
   type SelectOption,
-  type TsneAnalysisResponse,
-  type TsneLearningRateMode,
-  type TsneParams,
 } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import {
@@ -165,6 +182,7 @@ const MUTATION_STEP_AXIS_PADDING = 1.05
 const MUTATION_STEP_AXIS_SEGMENTS = 8
 const MUTATION_STEP_TICK_DECIMALS = 2
 const MUTATION_STEP_PLOT_DOMAIN_END = 0.925
+const MISSING_VALUE_LABEL = "—"
 
 type ResolvedTheme = "dark" | "light"
 type CheckpointSortKey = "saved_at" | "accuracy" | "step" | "elapsed"
@@ -172,25 +190,7 @@ type SortDirection = "asc" | "desc"
 type CheckpointOptimizerFilter = ExperimentConfig["optimizer"] | "all"
 type CheckpointDatasetFilter = ExperimentConfig["dataset"] | "all"
 type AppTab = "training" | "analysis"
-type AnalysisMethod = "tsne" | "lrp"
-type AnalysisCardId = "left" | "right"
-type AnalysisPlotStatus = "empty" | "loading" | "ready" | "error"
-type AnalysisParams = TsneParams | LrpParams
-type AnalysisResponse = TsneAnalysisResponse | LrpAnalysisResponse
-type AnalysisLoadOptions = {
-  method?: AnalysisMethod
-  params?: AnalysisParams
-}
-
-type AnalysisCardState = {
-  checkpoint: CheckpointSummary | null
-  error: string | null
-  method: AnalysisMethod | null
-  requestId: number
-  requestParams: AnalysisParams | null
-  response: AnalysisResponse | null
-  status: AnalysisPlotStatus
-}
+type AnalysisSide = "left" | "right"
 
 type PlotPalette = {
   accuracy: string
@@ -234,55 +234,22 @@ const fallbackPlotPalettes: Record<ResolvedTheme, PlotPalette> = {
 }
 
 const LONG_CHECKPOINT_DELETE_SECONDS = 600
-const ANALYSIS_CARD_IDS: AnalysisCardId[] = ["left", "right"]
-const DEFAULT_TSNE_PARAMS: TsneParams = {
-  perplexity: 30,
-  max_iter: 1000,
-  learning_rate_mode: "auto",
-  learning_rate: 200,
-  angle: 0.5,
-  pca_components: 50,
-  seed: null,
-  use_pca: true,
-}
-const DEFAULT_LRP_PARAMS: LrpParams = {
-  sample_count: 20,
-  seed: null,
-}
-
-const defaultAnalysisCards: Record<AnalysisCardId, AnalysisCardState> = {
-  left: {
-    checkpoint: null,
-    error: null,
-    method: null,
-    requestId: 0,
-    requestParams: null,
-    response: null,
-    status: "empty",
-  },
-  right: {
-    checkpoint: null,
-    error: null,
-    method: null,
-    requestId: 0,
-    requestParams: null,
-    response: null,
-    status: "empty",
-  },
+const ANALYSIS_SIDES: AnalysisSide[] = ["left", "right"]
+const DEFAULT_ANALYSIS_PARAMS: AnalysisComparisonParams = {
+  tsne_perplexity: 30,
+  tsne_max_iter: 1000,
+  tsne_learning_rate_mode: "auto",
+  tsne_learning_rate: null,
+  tsne_angle: 0.5,
+  tsne_pca_components: 50,
+  tsne_seed: null,
+  calibration_bins: 15,
+  lrp_gallery_sample_count: 24,
+  robustness_noise_levels: [0.0, 0.05, 0.1, 0.2],
+  robustness_brightness_levels: [0.0, 0.1, 0.2],
+  robustness_cutout_levels: [0.0, 0.125, 0.25],
 }
 
-const ANALYSIS_CLASS_COLORS = [
-  "#2563eb",
-  "#0891b2",
-  "#059669",
-  "#65a30d",
-  "#ca8a04",
-  "#ea580c",
-  "#dc2626",
-  "#c026d3",
-  "#7c3aed",
-  "#475569",
-]
 const CIFAR10_CLASS_LABELS = [
   "airplane",
   "automobile",
@@ -295,7 +262,6 @@ const CIFAR10_CLASS_LABELS = [
   "ship",
   "truck",
 ]
-const LRP_SEED_MAX = 2_147_483_647
 
 export function App() {
   const { theme } = useTheme()
@@ -312,22 +278,13 @@ export function App() {
   const [loadedCheckpoint, setLoadedCheckpoint] =
     useState<CheckpointSummary | null>(null)
   const [activeTab, setActiveTab] = useState<AppTab>("training")
-  const [analysisMethod, setAnalysisMethod] = useState<AnalysisMethod>("tsne")
-  const [tsneParams, setTsneParams] =
-    useState<TsneParams>(DEFAULT_TSNE_PARAMS)
-  const [lrpParams, setLrpParams] = useState<LrpParams>(() => ({
-    ...DEFAULT_LRP_PARAMS,
-    seed: randomAnalysisSeed(),
-  }))
-  const [analysisLockedClass, setAnalysisLockedClass] = useState<
-    number | null
-  >(null)
-  const [analysisHoveredClass, setAnalysisHoveredClass] = useState<
-    number | null
-  >(null)
-  const [analysisCards, setAnalysisCards] =
-    useState<Record<AnalysisCardId, AnalysisCardState>>(defaultAnalysisCards)
-  const analysisRequestCounter = useRef(0)
+  const [analysisCheckpoints, setAnalysisCheckpoints] = useState<
+    Record<AnalysisSide, CheckpointSummary | null>
+  >({ left: null, right: null })
+  const [analysisJob, setAnalysisJob] =
+    useState<AnalysisComparisonJobStatus | null>(null)
+  const [analysisError, setAnalysisError] = useState<string | null>(null)
+  const [analysisStarting, setAnalysisStarting] = useState(false)
 
   useEffect(() => {
     let ignore = false
@@ -391,6 +348,42 @@ export function App() {
       source.close()
     }
   }, [])
+
+  const analysisJobId = analysisJob?.job_id ?? null
+  const analysisJobStatus = analysisJob?.status ?? null
+
+  useEffect(() => {
+    if (
+      analysisJobId === null ||
+      analysisJobStatus === "completed" ||
+      analysisJobStatus === "failed"
+    ) {
+      return
+    }
+
+    const source = new EventSource(analysisComparisonEventsUrl(analysisJobId))
+    const handleEvent = (event: MessageEvent<string>) => {
+      const payload = JSON.parse(event.data) as AnalysisComparisonJobStatus
+      setAnalysisJob(payload)
+    }
+
+    for (const eventType of ["status", "queued", "running", "completed", "failed"]) {
+      source.addEventListener(eventType, handleEvent)
+    }
+
+    return () => {
+      for (const eventType of [
+        "status",
+        "queued",
+        "running",
+        "completed",
+        "failed",
+      ]) {
+        source.removeEventListener(eventType, handleEvent)
+      }
+      source.close()
+    }
+  }, [analysisJobId, analysisJobStatus])
 
   const isRunning = status.is_running
   const isPaused = status.is_paused
@@ -464,27 +457,16 @@ export function App() {
     () => fixedTickText(mutationStepTickValues, MUTATION_STEP_TICK_DECIMALS),
     [mutationStepTickValues]
   )
-  const tsneValidationError = useMemo(
-    () => validateTsneParams(tsneParams),
-    [tsneParams]
+  const comparisonError = useMemo(
+    () => comparisonSelectionError(analysisCheckpoints),
+    [analysisCheckpoints]
   )
-  const lrpValidationError = useMemo(
-    () => validateLrpParams(lrpParams),
-    [lrpParams]
-  )
-  const analysisValidationError =
-    analysisMethod === "tsne" ? tsneValidationError : lrpValidationError
-  const staleAnalysisCards = useMemo(
-    () =>
-      ANALYSIS_CARD_IDS.filter((cardId) =>
-        isAnalysisCardStale(
-          analysisCards[cardId],
-          analysisMethod,
-          currentAnalysisParams(analysisMethod, tsneParams, lrpParams)
-        )
-      ),
-    [analysisCards, analysisMethod, lrpParams, tsneParams]
-  )
+  const currentAnalysisReport =
+    analysisJob?.status === "completed" ? analysisJob.report ?? null : null
+  const analysisBusy =
+    analysisStarting ||
+    analysisJob?.status === "queued" ||
+    analysisJob?.status === "running"
 
   const plotData = useMemo<Data[]>(() => {
     const lossPointCount = status.history.loss.length
@@ -772,155 +754,46 @@ export function App() {
     setStatus(nextStatus)
   }
 
-  function updateTsneParam<K extends keyof TsneParams>(
-    key: K,
-    value: TsneParams[K]
-  ) {
-    setTsneParams((current) => ({ ...current, [key]: value }))
-  }
-
-  function updateLrpParam<K extends keyof LrpParams>(
-    key: K,
-    value: LrpParams[K]
-  ) {
-    setLrpParams((current) => ({ ...current, [key]: value }))
-  }
-
-  const effectiveAnalysisClass = analysisHoveredClass ?? analysisLockedClass
-
-  function toggleAnalysisClassLock(label: number) {
-    setAnalysisLockedClass((current) => (current === label ? null : label))
-  }
-
   async function loadAnalysisCheckpoint(
-    cardId: AnalysisCardId,
-    checkpoint: CheckpointSummary,
-    options: AnalysisLoadOptions = {}
+    side: AnalysisSide,
+    checkpoint: CheckpointSummary
   ) {
-    const method = options.method ?? analysisMethod
-    let requestParams =
-      options.params ?? currentAnalysisParams(method, tsneParams, lrpParams)
-    if (method === "lrp" && (requestParams as LrpParams).seed == null) {
-      const seed = randomAnalysisSeed()
-      requestParams = { ...(requestParams as LrpParams), seed }
-      setLrpParams((current) => ({ ...current, seed }))
-    }
-    const error =
-      method === "tsne"
-        ? validateTsneParams(requestParams as TsneParams)
-        : validateLrpParams(requestParams as LrpParams)
-    if (error) {
-      setAnalysisCards((current) => ({
-        ...current,
-        [cardId]: {
-          ...current[cardId],
-          checkpoint,
-          error,
-          method,
-          requestParams: null,
-          response: null,
-          status: "error",
-        },
-      }))
+    setAnalysisCheckpoints((current) => ({ ...current, [side]: checkpoint }))
+    setAnalysisJob(null)
+    setAnalysisError(null)
+  }
+
+  async function runAnalysisComparison(forceRecompute = false) {
+    const left = selectionFromCheckpoint(analysisCheckpoints.left)
+    const right = selectionFromCheckpoint(analysisCheckpoints.right)
+    const validationError =
+      validateAnalysisParams(DEFAULT_ANALYSIS_PARAMS) ??
+      comparisonError ??
+      "Select two checkpoints"
+    if (!left || !right || comparisonError) {
+      setAnalysisError(validationError)
       return
     }
 
-    const requestId = analysisRequestCounter.current + 1
-    analysisRequestCounter.current = requestId
-    const normalizedRequestParams =
-      method === "tsne"
-        ? tsneRequestParams(requestParams as TsneParams)
-        : lrpRequestParams(requestParams as LrpParams)
-
-    setAnalysisCards((current) => ({
-      ...current,
-      [cardId]: {
-        ...current[cardId],
-        checkpoint,
-        error: null,
-        method,
-        requestId,
-        requestParams: normalizedRequestParams,
-        response: null,
-        status: "loading",
-      },
-    }))
-
+    setAnalysisStarting(true)
+    setAnalysisError(null)
     try {
-      const selection = selectionFromCheckpoint(checkpoint) ?? {
-        run_id: checkpoint.run_id,
-        kind: checkpoint.kind,
+      const job = await createAnalysisComparisonJob(
+        left,
+        right,
+        analysisRequestParams(DEFAULT_ANALYSIS_PARAMS),
+        forceRecompute
+      )
+      setAnalysisJob(job)
+      if (job.status !== "completed" && job.status !== "failed") {
+        fetchAnalysisComparisonJob(job.job_id)
+          .then(setAnalysisJob)
+          .catch(() => undefined)
       }
-      const response =
-        method === "tsne"
-          ? await computeTsneAnalysis(
-              selection,
-              normalizedRequestParams as TsneParams
-            )
-          : await computeLrpAnalysis(
-              selection,
-              normalizedRequestParams as LrpParams
-            )
-      setAnalysisCards((current) => {
-        if (current[cardId].requestId !== requestId) {
-          return current
-        }
-
-        return {
-          ...current,
-          [cardId]: {
-            checkpoint: response.checkpoint,
-            error: null,
-            method,
-            requestId,
-            requestParams: normalizedRequestParams,
-            response,
-            status: "ready",
-          },
-        }
-      })
     } catch {
-      setAnalysisCards((current) => {
-        if (current[cardId].requestId !== requestId) {
-          return current
-        }
-
-        return {
-          ...current,
-          [cardId]: {
-            ...current[cardId],
-            checkpoint,
-            error: `Failed to compute ${analysisMethodLabel(method)}`,
-            response: null,
-            method,
-            requestParams: normalizedRequestParams,
-            status: "error",
-          },
-        }
-      })
-    }
-  }
-
-  function recomputeLoadedAnalysisCards() {
-    const options =
-      analysisMethod === "lrp"
-        ? {
-            method: "lrp" as const,
-            params: lrpRequestParams({
-              ...lrpParams,
-              seed: randomAnalysisSeed(),
-            }),
-          }
-        : undefined
-    if (options) {
-      setLrpParams(options.params as LrpParams)
-    }
-
-    for (const cardId of ANALYSIS_CARD_IDS) {
-      const checkpoint = analysisCards[cardId].checkpoint
-      if (checkpoint) {
-        void loadAnalysisCheckpoint(cardId, checkpoint, options)
-      }
+      setAnalysisError("Failed to start comparison")
+    } finally {
+      setAnalysisStarting(false)
     }
   }
 
@@ -961,29 +834,7 @@ export function App() {
                 </Button>
               ) : null}
             </>
-          ) : (
-            <Select
-              value={analysisMethod}
-              onValueChange={(value) =>
-                setAnalysisMethod(value as AnalysisMethod)
-              }
-            >
-              <SelectTrigger
-                aria-label="Analysis method"
-                className="h-9 w-36"
-              >
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent
-                align="start"
-                className="w-(--radix-select-trigger-width) min-w-(--radix-select-trigger-width)"
-                position="popper"
-              >
-                <SelectItem value="tsne">t-SNE</SelectItem>
-                <SelectItem value="lrp">LRP</SelectItem>
-              </SelectContent>
-            </Select>
-          )}
+          ) : null}
         </div>
         <TabsList>
           <TabsTrigger value="training">Training</TabsTrigger>
@@ -1147,23 +998,17 @@ export function App() {
       </TabsContent>
       <TabsContent className="mt-0 flex min-h-0 flex-1" value="analysis">
         <AnalysisTab
-          cards={analysisCards}
-          focusedClass={effectiveAnalysisClass}
-          lrpParams={lrpParams}
-          lockedClass={analysisLockedClass}
-          method={analysisMethod}
+          busy={analysisBusy}
+          checkpoints={analysisCheckpoints}
+          comparisonError={comparisonError}
+          error={analysisError}
+          job={analysisJob}
           pausedRunId={isPaused ? status.run_id : null}
           plotPalette={plotPalette}
+          report={currentAnalysisReport}
           schema={schema}
-          staleCardCount={staleAnalysisCards.length}
-          tsneParams={tsneParams}
-          validationError={analysisValidationError}
           onLoadCheckpoint={loadAnalysisCheckpoint}
-          onRecomputeLoaded={recomputeLoadedAnalysisCards}
-          onHoverClass={setAnalysisHoveredClass}
-          onUpdateLrpParam={updateLrpParam}
-          onToggleClass={toggleAnalysisClassLock}
-          onUpdateTsneParam={updateTsneParam}
+          onRun={runAnalysisComparison}
         />
       </TabsContent>
     </Tabs>
@@ -1171,630 +1016,599 @@ export function App() {
 }
 
 type AnalysisTabProps = {
-  cards: Record<AnalysisCardId, AnalysisCardState>
-  focusedClass: number | null
-  lrpParams: LrpParams
-  lockedClass: number | null
-  method: AnalysisMethod
+  busy: boolean
+  checkpoints: Record<AnalysisSide, CheckpointSummary | null>
+  comparisonError: string | null
+  error: string | null
+  job: AnalysisComparisonJobStatus | null
   pausedRunId: string | null | undefined
   plotPalette: PlotPalette
+  report: AnalysisComparisonReport | null
   schema: SchemaResponse
-  staleCardCount: number
-  tsneParams: TsneParams
-  validationError: string | null
   onLoadCheckpoint: (
-    cardId: AnalysisCardId,
+    side: AnalysisSide,
     checkpoint: CheckpointSummary
   ) => Promise<void>
-  onHoverClass: (label: number | null) => void
-  onRecomputeLoaded: () => void
-  onToggleClass: (label: number) => void
-  onUpdateLrpParam: <K extends keyof LrpParams>(
-    key: K,
-    value: LrpParams[K]
-  ) => void
-  onUpdateTsneParam: <K extends keyof TsneParams>(
-    key: K,
-    value: TsneParams[K]
-  ) => void
+  onRun: (forceRecompute?: boolean) => void
 }
 
 function AnalysisTab({
-  cards,
-  focusedClass,
-  lrpParams,
-  lockedClass,
-  method,
+  busy,
+  checkpoints,
+  comparisonError,
+  error,
+  job,
   pausedRunId,
   plotPalette,
+  report,
   schema,
-  staleCardCount,
-  tsneParams,
-  validationError,
   onLoadCheckpoint,
-  onHoverClass,
-  onRecomputeLoaded,
-  onToggleClass,
-  onUpdateLrpParam,
-  onUpdateTsneParam,
+  onRun,
 }: AnalysisTabProps) {
-  const loadedCardCount = ANALYSIS_CARD_IDS.filter(
-    (cardId) => cards[cardId].checkpoint !== null
-  ).length
-  const hasLoadingCard = ANALYSIS_CARD_IDS.some(
-    (cardId) =>
-      cards[cardId].status === "loading" && cards[cardId].method === method
-  )
+  const canRun =
+    checkpoints.left !== null &&
+    checkpoints.right !== null &&
+    comparisonError === null &&
+    !busy
+  const showSetup = report === null
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
-      <div className="mx-auto flex max-w-full shrink-0 flex-wrap items-center justify-center gap-3">
-        <Card className="w-fit max-w-full" size="sm">
-          <CardContent className="py-0">
-            {method === "tsne" ? (
-              <TsneControls
-                hasLoadingCard={hasLoadingCard}
-                loadedCardCount={loadedCardCount}
-                staleCardCount={staleCardCount}
-                tsneParams={tsneParams}
-                validationError={validationError}
-                onRecomputeLoaded={onRecomputeLoaded}
-                onUpdateTsneParam={onUpdateTsneParam}
-              />
-            ) : (
-              <LrpControls
-                loadedCardCount={loadedCardCount}
-                lrpParams={lrpParams}
-                onRecomputeLoaded={onRecomputeLoaded}
-                onUpdateLrpParam={onUpdateLrpParam}
-              />
-            )}
-            {validationError ? (
-              <div className="mt-3 rounded-lg border border-destructive/40 bg-destructive/10 p-2 text-sm text-destructive">
-                {validationError}
-              </div>
-            ) : null}
-          </CardContent>
-        </Card>
-        {method === "tsne" ? (
-          <Card className="w-fit max-w-full" size="sm">
-            <CardContent className="py-0">
-              <AnalysisClassLegend
-                focusedClass={focusedClass}
-                lockedClass={lockedClass}
-                onHoverClass={onHoverClass}
-                onToggleClass={onToggleClass}
-              />
-            </CardContent>
-          </Card>
-        ) : null}
-      </div>
+      {showSetup ? (
+        <div className="grid gap-4 md:grid-cols-2">
+          {ANALYSIS_SIDES.map((side) => (
+            <AnalysisModelSelector
+              checkpoint={checkpoints[side]}
+              key={side}
+              pausedRunId={pausedRunId}
+              schema={schema}
+              side={side}
+              onLoadCheckpoint={onLoadCheckpoint}
+            />
+          ))}
+          <div className="flex flex-col justify-between gap-3 rounded-lg border p-4 md:col-span-2 xl:flex-row xl:items-center">
+            <div className="text-sm text-muted-foreground">
+              Reports use the full test set with cached defaults for metrics,
+              embeddings, LRP, activations, weights, and robustness.
+            </div>
+            <Button
+              className="w-full xl:w-auto"
+              disabled={!canRun}
+              onClick={() => onRun(false)}
+            >
+              {busy ? <LoaderCircle className="size-4 animate-spin" /> : null}
+              Generate Report
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
-      <div className="grid min-h-0 flex-1 auto-rows-fr items-stretch gap-4 xl:grid-cols-2">
-        {ANALYSIS_CARD_IDS.map((cardId) => (
-          <AnalysisComparisonCard
-            cardId={cardId}
-            key={cardId}
-            method={method}
+      {error ?? comparisonError ? (
+        <Alert variant="destructive">
+          <AlertTriangle className="size-4" />
+          <AlertTitle>Comparison unavailable</AlertTitle>
+          <AlertDescription>{error ?? comparisonError}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      {job?.cache_state === "stale" && report && job.stale_sides.length > 0 ? (
+        <Alert>
+          <AlertTriangle className="size-4" />
+          <AlertTitle>Cached report is stale</AlertTitle>
+          <AlertDescription>
+            Changed checkpoint side: {job.stale_sides.map(sideLabel).join(", ")}.
+          </AlertDescription>
+          <AlertAction>
+            <Button
+              className="h-7"
+              disabled={busy}
+              size="sm"
+              onClick={() => onRun(true)}
+            >
+              Recompute
+            </Button>
+          </AlertAction>
+        </Alert>
+      ) : null}
+
+      {busy ? <AnalysisProgress job={job} /> : null}
+      {job?.status === "failed" ? (
+        <Alert variant="destructive">
+          <AlertTriangle className="size-4" />
+          <AlertTitle>Comparison failed</AlertTitle>
+          <AlertDescription>{job.error ?? job.message}</AlertDescription>
+        </Alert>
+      ) : null}
+
+      {report ? (
+        <AnalysisReport plotPalette={plotPalette} report={report} />
+      ) : !busy ? (
+        <Empty className="min-h-96 border">
+          <EmptyHeader>
+            <EmptyMedia variant="icon">
+              <FolderOpen className="size-6" />
+            </EmptyMedia>
+            <EmptyTitle>Select two checkpoints</EmptyTitle>
+            <EmptyDescription>
+              Reports are generated for two checkpoints from the same dataset.
+            </EmptyDescription>
+          </EmptyHeader>
+        </Empty>
+      ) : null}
+    </div>
+  )
+}
+
+function AnalysisModelSelector({
+  checkpoint,
+  pausedRunId,
+  schema,
+  side,
+  onLoadCheckpoint,
+}: {
+  checkpoint: CheckpointSummary | null
+  pausedRunId: string | null | undefined
+  schema: SchemaResponse
+  side: AnalysisSide
+  onLoadCheckpoint: (
+    side: AnalysisSide,
+    checkpoint: CheckpointSummary
+  ) => Promise<void>
+}) {
+  return (
+    <Card>
+      <CardHeader className="gap-3">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <CardTitle className="text-base">{sideLabel(side)}</CardTitle>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {checkpoint
+                ? `${checkpoint.optimizer} · ${formatDatasetName(checkpoint.dataset)}`
+                : "Required"}
+            </div>
+          </div>
+          <CheckpointPicker
+            closeOnLoadStart
+            currentSelection={selectionFromCheckpoint(checkpoint)}
+            disabled={false}
+            mode="analysis"
             pausedRunId={pausedRunId}
-            focusedClass={focusedClass}
-            plotPalette={plotPalette}
             schema={schema}
-            state={cards[cardId]}
-            onLoadCheckpoint={onLoadCheckpoint}
+            onLoad={(nextCheckpoint) => onLoadCheckpoint(side, nextCheckpoint)}
           />
+        </div>
+      </CardHeader>
+      <CardContent>
+        {checkpoint ? (
+          <div className="grid grid-cols-3 gap-3">
+            <CheckpointMetric
+              label="Accuracy"
+              value={formatOptionalPercent(checkpoint.accuracy)}
+            />
+            <CheckpointMetric label="Step" value={formatInteger(checkpoint.step)} />
+            <CheckpointMetric
+              label="Elapsed"
+              value={formatOptionalDuration(checkpoint.total_elapsed_seconds)}
+            />
+          </div>
+        ) : (
+          <div className="grid h-24 place-items-center rounded-lg border border-dashed text-sm text-muted-foreground">
+            No checkpoint selected
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
+
+function AnalysisProgress({ job }: { job: AnalysisComparisonJobStatus | null }) {
+  const progress = Math.round((job?.progress ?? 0) * 100)
+  return (
+    <Card>
+      <CardContent>
+        <div className="flex items-center justify-between gap-4 text-sm">
+          <div className="min-w-0">
+            <div className="font-medium">{job?.stage ?? "load/cache"}</div>
+            <div className="truncate text-muted-foreground">
+              {job?.message ?? "Starting comparison."}
+            </div>
+          </div>
+          <div className="shrink-0 tabular-nums text-muted-foreground">
+            {progress}%
+          </div>
+        </div>
+        <Progress className="mt-3" value={progress} />
+        <div className="mt-4 grid gap-2 md:grid-cols-3">
+          <Skeleton className="h-24" />
+          <Skeleton className="h-24" />
+          <Skeleton className="h-24" />
+        </div>
+      </CardContent>
+    </Card>
+  )
+}
+
+function AnalysisReport({
+  plotPalette,
+  report,
+}: {
+  plotPalette: PlotPalette
+  report: AnalysisComparisonReport
+}) {
+  return (
+    <Tabs className="min-h-0 flex-1" defaultValue="overview">
+      <TabsList className="w-fit">
+        <TabsTrigger value="overview">Overview</TabsTrigger>
+        <TabsTrigger value="metrics">Metrics</TabsTrigger>
+        <TabsTrigger value="embeddings">Embeddings</TabsTrigger>
+        <TabsTrigger value="lrp">LRP</TabsTrigger>
+        <TabsTrigger value="robustness">Robustness</TabsTrigger>
+      </TabsList>
+      <TabsContent className="mt-4" value="overview">
+        <AnalysisOverview plotPalette={plotPalette} report={report} />
+      </TabsContent>
+      <TabsContent className="mt-4" value="metrics">
+        <AnalysisMetrics plotPalette={plotPalette} report={report} />
+      </TabsContent>
+      <TabsContent className="mt-4" value="embeddings">
+        <AnalysisEmbeddingsView plotPalette={plotPalette} report={report} />
+      </TabsContent>
+      <TabsContent className="mt-4" value="lrp">
+        <AnalysisLrpView report={report} />
+      </TabsContent>
+      <TabsContent className="mt-4" value="robustness">
+        <AnalysisRobustnessView plotPalette={plotPalette} report={report} />
+      </TabsContent>
+    </Tabs>
+  )
+}
+
+function AnalysisOverview({
+  plotPalette,
+  report,
+}: {
+  plotPalette: PlotPalette
+  report: AnalysisComparisonReport
+}) {
+  return (
+    <div className="grid gap-4">
+      <div className="grid gap-3 md:grid-cols-4">
+        <ReportMetric
+          label="Model A accuracy"
+          value={formatOptionalPercent(report.metrics.left.accuracy)}
+        />
+        <ReportMetric
+          label="Model B accuracy"
+          value={formatOptionalPercent(report.metrics.right.accuracy)}
+        />
+        <ReportMetric
+          label="Disagreements"
+          value={formatInteger(report.overlap.disagreements)}
+        />
+        <ReportMetric
+          label="Device"
+          value={report.analysis_device.toUpperCase()}
+        />
+      </div>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <AnalysisRowsTable rows={report.metadata} title="Checkpoints" />
+        <AnalysisRowsTable
+          rows={report.runtime.rows.filter((row) => row.label !== "Steps")}
+          title="Runtime"
+        />
+      </div>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <ReportPlot
+          data={trainingCurveData(report)}
+          layout={plotLayout("Training History", plotPalette)}
+        />
+        <ReportPlot
+          data={overlapData(report)}
+          layout={plotLayout("Outcome Overlap", plotPalette)}
+        />
+      </div>
+    </div>
+  )
+}
+
+function AnalysisMetrics({
+  plotPalette,
+  report,
+}: {
+  plotPalette: PlotPalette
+  report: AnalysisComparisonReport
+}) {
+  return (
+    <div className="grid gap-4">
+      <div className="grid gap-4 xl:grid-cols-3">
+        <ReportPlot
+          data={confusionData(report.metrics.left.confusion_matrix, "Model A")}
+          layout={heatmapLayout("Model A Confusion", plotPalette)}
+        />
+        <ReportPlot
+          data={confusionData(report.metrics.right.confusion_matrix, "Model B")}
+          layout={heatmapLayout("Model B Confusion", plotPalette)}
+        />
+        <ReportPlot
+          data={confusionData(report.confusion_difference, "A - B")}
+          layout={heatmapLayout("Confusion Delta", plotPalette)}
+        />
+      </div>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <ReportPlot
+          data={calibrationData(report)}
+          layout={plotLayout("Calibration", plotPalette)}
+        />
+        <PerClassMetricTable report={report} />
+      </div>
+    </div>
+  )
+}
+
+function AnalysisEmbeddingsView({
+  plotPalette,
+  report,
+}: {
+  plotPalette: PlotPalette
+  report: AnalysisComparisonReport
+}) {
+  return (
+    <div className="grid gap-4 xl:grid-cols-2">
+      <ReportPlot
+        data={embeddingData(report.embeddings.pca, "PCA")}
+        layout={embeddingLayout("Joint PCA", plotPalette)}
+      />
+      <ReportPlot
+        data={embeddingData(report.embeddings.tsne, "t-SNE")}
+        layout={embeddingLayout("Joint t-SNE", plotPalette)}
+      />
+    </div>
+  )
+}
+
+function AnalysisLrpView({ report }: { report: AnalysisComparisonReport }) {
+  if (report.lrp.samples.length === 0) {
+    return (
+      <Empty className="min-h-72 border">
+        <EmptyHeader>
+          <EmptyTitle>No LRP samples</EmptyTitle>
+          <EmptyDescription>The backend returned no gallery items.</EmptyDescription>
+        </EmptyHeader>
+      </Empty>
+    )
+  }
+
+  return (
+    <div className="grid gap-4">
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-3">
+        {report.lrp.samples.map((sample) => (
+          <LrpSampleCard
+            dataset={report.left.dataset}
+            key={sample.index}
+            sample={sample}
+          />
+        ))}
+      </div>
+      <div className="grid grid-cols-[repeat(auto-fill,minmax(10rem,1fr))] gap-3">
+        {report.lrp.class_averages.map((average) => (
+          <div className="rounded-lg border p-2" key={average.label}>
+            <div className="mb-2 flex items-center justify-between gap-2 text-sm">
+              <span className="font-medium">{average.name}</span>
+              <Badge variant="outline">avg</Badge>
+            </div>
+            <div className="aspect-square overflow-hidden rounded-md border bg-muted">
+              <RelevanceCanvas relevance={average.difference_relevance} />
+            </div>
+          </div>
         ))}
       </div>
     </div>
   )
 }
 
-function TsneControls({
-  hasLoadingCard,
-  loadedCardCount,
-  staleCardCount,
-  tsneParams,
-  validationError,
-  onRecomputeLoaded,
-  onUpdateTsneParam,
+function AnalysisRobustnessView({
+  plotPalette,
+  report,
 }: {
-  hasLoadingCard: boolean
-  loadedCardCount: number
-  staleCardCount: number
-  tsneParams: TsneParams
-  validationError: string | null
-  onRecomputeLoaded: () => void
-  onUpdateTsneParam: <K extends keyof TsneParams>(
-    key: K,
-    value: TsneParams[K]
-  ) => void
+  plotPalette: PlotPalette
+  report: AnalysisComparisonReport
 }) {
   return (
-    <div className="flex flex-wrap items-end justify-center gap-x-3 gap-y-2">
-      <AnalysisNumberField
-        className="w-24"
-        label="Perplexity"
-        max={50}
-        min={5}
-        step={1}
-        value={tsneParams.perplexity}
-        onChange={(value) => onUpdateTsneParam("perplexity", value)}
+    <div className="grid gap-4">
+      <ReportPlot
+        data={robustnessData(report)}
+        layout={plotLayout("Robustness", plotPalette)}
       />
-      <AnalysisNumberField
-        className="w-24"
-        label="Max iter"
-        min={250}
-        step={50}
-        value={tsneParams.max_iter}
-        onChange={(value) => onUpdateTsneParam("max_iter", value)}
-      />
-      <AnalysisNumberField
-        className="w-20"
-        label="Angle"
-        max={0.8}
-        min={0.2}
-        step={0.05}
-        value={tsneParams.angle}
-        onChange={(value) => onUpdateTsneParam("angle", value)}
-      />
-      <div className="grid w-28 gap-1">
-        <Label className="text-xs leading-none">Learning rate</Label>
-        <Select
-          value={tsneParams.learning_rate_mode}
-          onValueChange={(value) =>
-            onUpdateTsneParam(
-              "learning_rate_mode",
-              value as TsneLearningRateMode
-            )
-          }
-        >
-          <SelectTrigger className="h-8">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent
-            className="w-(--radix-select-trigger-width) min-w-(--radix-select-trigger-width)"
-            position="popper"
-          >
-            <SelectItem value="auto">Auto</SelectItem>
-            <SelectItem value="numeric">Numeric</SelectItem>
-          </SelectContent>
-        </Select>
+      <div className="grid gap-4 xl:grid-cols-2">
+        <ReportPlot
+          data={activationData(report)}
+          layout={plotLayout("Activation Sparsity", plotPalette)}
+        />
+        <ReportPlot
+          data={weightData(report)}
+          layout={plotLayout("Relative Weight Distance", plotPalette)}
+        />
       </div>
-      {tsneParams.learning_rate_mode === "numeric" ? (
-        <AnalysisNumberField
-          className="w-24"
-          label="LR value"
-          min={0}
-          step={10}
-          value={tsneParams.learning_rate ?? NaN}
-          onChange={(value) =>
-            onUpdateTsneParam(
-              "learning_rate",
-              Number.isFinite(value) ? value : null
-            )
-          }
-        />
-      ) : null}
-      <div className="flex h-8 items-center gap-2 px-1">
-        <Checkbox
-          checked={tsneParams.use_pca}
-          id="analysis-use-pca"
-          onCheckedChange={(checked) =>
-            onUpdateTsneParam("use_pca", checked === true)
-          }
-        />
-        <Label
-          className="whitespace-nowrap text-sm font-normal"
-          htmlFor="analysis-use-pca"
-        >
-          Use PCA
-        </Label>
-      </div>
-      {tsneParams.use_pca ? (
-        <AnalysisNumberField
-          className="w-20"
-          label="PCA dims"
-          max={120}
-          min={2}
-          step={1}
-          value={tsneParams.pca_components}
-          onChange={(value) => onUpdateTsneParam("pca_components", value)}
-        />
-      ) : null}
-      {loadedCardCount > 0 ? (
-        <Button
-          className="h-8"
-          disabled={
-            staleCardCount === 0 ||
-            hasLoadingCard ||
-            validationError !== null
-          }
-          onClick={onRecomputeLoaded}
-        >
-          Recompute
-        </Button>
-      ) : null}
     </div>
   )
 }
 
-function LrpControls({
-  loadedCardCount,
-  lrpParams,
-  onRecomputeLoaded,
-  onUpdateLrpParam,
-}: {
-  loadedCardCount: number
-  lrpParams: LrpParams
-  onRecomputeLoaded: () => void
-  onUpdateLrpParam: <K extends keyof LrpParams>(
-    key: K,
-    value: LrpParams[K]
-  ) => void
-}) {
+function ReportMetric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex flex-wrap items-end justify-center gap-x-3 gap-y-2">
-      <AnalysisNumberField
-        className="w-28"
-        label="Sample count"
-        max={50}
-        min={1}
-        step={1}
-        value={lrpParams.sample_count}
-        onChange={(value) => onUpdateLrpParam("sample_count", value)}
-      />
-      {loadedCardCount > 0 ? (
-        <Button className="h-8" onClick={onRecomputeLoaded}>
-          Resample
-        </Button>
-      ) : null}
+    <div className="rounded-lg border p-4">
+      <div className="text-lg leading-tight font-medium">{value}</div>
+      <div className="mt-1 text-xs text-muted-foreground">{label}</div>
     </div>
   )
 }
 
-function AnalysisNumberField({
-  className,
-  disabled = false,
+function AnalysisRowsTable({
+  rows,
+  title,
+}: {
+  rows: AnalysisTableRow[]
+  title: string
+}) {
+  return (
+    <div className="rounded-lg border p-3">
+      <div className="mb-2 text-sm font-medium">{title}</div>
+      <Table>
+        <TableHeader>
+          <TableRow>
+            <TableHead>Field</TableHead>
+            <TableHead>Model A</TableHead>
+            <TableHead>Model B</TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {rows.map((row) => (
+            <TableRow key={row.label}>
+              <TableCell className="font-medium">{row.label}</TableCell>
+              <TableCell>{formatAnalysisTableValue(row.label, row.left)}</TableCell>
+              <TableCell>{formatAnalysisTableValue(row.label, row.right)}</TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
+  )
+}
+
+function PerClassMetricTable({ report }: { report: AnalysisComparisonReport }) {
+  return (
+    <div className="rounded-lg border p-3">
+      <div className="mb-2 text-sm font-medium">Per-class F1</div>
+      <ScrollArea className="h-[24rem]">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Class</TableHead>
+              <TableHead>Model A</TableHead>
+              <TableHead>Model B</TableHead>
+              <TableHead>Support</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {report.metrics.left.per_class_f1.map((leftMetric, index) => {
+              const rightMetric = report.metrics.right.per_class_f1[index]
+              return (
+                <TableRow key={leftMetric.label}>
+                  <TableCell className="font-medium">{leftMetric.name}</TableCell>
+                  <TableCell>{formatCompactNumber(leftMetric.f1)}</TableCell>
+                  <TableCell>{formatCompactNumber(rightMetric?.f1 ?? 0)}</TableCell>
+                  <TableCell>{formatInteger(leftMetric.support)}</TableCell>
+                </TableRow>
+              )
+            })}
+          </TableBody>
+        </Table>
+      </ScrollArea>
+    </div>
+  )
+}
+
+function ReportPlot({ data, layout }: { data: Data[]; layout: Partial<Layout> }) {
+  return (
+    <div className="min-h-[24rem] rounded-lg border p-2">
+      <Plot
+        className="h-full w-full"
+        config={{
+          displayModeBar: false,
+          displaylogo: false,
+          responsive: true,
+          scrollZoom: false,
+        }}
+        data={data}
+        layout={layout}
+        style={{ height: "24rem", width: "100%" }}
+        useResizeHandler
+      />
+    </div>
+  )
+}
+
+function LrpSampleCard({
+  dataset,
+  sample,
+}: {
+  dataset: CheckpointSummary["dataset"]
+  sample: AnalysisLrpSample
+}) {
+  return (
+    <div className="rounded-lg border p-3">
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium">
+            {classLabelFor(dataset, sample.label)}
+          </div>
+          <div className="truncate text-xs text-muted-foreground">
+            #{sample.index} · {sample.group.replaceAll("_", " ")}
+          </div>
+        </div>
+        <Badge variant="outline">
+          A {classLabelFor(dataset, sample.left_prediction)} · B{" "}
+          {classLabelFor(dataset, sample.right_prediction)}
+        </Badge>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        <LrpCanvasPanel
+          image={sample.image}
+          label="Model A"
+          relevance={sample.left_relevance}
+        />
+        <LrpCanvasPanel
+          image={sample.image}
+          label="Model B"
+          relevance={sample.right_relevance}
+        />
+        <LrpCanvasPanel
+          image={sample.image}
+          label="Delta"
+          relevance={sample.difference_relevance}
+        />
+      </div>
+      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
+        <CheckpointMetric
+          label="A conf."
+          value={formatOptionalPercent(sample.left_confidence * 100)}
+        />
+        <CheckpointMetric
+          label="B conf."
+          value={formatOptionalPercent(sample.right_confidence * 100)}
+        />
+      </div>
+    </div>
+  )
+}
+
+function LrpCanvasPanel({
+  image,
   label,
-  max,
-  min,
-  step,
-  value,
-  onChange,
+  relevance,
 }: {
-  className?: string
-  disabled?: boolean
+  image: number[][][]
   label: string
-  max?: number
-  min?: number
-  step: number
-  value: number
-  onChange: (value: number) => void
+  relevance: number[][]
 }) {
   return (
-    <div className={cn("grid gap-1", className)}>
-      <Label className="text-xs leading-none">{label}</Label>
-      <Input
-        className="h-8"
-        disabled={disabled}
-        max={max}
-        min={min}
-        step={step}
-        type="number"
-        value={Number.isFinite(value) ? value : ""}
-        onChange={(event) =>
-          onChange(
-            event.currentTarget.value === ""
-              ? NaN
-              : Number(event.currentTarget.value)
-          )
-        }
-      />
-    </div>
-  )
-}
-
-type AnalysisComparisonCardProps = {
-  cardId: AnalysisCardId
-  focusedClass: number | null
-  method: AnalysisMethod
-  pausedRunId: string | null | undefined
-  plotPalette: PlotPalette
-  schema: SchemaResponse
-  state: AnalysisCardState
-  onLoadCheckpoint: (
-    cardId: AnalysisCardId,
-    checkpoint: CheckpointSummary
-  ) => Promise<void>
-}
-
-function AnalysisComparisonCard({
-  cardId,
-  focusedClass,
-  method,
-  pausedRunId,
-  plotPalette,
-  schema,
-  state,
-  onLoadCheckpoint,
-}: AnalysisComparisonCardProps) {
-  const hasCurrentMethodResult = state.method === method
-  const currentResponse = hasCurrentMethodResult ? state.response : null
-  const resultAccuracy = analysisAccuracyFor(currentResponse)
-  const resultAccuracyLabel = method === "lrp" ? "Sample acc." : "Test acc."
-  const isMethodStale =
-    state.checkpoint !== null && state.method !== null && state.method !== method
-
-  if (state.status === "empty") {
-    return (
-      <Card className="h-full min-h-[34rem] gap-0 [--card-spacing:--spacing(0)]">
-        <CardContent className="flex min-h-0 flex-1 p-4">
-          <CheckpointPicker
-            closeOnLoadStart
-            currentSelection={selectionFromCheckpoint(state.checkpoint)}
-            disabled={false}
-            mode="analysis"
-            pausedRunId={pausedRunId}
-            schema={schema}
-            trigger={<AnalysisEmptyState method={method} />}
-            onLoad={(checkpoint) => onLoadCheckpoint(cardId, checkpoint)}
-          />
-        </CardContent>
-      </Card>
-    )
-  }
-
-  return (
-    <Card className="h-full min-h-[34rem]">
-      <CardHeader className="gap-3">
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <CardTitle className="text-xl">
-            {state.checkpoint?.optimizer ?? "Select checkpoint"}
-          </CardTitle>
-          <CheckpointPicker
-            closeOnLoadStart
-            currentSelection={selectionFromCheckpoint(state.checkpoint)}
-            disabled={state.status === "loading"}
-            mode="analysis"
-            pausedRunId={pausedRunId}
-            schema={schema}
-            onLoad={(checkpoint) => onLoadCheckpoint(cardId, checkpoint)}
-          />
-        </div>
-        {state.checkpoint ? (
-          <div className="flex flex-wrap gap-x-8 gap-y-2 text-sm">
-            <CheckpointMetric
-              label="Val. acc."
-              value={formatOptionalPercent(
-                state.checkpoint.best_acc ?? state.checkpoint.accuracy
-              )}
-            />
-            {state.status !== "loading" ? (
-              <CheckpointMetric
-                label={resultAccuracyLabel}
-                value={formatOptionalPercent(resultAccuracy)}
-              />
-            ) : null}
-            <CheckpointMetric
-              label="Step"
-              value={formatInteger(state.checkpoint.step)}
-            />
-            <CheckpointMetric
-              label="Elapsed"
-              value={formatOptionalDuration(
-                state.checkpoint.total_elapsed_seconds
-              )}
-            />
-          </div>
-        ) : null}
-      </CardHeader>
-      <CardContent className="flex min-h-0 flex-1 flex-col">
-        {isMethodStale && state.checkpoint ? (
-          <AnalysisMethodPendingState
-            method={method}
-            onCompute={() => onLoadCheckpoint(cardId, state.checkpoint!)}
-          />
-        ) : null}
-        {!isMethodStale && state.status === "loading" ? (
-          <AnalysisLoadingState method={state.method ?? method} />
-        ) : null}
-        {!isMethodStale && state.status === "error" ? (
-          <div className="grid min-h-80 flex-1 place-items-center rounded-lg border border-destructive/40 bg-destructive/10 p-6 text-center text-sm text-destructive">
-            {state.error ??
-              `Failed to compute ${analysisMethodLabel(state.method ?? method)}`}
-          </div>
-        ) : null}
-        {!isMethodStale &&
-        state.status === "ready" &&
-        method === "tsne" &&
-        isTsneResponse(state.response) ? (
-          <AnalysisPlot
-            focusedClass={focusedClass}
-            response={state.response}
-            plotPalette={plotPalette}
-          />
-        ) : null}
-        {!isMethodStale &&
-        state.status === "ready" &&
-        method === "lrp" &&
-        isLrpResponse(state.response) ? (
-          <LrpGallery response={state.response} />
-        ) : null}
-      </CardContent>
-    </Card>
-  )
-}
-
-const AnalysisEmptyState = forwardRef<
-  HTMLButtonElement,
-  ComponentPropsWithoutRef<"button"> & { method: AnalysisMethod }
->(function AnalysisEmptyState({ className, method, ...props }, ref) {
-  return (
-    <button
-      {...props}
-      className={cn(
-        "flex min-h-0 w-full flex-1 cursor-pointer rounded-xl border border-dashed bg-transparent text-center transition-colors hover:bg-muted/20 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
-        className
-      )}
-      ref={ref}
-      type="button"
-    >
-      <Empty className="min-h-80 flex-1 border-0 bg-transparent">
-        <EmptyHeader>
-          <EmptyMedia className="mb-3 size-12" variant="icon">
-            <FolderOpen className="size-6" />
-          </EmptyMedia>
-          <EmptyTitle className="text-lg">Select checkpoint</EmptyTitle>
-          <EmptyDescription className="mt-0 text-sm">
-            {analysisEmptyDescription(method)}
-          </EmptyDescription>
-        </EmptyHeader>
-      </Empty>
-    </button>
-  )
-})
-
-function AnalysisLoadingState({ method }: { method: AnalysisMethod }) {
-  return (
-    <div className="grid min-h-80 flex-1 place-items-center rounded-lg">
-      <div className="grid justify-items-center gap-3 text-sm text-muted-foreground">
-        <LoaderCircle className="size-5 animate-spin" />
-        <span>Computing {analysisMethodLabel(method)}</span>
+    <div className="min-w-0">
+      <div className="aspect-square overflow-hidden rounded-md border bg-muted">
+        <RelevanceCanvas image={image} relevance={relevance} />
+      </div>
+      <div className="mt-1 truncate text-center text-xs text-muted-foreground">
+        {label}
       </div>
     </div>
   )
 }
 
-function AnalysisMethodPendingState({
-  method,
-  onCompute,
+function RelevanceCanvas({
+  image,
+  relevance,
 }: {
-  method: AnalysisMethod
-  onCompute: () => void
+  image?: number[][][]
+  relevance: number[][]
 }) {
-  return (
-    <div className="grid min-h-80 flex-1 place-items-center rounded-lg border border-dashed p-6 text-center">
-      <div className="grid justify-items-center gap-3">
-        <div className="text-sm font-medium">
-          {analysisMethodLabel(method)} not computed
-        </div>
-        <Button className="h-8" onClick={onCompute}>
-          Compute {analysisMethodLabel(method)}
-        </Button>
-      </div>
-    </div>
-  )
-}
-
-function AnalysisPlot({
-  focusedClass,
-  response,
-  plotPalette,
-}: {
-  focusedClass: number | null
-  response: TsneAnalysisResponse
-  plotPalette: PlotPalette
-}) {
-  const { markerStates, revision } = useAnimatedClassMarkers(focusedClass)
-  const data = useMemo(
-    () => analysisPlotData(response, plotPalette, markerStates),
-    [markerStates, plotPalette, response]
-  )
-  const layout = useMemo(
-    () => analysisPlotLayout(plotPalette, response.checkpoint.run_id),
-    [plotPalette, response.checkpoint.run_id]
-  )
-
-  return (
-    <div className="flex min-h-80 flex-1 flex-col">
-      <div className="min-h-0 flex-1">
-        <Plot
-          className="h-full w-full"
-          config={{
-            displayModeBar: false,
-            displaylogo: false,
-            responsive: true,
-            scrollZoom: false,
-          }}
-          data={data}
-          layout={layout}
-          revision={revision}
-          style={{ height: "100%", width: "100%" }}
-          useResizeHandler
-        />
-      </div>
-    </div>
-  )
-}
-
-function LrpGallery({ response }: { response: LrpAnalysisResponse }) {
-  if (response.samples.length === 0) {
-    return (
-      <div className="grid min-h-80 flex-1 place-items-center rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
-        No LRP samples returned.
-      </div>
-    )
-  }
-
-  return (
-    <div className="min-h-0 flex-1 overflow-auto pr-1">
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(9rem,1fr))] gap-3">
-        {response.samples.map((sample) => {
-          const label = classLabelFor(response.checkpoint.dataset, sample.label)
-          const prediction = classLabelFor(
-            response.checkpoint.dataset,
-            sample.prediction
-          )
-
-          return (
-            <div
-              className={cn(
-                "rounded-lg border bg-background p-2",
-                sample.correct ? "border-border" : "border-destructive/50"
-              )}
-              key={sample.index}
-            >
-              <div className="aspect-square overflow-hidden rounded-md border bg-muted">
-                <LrpSampleCanvas sample={sample} />
-              </div>
-              <div className="mt-2 flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <div className="truncate text-sm leading-tight font-medium">
-                    {label}
-                  </div>
-                  <div
-                    className={cn(
-                      "truncate text-xs",
-                      sample.correct
-                        ? "text-muted-foreground"
-                        : "text-destructive"
-                    )}
-                  >
-                    {prediction}
-                  </div>
-                </div>
-                <div className="shrink-0 rounded-md bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">
-                  #{sample.index}
-                </div>
-              </div>
-              <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
-                <LrpSampleMetric
-                  label="Score"
-                  value={formatCompactNumber(sample.score)}
-                />
-                <LrpSampleMetric
-                  label="Delta"
-                  value={formatCompactNumber(sample.delta)}
-                />
-              </div>
-            </div>
-          )
-        })}
-      </div>
-    </div>
-  )
-}
-
-function LrpSampleCanvas({ sample }: { sample: LrpSample }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
 
   useEffect(() => {
@@ -1803,12 +1617,11 @@ function LrpSampleCanvas({ sample }: { sample: LrpSample }) {
       return
     }
 
-    drawLrpSample(canvas, sample)
-  }, [sample])
+    drawRelevance(canvas, relevance, image)
+  }, [image, relevance])
 
   return (
     <canvas
-      aria-label={`LRP relevance overlay for sample ${sample.index}`}
       className="block h-full w-full"
       ref={canvasRef}
       style={{ imageRendering: "pixelated" }}
@@ -1816,18 +1629,13 @@ function LrpSampleCanvas({ sample }: { sample: LrpSample }) {
   )
 }
 
-function LrpSampleMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="min-w-0">
-      <div className="truncate font-medium tabular-nums">{value}</div>
-      <div className="text-muted-foreground">{label}</div>
-    </div>
-  )
-}
-
-function drawLrpSample(canvas: HTMLCanvasElement, sample: LrpSample) {
-  const height = sample.image.length
-  const width = sample.image[0]?.length ?? 0
+function drawRelevance(
+  canvas: HTMLCanvasElement,
+  relevance: number[][],
+  image?: number[][][]
+) {
+  const height = relevance.length || image?.length || 0
+  const width = relevance[0]?.length || image?.[0]?.length || 0
   if (height === 0 || width === 0) {
     return
   }
@@ -1839,16 +1647,14 @@ function drawLrpSample(canvas: HTMLCanvasElement, sample: LrpSample) {
     return
   }
   context.imageSmoothingEnabled = false
-
   const imageData = context.createImageData(width, height)
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
       const offset = (y * width + x) * 4
-      const base = sample.image[y]?.[x] ?? [0, 0, 0]
-      const relevance = clamp(sample.relevance[y]?.[x] ?? 0, -1, 1)
-      const overlay = relevance >= 0 ? [239, 68, 68] : [37, 99, 235]
-      const alpha = Math.abs(relevance) * 0.68
-
+      const base = image?.[y]?.[x] ?? [0.5, 0.5, 0.5]
+      const value = clamp(relevance[y]?.[x] ?? 0, -1, 1)
+      const overlay = value >= 0 ? [220, 38, 38] : [37, 99, 235]
+      const alpha = Math.abs(value) * 0.7
       imageData.data[offset] = blendChannel(base[0] ?? 0, overlay[0], alpha)
       imageData.data[offset + 1] = blendChannel(base[1] ?? 0, overlay[1], alpha)
       imageData.data[offset + 2] = blendChannel(base[2] ?? 0, overlay[2], alpha)
@@ -1860,54 +1666,6 @@ function drawLrpSample(canvas: HTMLCanvasElement, sample: LrpSample) {
 
 function blendChannel(base: number, overlay: number, alpha: number): number {
   return Math.round(clamp(base, 0, 1) * 255 * (1 - alpha) + overlay * alpha)
-}
-
-function AnalysisClassLegend({
-  focusedClass,
-  lockedClass,
-  onHoverClass,
-  onToggleClass,
-}: {
-  focusedClass: number | null
-  lockedClass: number | null
-  onHoverClass: (label: number | null) => void
-  onToggleClass: (label: number) => void
-}) {
-  return (
-    <div className="flex h-8 flex-wrap items-center justify-center gap-0">
-      {ANALYSIS_CLASS_COLORS.map((color, label) => {
-        const active = focusedClass === label
-        const locked = lockedClass === label
-        const dimmed = focusedClass !== null && !active
-
-        return (
-          <button
-            aria-label={`Toggle class ${label}`}
-            aria-pressed={active}
-            className={cn(
-              "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-sm text-muted-foreground transition-[background-color,color,opacity] duration-200 hover:bg-muted/70 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
-              locked ? "bg-muted text-foreground" : "",
-              dimmed ? "opacity-45" : "opacity-100"
-            )}
-            key={label}
-            type="button"
-            onBlur={() => onHoverClass(null)}
-            onClick={() => onToggleClass(label)}
-            onFocus={() => onHoverClass(label)}
-            onMouseEnter={() => onHoverClass(label)}
-            onMouseLeave={() => onHoverClass(null)}
-          >
-            <span
-              aria-hidden="true"
-              className="size-3 rounded-full"
-              style={{ backgroundColor: color }}
-            />
-            <span>{label}</span>
-          </button>
-        )
-      })}
-    </div>
-  )
 }
 
 type CheckpointPickerProps = {
@@ -2615,368 +2373,313 @@ function readCssColor(
   return styles.getPropertyValue(propertyName).trim() || fallback
 }
 
-function validateTsneParams(params: TsneParams): string | null {
-  if (!isFiniteInRange(params.perplexity, 5, 50)) {
+function validateAnalysisParams(params: AnalysisComparisonParams): string | null {
+  if (!isFiniteInRange(params.tsne_perplexity, 5, 50)) {
     return "Perplexity must be between 5 and 50"
   }
-
-  if (!Number.isFinite(params.max_iter) || params.max_iter < 250) {
-    return "Max iter must be at least 250"
+  if (!Number.isFinite(params.tsne_max_iter) || params.tsne_max_iter < 250) {
+    return "t-SNE iterations must be at least 250"
   }
-
-  if (!isFiniteInRange(params.angle, 0.2, 0.8)) {
-    return "Angle must be between 0.2 and 0.8"
+  if (!isFiniteInRange(params.tsne_angle, 0.2, 0.8)) {
+    return "t-SNE angle must be between 0.2 and 0.8"
   }
-
   if (
-    params.use_pca &&
-    (!Number.isFinite(params.pca_components) ||
-      params.pca_components < 2 ||
-      params.pca_components > 120)
+    !Number.isFinite(params.tsne_pca_components) ||
+    params.tsne_pca_components < 2 ||
+    params.tsne_pca_components > 120
   ) {
-    return "PCA dims must be between 2 and 120"
+    return "PCA dimensions must be between 2 and 120"
   }
-
   if (
-    params.learning_rate_mode === "numeric" &&
-    (!Number.isFinite(params.learning_rate) || Number(params.learning_rate) <= 0)
+    params.tsne_learning_rate_mode === "numeric" &&
+    (!Number.isFinite(params.tsne_learning_rate) ||
+      Number(params.tsne_learning_rate) <= 0)
   ) {
     return "Learning rate must be positive"
   }
-
   if (
-    params.seed !== null &&
-    params.seed !== undefined &&
-    !Number.isFinite(params.seed)
+    !Number.isInteger(params.calibration_bins) ||
+    params.calibration_bins < 5 ||
+    params.calibration_bins > 50
   ) {
-    return "Seed must be a number"
+    return "Calibration bins must be an integer between 5 and 50"
   }
-
+  if (
+    !Number.isInteger(params.lrp_gallery_sample_count) ||
+    params.lrp_gallery_sample_count < 1 ||
+    params.lrp_gallery_sample_count > 60
+  ) {
+    return "LRP samples must be an integer between 1 and 60"
+  }
   return null
 }
 
-function validateLrpParams(params: LrpParams): string | null {
-  if (
-    !Number.isInteger(params.sample_count) ||
-    params.sample_count < 1 ||
-    params.sample_count > 50
-  ) {
-    return "Sample count must be an integer between 1 and 50"
+function comparisonSelectionError(
+  checkpoints: Record<AnalysisSide, CheckpointSummary | null>
+): string | null {
+  if (!checkpoints.left || !checkpoints.right) {
+    return null
   }
-
-  if (
-    params.seed !== null &&
-    params.seed !== undefined &&
-    (!Number.isInteger(params.seed) ||
-      params.seed < 0 ||
-      params.seed > LRP_SEED_MAX)
-  ) {
-    return "Seed must be an integer between 0 and 2147483647"
+  if (checkpoints.left.dataset !== checkpoints.right.dataset) {
+    return "Model A and Model B must use the same dataset"
   }
-
   return null
+}
+
+function analysisRequestParams(
+  params: AnalysisComparisonParams
+): AnalysisComparisonParams {
+  return {
+    ...params,
+    tsne_learning_rate:
+      params.tsne_learning_rate_mode === "numeric"
+        ? params.tsne_learning_rate
+        : null,
+    tsne_seed: params.tsne_seed ?? null,
+  }
 }
 
 function isFiniteInRange(value: number, min: number, max: number): boolean {
   return Number.isFinite(value) && value >= min && value <= max
 }
 
-function currentAnalysisParams(
-  method: AnalysisMethod,
-  tsneParams: TsneParams,
-  lrpParams: LrpParams
-): AnalysisParams {
-  return method === "tsne" ? tsneParams : lrpParams
+function sideLabel(side: AnalysisSide): string {
+  return side === "left" ? "Model A" : "Model B"
 }
 
-function tsneRequestParams(params: TsneParams): TsneParams {
-  return {
-    ...params,
-    learning_rate:
-      params.learning_rate_mode === "numeric" ? params.learning_rate : null,
-    seed: params.seed ?? null,
-  }
+function trainingCurveData(report: AnalysisComparisonReport): Data[] {
+  return [
+    {
+      type: "scatter",
+      mode: traceMode(report.curves.left.training_loss.length),
+      name: "A train loss",
+      x: report.curves.left.training_loss.map((_, index) => index + 1),
+      y: report.curves.left.training_loss,
+      line: { color: "#2563eb", width: 1.5 },
+    },
+    {
+      type: "scatter",
+      mode: traceMode(report.curves.right.training_loss.length),
+      name: "B train loss",
+      x: report.curves.right.training_loss.map((_, index) => index + 1),
+      y: report.curves.right.training_loss,
+      line: { color: "#dc2626", width: 1.5 },
+    },
+    {
+      type: "scatter",
+      mode: accuracyTraceMode(report.curves.left.validation_accuracy.length),
+      name: "A val acc.",
+      x: report.curves.left.validation_accuracy.map((point) => point.i),
+      y: report.curves.left.validation_accuracy.map((point) => point.value),
+      yaxis: "y2",
+      line: { color: "#0891b2", width: 1.5, dash: "dot" },
+    },
+    {
+      type: "scatter",
+      mode: accuracyTraceMode(report.curves.right.validation_accuracy.length),
+      name: "B val acc.",
+      x: report.curves.right.validation_accuracy.map((point) => point.i),
+      y: report.curves.right.validation_accuracy.map((point) => point.value),
+      yaxis: "y2",
+      line: { color: "#ea580c", width: 1.5, dash: "dot" },
+    },
+  ]
 }
 
-function lrpRequestParams(params: LrpParams): LrpParams {
-  return {
-    sample_count: params.sample_count,
-    seed: params.seed ?? null,
-  }
+function overlapData(report: AnalysisComparisonReport): Data[] {
+  return [
+    {
+      type: "bar",
+      orientation: "h",
+      x: report.overlap.upset.map((row) => row.count),
+      y: report.overlap.upset.map((row) => row.set.replaceAll("_", " ")),
+      marker: { color: "#2563eb" },
+    },
+  ]
 }
 
-function randomAnalysisSeed(): number {
-  const cryptoApi = globalThis.crypto
-  if (cryptoApi) {
-    const values = new Uint32Array(1)
-    cryptoApi.getRandomValues(values)
-    return values[0] & LRP_SEED_MAX
-  }
-
-  return Math.floor(Math.random() * (LRP_SEED_MAX + 1))
+function confusionData(matrix: number[][], name: string): Data[] {
+  return [
+    {
+      type: "heatmap",
+      name,
+      z: matrix,
+      colorscale: "RdBu",
+      reversescale: true,
+      showscale: false,
+    },
+  ]
 }
 
-function isAnalysisCardStale(
-  card: AnalysisCardState,
-  method: AnalysisMethod,
-  params: AnalysisParams
-): boolean {
-  if (
-    !(
-      (card.status === "ready" || card.status === "error") &&
-      card.checkpoint !== null
-    )
-  ) {
-    return false
-  }
-
-  if (card.method !== method) {
-    return true
-  }
-
-  if (card.requestParams === null) {
-    return true
-  }
-
-  if (method === "tsne") {
-    return !sameTsneParams(card.requestParams as TsneParams, params as TsneParams)
-  }
-
-  return !sameLrpParams(card.requestParams as LrpParams, params as LrpParams)
+function calibrationData(report: AnalysisComparisonReport): Data[] {
+  return [
+    {
+      type: "scatter",
+      mode: "lines+markers",
+      name: "Model A",
+      x: report.metrics.left.calibration.bins.map((bin) => bin.confidence),
+      y: report.metrics.left.calibration.bins.map((bin) => bin.accuracy),
+      line: { color: "#2563eb", width: 1.5 },
+    },
+    {
+      type: "scatter",
+      mode: "lines+markers",
+      name: "Model B",
+      x: report.metrics.right.calibration.bins.map((bin) => bin.confidence),
+      y: report.metrics.right.calibration.bins.map((bin) => bin.accuracy),
+      line: { color: "#dc2626", width: 1.5 },
+    },
+    {
+      type: "scatter",
+      mode: "lines",
+      name: "Ideal",
+      x: [0, 1],
+      y: [0, 1],
+      line: { color: "#737373", width: 1, dash: "dot" },
+    },
+  ]
 }
 
-function sameLrpParams(left: LrpParams, right: LrpParams): boolean {
-  return (
-    JSON.stringify(lrpRequestParams(left)) ===
-    JSON.stringify(lrpRequestParams(right))
-  )
-}
-
-function sameTsneParams(left: TsneParams, right: TsneParams): boolean {
-  return (
-    JSON.stringify(normalizedTsneParams(left)) ===
-    JSON.stringify(normalizedTsneParams(right))
-  )
-}
-
-function normalizedTsneParams(params: TsneParams): Record<string, unknown> {
-  return {
-    angle: params.angle,
-    learning_rate:
-      params.learning_rate_mode === "numeric" ? params.learning_rate : null,
-    learning_rate_mode: params.learning_rate_mode,
-    max_iter: params.max_iter,
-    pca_components: params.use_pca ? params.pca_components : null,
-    perplexity: params.perplexity,
-    seed: params.seed ?? null,
-    use_pca: params.use_pca,
-  }
-}
-
-function isTsneResponse(
-  response: AnalysisResponse | null
-): response is TsneAnalysisResponse {
-  return Boolean(response && "points" in response)
-}
-
-function isLrpResponse(
-  response: AnalysisResponse | null
-): response is LrpAnalysisResponse {
-  return Boolean(response && "samples" in response)
-}
-
-function analysisMethodLabel(method: AnalysisMethod): string {
-  return method === "tsne" ? "t-SNE" : "LRP"
-}
-
-function analysisEmptyDescription(method: AnalysisMethod): string {
-  return method === "tsne"
-    ? "t-SNE plots will appear here."
-    : "LRP heatmaps will appear here."
-}
-
-type AnalysisClassMarkerState = {
-  opacity: number
-  size: number
-}
-
-type AnalysisClassMarkerAnimation = {
-  markerStates: AnalysisClassMarkerState[]
-  revision: number
-}
-
-const ACTIVE_CLASS_MARKER: AnalysisClassMarkerState = { opacity: 0.86, size: 4 }
-const DIMMED_CLASS_MARKER: AnalysisClassMarkerState = { opacity: 0.06, size: 3.2 }
-const CLASS_HIGHLIGHT_ANIMATION_MS = 220
-
-function useAnimatedClassMarkers(
-  focusedClass: number | null
-): AnalysisClassMarkerAnimation {
-  const [animation, setAnimation] = useState<AnalysisClassMarkerAnimation>(
-    () => ({
-      markerStates: targetClassMarkers(focusedClass),
-      revision: 0,
-    })
-  )
-  const markersRef = useRef(animation.markerStates)
-  const revisionRef = useRef(animation.revision)
-
-  useEffect(() => {
-    markersRef.current = animation.markerStates
-  }, [animation.markerStates])
-
-  useEffect(() => {
-    const start = markersRef.current
-    const target = targetClassMarkers(focusedClass)
-    let frameId = 0
-    const startedAt = performance.now()
-
-    function animateFrame(now: number) {
-      const progress = Math.min(
-        1,
-        (now - startedAt) / CLASS_HIGHLIGHT_ANIMATION_MS
-      )
-      const easedProgress = easeInOutCubic(progress)
-      const nextMarkers = target.map((targetMarker, index) => ({
-        opacity: interpolate(
-          start[index]?.opacity ?? targetMarker.opacity,
-          targetMarker.opacity,
-          easedProgress
-        ),
-        size: interpolate(
-          start[index]?.size ?? targetMarker.size,
-          targetMarker.size,
-          easedProgress
-        ),
-      }))
-
-      const nextRevision = revisionRef.current + 1
-
-      markersRef.current = nextMarkers
-      revisionRef.current = nextRevision
-      setAnimation({
-        markerStates: nextMarkers,
-        revision: nextRevision,
-      })
-
-      if (progress < 1) {
-        frameId = requestAnimationFrame(animateFrame)
-      }
-    }
-
-    frameId = requestAnimationFrame(animateFrame)
-    return () => cancelAnimationFrame(frameId)
-  }, [focusedClass])
-
-  return animation
-}
-
-function targetClassMarkers(focusedClass: number | null): AnalysisClassMarkerState[] {
-  return ANALYSIS_CLASS_COLORS.map((_, label) =>
-    focusedClass === null || focusedClass === label
-      ? ACTIVE_CLASS_MARKER
-      : DIMMED_CLASS_MARKER
-  )
-}
-
-function interpolate(start: number, end: number, progress: number): number {
-  return start + (end - start) * progress
-}
-
-function easeInOutCubic(progress: number): number {
-  if (progress < 0.5) {
-    return 4 * progress * progress * progress
-  }
-
-  return 1 - (-2 * progress + 2) ** 3 / 2
-}
-
-function analysisPlotData(
-  response: TsneAnalysisResponse,
-  plotPalette: PlotPalette,
-  markerStates: AnalysisClassMarkerState[]
+function embeddingData(
+  projection: AnalysisEmbeddingProjection,
+  name: string
 ): Data[] {
-  const points = response.points
-
-  return ANALYSIS_CLASS_COLORS.map((color, label) => {
-    const classPoints = points.filter((point) => point.label === label)
-    const markerState = markerStates[label] ?? ACTIVE_CLASS_MARKER
-
-    return {
-      type: "scattergl",
-      mode: "markers",
-      name: String(label),
-      uid: `${response.checkpoint.run_id}-${response.checkpoint.kind}-tsne-${label}`,
-      x: classPoints.map((point) => point.x),
-      y: classPoints.map((point) => point.y),
-      customdata: classPoints.map((point) => [
-        point.prediction,
-        point.correct ? "correct" : "incorrect",
-      ]),
-      hoverlabel: {
-        align: "left",
-        bgcolor: plotPalette.hoverBackground,
-        bordercolor: plotPalette.hoverBorder,
-        font: { color: plotPalette.hoverText, size: 12 },
-      },
-      hovertemplate: `<b>Label ${label}</b><br>Prediction %{customdata[0]}<br>%{customdata[1]}<extra></extra>`,
-      marker: {
-        color,
-        opacity: markerState.opacity,
-        size: markerState.size,
-      },
-      showlegend: false,
-    } satisfies Data
-  })
+  return [
+    embeddingTrace(projection.left, `${name} Model A`, "#2563eb"),
+    embeddingTrace(projection.right, `${name} Model B`, "#dc2626"),
+  ]
 }
 
-function analysisPlotLayout(
-  plotPalette: PlotPalette,
-  runId: string
-): Partial<Layout> {
+function embeddingTrace(
+  points: AnalysisEmbeddingProjection["left"],
+  name: string,
+  color: string
+): Data {
+  return {
+    type: "scattergl",
+    mode: "markers",
+    name,
+    x: points.map((point) => point.x),
+    y: points.map((point) => point.y),
+    customdata: points.map((point) => [
+      point.label,
+      point.prediction,
+      point.correct ? "correct" : "incorrect",
+    ]),
+    hovertemplate:
+      "<b>%{fullData.name}</b><br>Label %{customdata[0]}<br>Prediction %{customdata[1]}<br>%{customdata[2]}<extra></extra>",
+    marker: { color, opacity: 0.58, size: 4 },
+  }
+}
+
+function robustnessData(report: AnalysisComparisonReport): Data[] {
+  return report.robustness.flatMap((curve) => [
+    {
+      type: "scatter",
+      mode: "lines+markers",
+      name: `A ${curve.perturbation}`,
+      x: curve.points.map((point) => point.level),
+      y: curve.points.map((point) => point.left_accuracy),
+      line: { width: 1.5 },
+    } satisfies Data,
+    {
+      type: "scatter",
+      mode: "lines+markers",
+      name: `B ${curve.perturbation}`,
+      x: curve.points.map((point) => point.level),
+      y: curve.points.map((point) => point.right_accuracy),
+      line: { width: 1.5, dash: "dot" },
+    } satisfies Data,
+  ])
+}
+
+function activationData(report: AnalysisComparisonReport): Data[] {
+  const names = [
+    ...new Set([
+      ...report.activations.left.map((layer) => layer.name),
+      ...report.activations.right.map((layer) => layer.name),
+    ]),
+  ]
+  return [
+    {
+      type: "bar",
+      name: "Model A",
+      x: names,
+      y: names.map(
+        (name) =>
+          report.activations.left.find((layer) => layer.name === name)
+            ?.sparsity ?? 0
+      ),
+      marker: { color: "#2563eb" },
+    },
+    {
+      type: "bar",
+      name: "Model B",
+      x: names,
+      y: names.map(
+        (name) =>
+          report.activations.right.find((layer) => layer.name === name)
+            ?.sparsity ?? 0
+      ),
+      marker: { color: "#dc2626" },
+    },
+  ]
+}
+
+function weightData(report: AnalysisComparisonReport): Data[] {
+  return [
+    {
+      type: "bar",
+      orientation: "h",
+      name: "Relative distance",
+      x: report.weights.map((weight) => weight.relative_distance),
+      y: report.weights.map((weight) => weight.name),
+      marker: { color: "#0891b2" },
+    },
+  ]
+}
+
+function plotLayout(title: string, plotPalette: PlotPalette): Partial<Layout> {
   return {
     autosize: true,
-    dragmode: "pan",
     font: { color: plotPalette.text, family: "Geist Variable, sans-serif" },
+    height: 360,
     hoverlabel: {
-      align: "left",
       bgcolor: plotPalette.hoverBackground,
       bordercolor: plotPalette.hoverBorder,
-      font: {
-        color: plotPalette.hoverText,
-        family: "Geist Variable, sans-serif",
-        size: 12,
-      },
+      font: { color: plotPalette.hoverText },
     },
-    margin: { b: 0, l: 0, r: 0, t: 0 },
+    legend: { orientation: "h", font: { color: plotPalette.muted } },
+    margin: { b: 46, l: 48, r: 36, t: 42 },
     paper_bgcolor: "transparent",
     plot_bgcolor: "transparent",
-    showlegend: false,
-    transition: {
-      duration: 220,
-      easing: "cubic-in-out",
-    },
-    uirevision: `analysis-tsne-${runId}`,
-    xaxis: {
-      automargin: false,
-      fixedrange: false,
-      visible: false,
+    title: { text: title, font: { size: 14 } },
+    xaxis: { gridcolor: plotPalette.grid, zeroline: false },
+    yaxis: { gridcolor: plotPalette.grid, zeroline: false },
+    yaxis2: {
+      overlaying: "y",
+      side: "right",
+      range: [0, 100],
       showgrid: false,
-      showline: false,
-      showticklabels: false,
-      ticks: "",
       zeroline: false,
     },
-    yaxis: {
-      automargin: false,
-      fixedrange: false,
-      visible: false,
-      showgrid: false,
-      showline: false,
-      showticklabels: false,
-      ticks: "",
-      zeroline: false,
-    },
+  }
+}
+
+function heatmapLayout(title: string, plotPalette: PlotPalette): Partial<Layout> {
+  return {
+    ...plotLayout(title, plotPalette),
+    xaxis: { title: { text: "Predicted" } },
+    yaxis: { title: { text: "True" }, autorange: "reversed" },
+  }
+}
+
+function embeddingLayout(title: string, plotPalette: PlotPalette): Partial<Layout> {
+  return {
+    ...plotLayout(title, plotPalette),
+    dragmode: "pan",
+    xaxis: { visible: false },
+    yaxis: { visible: false },
   }
 }
 
@@ -2998,19 +2701,19 @@ function selectionFromStatus(
   }
 
   if (
-    status.checkpoint_path ||
-    status.last_checkpoint_saved_at ||
-    status.last_checkpoint_step != null
-  ) {
-    return { run_id: status.run_id, kind: "latest" }
-  }
-
-  if (
     status.best_checkpoint_path ||
     status.best_checkpoint_saved_at ||
     status.best_checkpoint_step != null
   ) {
     return { run_id: status.run_id, kind: "best" }
+  }
+
+  if (
+    status.checkpoint_path ||
+    status.last_checkpoint_saved_at ||
+    status.last_checkpoint_step != null
+  ) {
+    return { run_id: status.run_id, kind: "latest" }
   }
 
   return null
@@ -3144,34 +2847,46 @@ function mergeOptimizerParams(
   )
 }
 
+function formatAnalysisTableValue(label: string, value: string): string {
+  if (isMissingText(value)) {
+    return MISSING_VALUE_LABEL
+  }
+
+  if (label === "Elapsed") {
+    const seconds = secondsFromText(value)
+    return seconds === null ? value : formatDuration(seconds)
+  }
+
+  if (label === "Saved") {
+    return formatReadableDateTime(value)
+  }
+
+  return value
+}
+
+function isMissingText(value: string): boolean {
+  const normalized = value.trim().toLowerCase()
+  return normalized === "" || normalized === "n/a" || normalized === "na"
+}
+
+function secondsFromText(value: string): number | null {
+  const trimmed = value.trim()
+  const numeric = trimmed.endsWith("s") ? trimmed.slice(0, -1) : trimmed
+  const seconds = Number(numeric)
+  return Number.isFinite(seconds) ? seconds : null
+}
+
 function formatOptionalPercent(value: number | null | undefined): string {
   if (typeof value !== "number" || !Number.isFinite(value)) {
-    return "n/a"
+    return MISSING_VALUE_LABEL
   }
 
   return `${value.toFixed(2)}%`
 }
 
-function analysisAccuracyFor(response: AnalysisResponse | null): number | null {
-  const outcomes = isTsneResponse(response)
-    ? response.points
-    : isLrpResponse(response)
-      ? response.samples
-      : []
-  if (outcomes.length === 0) {
-    return null
-  }
-
-  const correctCount = outcomes.reduce(
-    (total, item) => total + (item.correct ? 1 : 0),
-    0
-  )
-  return (correctCount / outcomes.length) * 100
-}
-
 function formatOptionalDuration(seconds: number | null | undefined): string {
   if (typeof seconds !== "number" || !Number.isFinite(seconds)) {
-    return "n/a"
+    return MISSING_VALUE_LABEL
   }
 
   return formatDuration(seconds)
@@ -3244,7 +2959,7 @@ function formatParamValue(value: number): string {
 
 function formatCompactNumber(value: number): string {
   if (!Number.isFinite(value)) {
-    return "n/a"
+    return MISSING_VALUE_LABEL
   }
 
   if (Math.abs(value) >= 1000 || (Math.abs(value) > 0 && Math.abs(value) < 0.001)) {
@@ -3265,11 +2980,18 @@ function clamp(value: number, min: number, max: number): number {
 }
 
 function formatCheckpointDate(savedAt: string): string {
+  return formatReadableDateTime(savedAt, { compact: true })
+}
+
+function formatReadableDateTime(
+  savedAt: string,
+  options: { compact?: boolean } = {}
+): string {
   const date = new Date(savedAt)
   if (Number.isNaN(date.getTime())) {
     return savedAt
   }
-  const options: Intl.DateTimeFormatOptions = {
+  const dateOptions: Intl.DateTimeFormatOptions = {
     day: "numeric",
     hour: "2-digit",
     hour12: false,
@@ -3277,11 +2999,11 @@ function formatCheckpointDate(savedAt: string): string {
     month: "short",
   }
 
-  if (date.getFullYear() !== new Date().getFullYear()) {
-    options.year = "numeric"
+  if (!options.compact || date.getFullYear() !== new Date().getFullYear()) {
+    dateOptions.year = "numeric"
   }
 
-  return date.toLocaleString(undefined, options)
+  return date.toLocaleString(undefined, dateOptions)
 }
 
 function traceMode(pointCount: number): "lines" | "lines+markers" {

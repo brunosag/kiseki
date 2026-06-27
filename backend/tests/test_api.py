@@ -20,7 +20,7 @@ from kiseki.experiment import (
 )
 from kiseki.dataset_types import DatasetName
 from kiseki.models import CIFAR10CNN, build_model
-from kiseki.schemas import ETA, ETA_0, ExperimentConfig, ExperimentStatus
+from kiseki.schemas import ETA, ETA_0, AccuracyPoint, ExperimentConfig, ExperimentStatus
 from kiseki.optimizers import SGDConfig, SGDRunner
 
 
@@ -83,6 +83,7 @@ def save_api_checkpoint(
     iterations: int = 6,
     accuracy: float | None = 12.0,
     dataset: DatasetName = "mnist",
+    include_history: bool = False,
 ) -> None:
     config = ExperimentConfig(
         dataset=dataset,
@@ -109,6 +110,11 @@ def save_api_checkpoint(
         best_checkpoint_saved_at=saved_at if kind == "best" else None,
         best_checkpoint_path=str(saver.best_pt_path(run_id)) if kind == "best" else None,
     )
+    if include_history:
+        status.history.loss = [0.9, 0.7]
+        status.history.acc = [AccuracyPoint(i=10, value=29.1)]
+        status.history.train_acc = [AccuracyPoint(i=10, value=35.0)]
+        status.history.val_loss = [AccuracyPoint(i=10, value=1.8)]
     saver.save(
         model=build_model(dataset),
         status=status,
@@ -227,22 +233,31 @@ def test_api_schema_includes_supported_datasets(tmp_path) -> None:
     ]
 
 
-def test_api_tsne_validates_params_loads_checkpoint_and_returns_points(
-    tmp_path,
-    monkeypatch,
-) -> None:
+def wait_for_analysis_job(client: TestClient, job_id: str, timeout: float = 5.0) -> dict:
+    deadline = time.monotonic() + timeout
+    status = client.get(f"/api/analysis/comparisons/jobs/{job_id}").json()
+    while status["status"] not in {"completed", "failed"} and time.monotonic() < deadline:
+        time.sleep(0.05)
+        status = client.get(f"/api/analysis/comparisons/jobs/{job_id}").json()
+    return status
+
+
+def install_fast_analysis_fakes(monkeypatch) -> None:
     class FakePCA:
         def __init__(self, n_components: int, random_state: int) -> None:
             self.n_components = n_components
             self.random_state = random_state
 
         def fit_transform(self, features):
-            return features[:, : self.n_components]
+            coordinates = features[:, : self.n_components]
+            if coordinates.shape[1] < self.n_components:
+                padding = np.zeros((features.shape[0], self.n_components - coordinates.shape[1]))
+                coordinates = np.column_stack((coordinates, padding))
+            return coordinates
 
     class FakeTSNE:
         def __init__(self, **kwargs) -> None:
             assert kwargs["method"] == "barnes_hut"
-            assert kwargs["learning_rate"] == 25.0
             assert kwargs["random_state"] == 7
             self.kwargs = kwargs
 
@@ -254,14 +269,102 @@ def test_api_tsne_validates_params_loads_checkpoint_and_returns_points(
                 )
             )
 
+    def fake_lrp_report(
+        left_model,
+        right_model,
+        inputs,
+        labels,
+        left_eval,
+        right_eval,
+        *,
+        dataset,
+        params,
+        device,
+    ):
+        del left_model, right_model, left_eval, right_eval, params, device
+        height = int(inputs.shape[-2])
+        width = int(inputs.shape[-1])
+        zero_map = [[0.0 for _ in range(width)] for _ in range(height)]
+        names = analysis.class_names(dataset)
+        return analysis.AnalysisLrpReport(
+            samples=[
+                analysis.AnalysisLrpSample(
+                    index=0,
+                    label=int(labels[0]),
+                    label_name=names[int(labels[0])],
+                    group="correct_both",
+                    left_prediction=int(labels[0]),
+                    right_prediction=int(labels[0]),
+                    left_confidence=0.9,
+                    right_confidence=0.8,
+                    image=analysis.rgb_image(inputs[0], dataset),
+                    left_relevance=zero_map,
+                    right_relevance=zero_map,
+                    difference_relevance=zero_map,
+                )
+            ],
+            class_averages=[
+                analysis.AnalysisClassAverageRelevance(
+                    label=label,
+                    name=names[label],
+                    left_relevance=zero_map,
+                    right_relevance=zero_map,
+                    difference_relevance=zero_map,
+                )
+                for label in range(10)
+            ],
+        )
+
     monkeypatch.setattr(analysis, "PCA", FakePCA)
     monkeypatch.setattr(analysis, "TSNE", FakeTSNE)
+    monkeypatch.setattr(analysis, "lrp_report", fake_lrp_report)
+
+
+def comparison_request(
+    *,
+    left_run_id: str,
+    right_run_id: str,
+    force_recompute: bool = False,
+) -> dict:
+    return {
+        "left": {"run_id": left_run_id, "kind": "latest"},
+        "right": {"run_id": right_run_id, "kind": "latest"},
+        "force_recompute": force_recompute,
+        "params": {
+            "tsne_perplexity": 5,
+            "tsne_max_iter": 250,
+            "tsne_learning_rate_mode": "numeric",
+            "tsne_learning_rate": 25,
+            "tsne_angle": 0.3,
+            "tsne_pca_components": 2,
+            "tsne_seed": 7,
+            "calibration_bins": 5,
+            "lrp_gallery_sample_count": 4,
+            "robustness_noise_levels": [0.0],
+            "robustness_brightness_levels": [0.0],
+            "robustness_cutout_levels": [0.0],
+        },
+    }
+
+
+def test_api_comparison_job_lifecycle_returns_report_and_removes_old_routes(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    install_fast_analysis_fakes(monkeypatch)
     saver = CheckpointSaver(tmp_path)
     save_api_checkpoint(
         saver,
-        run_id="analysis-run",
+        run_id="left-analysis-run",
         saved_at="2026-06-20T12:00:00+00:00",
         step=2,
+        include_history=True,
+    )
+    save_api_checkpoint(
+        saver,
+        run_id="right-analysis-run",
+        saved_at="2026-06-20T12:01:00+00:00",
+        step=3,
     )
     manager = ExperimentManager(
         data_loader_factory=SyntheticLoaderFactory(),
@@ -271,63 +374,60 @@ def test_api_tsne_validates_params_loads_checkpoint_and_returns_points(
     before_status = client.get("/api/experiments/status").json()
 
     response = client.post(
-        "/api/analysis/tsne",
-        json={
-            "checkpoint": {"run_id": "analysis-run", "kind": "latest"},
-            "params": {
-                "perplexity": 5,
-                "max_iter": 250,
-                "learning_rate_mode": "numeric",
-                "learning_rate": 25,
-                "angle": 0.3,
-                "pca_components": 2,
-                "seed": 7,
-                "use_pca": True,
-            },
-        },
+        "/api/analysis/comparisons/jobs",
+        json=comparison_request(
+            left_run_id="left-analysis-run",
+            right_run_id="right-analysis-run",
+        ),
     )
 
     assert response.status_code == 200
-    payload = response.json()
-    assert payload["checkpoint"]["run_id"] == "analysis-run"
-    assert payload["params"]["seed"] == 7
-    assert len(payload["points"]) == 12
-    assert set(payload["points"][0]) == {"x", "y", "label", "prediction", "correct"}
-    assert payload["points"][0]["x"] == 0.0
-    assert payload["points"][1]["y"] == -1.0
+    job = wait_for_analysis_job(client, response.json()["job_id"])
+    assert job["status"] == "completed"
+    assert job["cache_state"] == "miss"
+    report = job["report"]
+    assert report["left"]["run_id"] == "left-analysis-run"
+    assert report["right"]["run_id"] == "right-analysis-run"
+    assert report["analysis_device"] in {"cpu", "cuda"}
+    assert report["metrics"]["left"]["confusion_matrix"]
+    assert report["metrics"]["left"]["calibration"]["ece"] >= 0.0
+    assert report["curves"]["left"]["validation_accuracy"] == [
+        {"i": 10, "value": 29.1}
+    ]
+    assert report["curves"]["left"]["training_accuracy"] == [
+        {"i": 10, "value": 35.0}
+    ]
+    assert report["curves"]["left"]["validation_loss"] == [
+        {"i": 10, "value": 1.8}
+    ]
+    assert len(report["embeddings"]["pca"]["left"]) == 12
+    assert len(report["embeddings"]["tsne"]["right"]) == 12
+    assert len(report["lrp"]["samples"]) == 1
+    assert len(report["lrp"]["class_averages"]) == 10
+    assert report["robustness"][0]["points"][0]["level"] == 0.0
+    assert client.post("/api/analysis/tsne", json={}).status_code == 404
+    assert client.post("/api/analysis/lrp", json={}).status_code == 404
     assert client.get("/api/experiments/status").json() == before_status
 
     invalid = client.post(
-        "/api/analysis/tsne",
+        "/api/analysis/comparisons/jobs",
         json={
-            "checkpoint": {"run_id": "analysis-run", "kind": "latest"},
+            "left": {"run_id": "left-analysis-run", "kind": "latest"},
+            "right": {"run_id": "right-analysis-run", "kind": "latest"},
             "params": {
-                "perplexity": 5,
-                "learning_rate_mode": "numeric",
-                "learning_rate": 0,
+                "tsne_perplexity": 5,
+                "tsne_learning_rate_mode": "numeric",
+                "tsne_learning_rate": 0,
             },
         },
     )
     assert invalid.status_code == 422
 
 
-def test_api_tsne_uses_cifar_checkpoint_model_and_test_loader(
+def test_api_comparison_uses_cifar_checkpoint_model_and_test_loader(
     tmp_path,
     monkeypatch,
 ) -> None:
-    class FakeTSNE:
-        def __init__(self, **kwargs) -> None:
-            self.kwargs = kwargs
-
-        def fit_transform(self, features):
-            assert features.shape == (12, 128)
-            return np.column_stack(
-                (
-                    np.arange(features.shape[0], dtype=np.float32),
-                    np.arange(features.shape[0], dtype=np.float32),
-                )
-            )
-
     class TrackingLoaderFactory(SyntheticLoaderFactory):
         def __init__(self) -> None:
             self.cifar10_test_calls = 0
@@ -336,13 +436,20 @@ def test_api_tsne_uses_cifar_checkpoint_model_and_test_loader(
             self.cifar10_test_calls += 1
             return super().cifar10_test()
 
-    monkeypatch.setattr(analysis, "TSNE", FakeTSNE)
+    install_fast_analysis_fakes(monkeypatch)
     saver = CheckpointSaver(tmp_path)
     save_api_checkpoint(
         saver,
-        run_id="cifar-analysis-run",
+        run_id="cifar-left-analysis-run",
         saved_at="2026-06-20T12:00:00+00:00",
         step=2,
+        dataset="cifar10",
+    )
+    save_api_checkpoint(
+        saver,
+        run_id="cifar-right-analysis-run",
+        saved_at="2026-06-20T12:01:00+00:00",
+        step=3,
         dataset="cifar10",
     )
     data_loader_factory = TrackingLoaderFactory()
@@ -353,206 +460,143 @@ def test_api_tsne_uses_cifar_checkpoint_model_and_test_loader(
     client = TestClient(create_app(manager))
 
     response = client.post(
-        "/api/analysis/tsne",
-        json={
-            "checkpoint": {"run_id": "cifar-analysis-run", "kind": "latest"},
-            "params": {
-                "perplexity": 5,
-                "max_iter": 250,
-                "angle": 0.3,
-                "seed": 7,
-                "use_pca": False,
-            },
-        },
+        "/api/analysis/comparisons/jobs",
+        json=comparison_request(
+            left_run_id="cifar-left-analysis-run",
+            right_run_id="cifar-right-analysis-run",
+        ),
     )
 
     assert response.status_code == 200
-    assert response.json()["checkpoint"]["dataset"] == "cifar10"
-    assert len(response.json()["points"]) == 12
+    job = wait_for_analysis_job(client, response.json()["job_id"])
+    assert job["status"] == "completed"
+    assert job["report"]["left"]["dataset"] == "cifar10"
+    assert len(job["report"]["lrp"]["samples"][0]["image"]) == 32
     assert data_loader_factory.cifar10_test_calls == 1
 
 
-def test_api_lrp_returns_balanced_predicted_class_samples_for_mnist(tmp_path) -> None:
+def test_api_comparison_cache_fresh_stale_and_force_recompute(tmp_path, monkeypatch) -> None:
+    install_fast_analysis_fakes(monkeypatch)
     saver = CheckpointSaver(tmp_path)
     save_api_checkpoint(
         saver,
-        run_id="lrp-analysis-run",
+        run_id="cache-left-run",
         saved_at="2026-06-20T12:00:00+00:00",
         step=2,
+    )
+    save_api_checkpoint(
+        saver,
+        run_id="cache-right-run",
+        saved_at="2026-06-20T12:01:00+00:00",
+        step=3,
     )
     manager = ExperimentManager(
         data_loader_factory=SyntheticLoaderFactory(),
         checkpoint_saver=saver,
     )
     client = TestClient(create_app(manager))
-    before_status = client.get("/api/experiments/status").json()
-
-    response = client.post(
-        "/api/analysis/lrp",
-        json={
-            "checkpoint": {"run_id": "lrp-analysis-run", "kind": "latest"},
-            "params": {"sample_count": 10, "seed": 8},
-        },
+    payload = comparison_request(
+        left_run_id="cache-left-run",
+        right_run_id="cache-right-run",
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["checkpoint"]["run_id"] == "lrp-analysis-run"
-    assert payload["params"] == {"sample_count": 10, "seed": 8}
-    assert len(payload["samples"]) == 10
-    assert [sample["label"] for sample in payload["samples"]] == list(range(10))
-    assert [sample["index"] for sample in payload["samples"]] == [
-        10,
-        11,
-        2,
-        3,
-        4,
-        5,
-        6,
-        7,
-        8,
-        9,
-    ]
-    assert all(sample["target"] == sample["prediction"] for sample in payload["samples"])
+    first = client.post("/api/analysis/comparisons/jobs", json=payload)
+    assert first.status_code == 200
+    assert wait_for_analysis_job(client, first.json()["job_id"])["status"] == "completed"
 
-    sample = payload["samples"][0]
-    assert set(sample) == {
-        "index",
-        "label",
-        "prediction",
-        "target",
-        "correct",
-        "score",
-        "delta",
-        "image",
-        "relevance",
-    }
-    assert sample["correct"] == (sample["label"] == sample["prediction"])
-    assert np.isfinite(sample["score"])
-    assert np.isfinite(sample["delta"])
-    assert len(sample["image"]) == 28
-    assert len(sample["image"][0]) == 28
-    assert len(sample["image"][0][0]) == 3
-    assert len(sample["relevance"]) == 28
-    assert len(sample["relevance"][0]) == 28
-    image_values = np.asarray(sample["image"])
-    relevance_values = np.asarray(sample["relevance"])
-    assert image_values.min() >= 0.0
-    assert image_values.max() <= 1.0
-    assert relevance_values.min() >= -1.0
-    assert relevance_values.max() <= 1.0
-    assert client.get("/api/experiments/status").json() == before_status
+    fresh = client.post("/api/analysis/comparisons/jobs", json=payload)
+    assert fresh.status_code == 200
+    assert fresh.json()["status"] == "completed"
+    assert fresh.json()["cache_state"] == "fresh"
+    assert fresh.json()["report"]["left"]["run_id"] == "cache-left-run"
 
-    invalid = client.post(
-        "/api/analysis/lrp",
-        json={
-            "checkpoint": {"run_id": "lrp-analysis-run", "kind": "latest"},
-            "params": {"sample_count": 0},
-        },
+    save_api_checkpoint(
+        saver,
+        run_id="cache-right-run",
+        saved_at="2026-06-20T12:02:00+00:00",
+        step=4,
     )
-    assert invalid.status_code == 422
+    stale = client.post("/api/analysis/comparisons/jobs", json=payload)
+    assert stale.status_code == 200
+    assert stale.json()["status"] == "completed"
+    assert stale.json()["cache_state"] == "stale"
+    assert stale.json()["stale_sides"] == ["right"]
+
+    forced_payload = {**payload, "force_recompute": True}
+    forced = client.post("/api/analysis/comparisons/jobs", json=forced_payload)
+    assert forced.status_code == 200
+    forced_job = wait_for_analysis_job(client, forced.json()["job_id"])
+    assert forced_job["status"] == "completed"
+    assert forced_job["cache_state"] == "recomputed"
 
 
-def test_api_lrp_uses_cifar_checkpoint_model_and_returns_denormalized_rgb(
-    tmp_path,
-) -> None:
-    class TrackingLoaderFactory(SyntheticLoaderFactory):
-        def __init__(self) -> None:
-            self.cifar10_test_calls = 0
-            generator = torch.Generator().manual_seed(321)
-            self.raw_inputs = torch.rand(12, 3, 32, 32, generator=generator)
-
-        def cifar10_test(self) -> DataLoader:
-            self.cifar10_test_calls += 1
-            mean = torch.tensor([0.4914, 0.4822, 0.4465]).view(1, 3, 1, 1)
-            std = torch.tensor([0.2023, 0.1994, 0.2010]).view(1, 3, 1, 1)
-            normalized_inputs = (self.raw_inputs - mean) / std
-            targets = torch.arange(12) % 10
-            return DataLoader(
-                TensorDataset(normalized_inputs, targets),
-                batch_size=5,
-                shuffle=False,
-            )
-
+def test_api_comparison_rejects_mismatched_dataset(tmp_path, monkeypatch) -> None:
+    install_fast_analysis_fakes(monkeypatch)
     saver = CheckpointSaver(tmp_path)
     save_api_checkpoint(
         saver,
-        run_id="cifar-lrp-analysis-run",
+        run_id="mnist-analysis-run",
         saved_at="2026-06-20T12:00:00+00:00",
         step=2,
+    )
+    save_api_checkpoint(
+        saver,
+        run_id="cifar-analysis-run",
+        saved_at="2026-06-20T12:01:00+00:00",
+        step=3,
         dataset="cifar10",
     )
-    data_loader_factory = TrackingLoaderFactory()
     manager = ExperimentManager(
-        data_loader_factory=data_loader_factory,
+        data_loader_factory=SyntheticLoaderFactory(),
         checkpoint_saver=saver,
     )
     client = TestClient(create_app(manager))
 
     response = client.post(
-        "/api/analysis/lrp",
-        json={
-            "checkpoint": {"run_id": "cifar-lrp-analysis-run", "kind": "latest"},
-            "params": {"sample_count": 10, "seed": 8},
-        },
+        "/api/analysis/comparisons/jobs",
+        json=comparison_request(
+            left_run_id="mnist-analysis-run",
+            right_run_id="cifar-analysis-run",
+        ),
     )
 
-    assert response.status_code == 200
-    payload = response.json()
-    assert payload["checkpoint"]["dataset"] == "cifar10"
-    assert len(payload["samples"]) == 10
-    assert [sample["label"] for sample in payload["samples"]] == list(range(10))
-    assert all(sample["target"] == sample["prediction"] for sample in payload["samples"])
-    assert data_loader_factory.cifar10_test_calls == 1
+    assert response.status_code == 422
+    assert "same dataset" in response.json()["detail"]
 
-    sample = payload["samples"][0]
-    assert len(sample["image"]) == 32
-    assert len(sample["image"][0]) == 32
-    assert len(sample["image"][0][0]) == 3
-    assert len(sample["relevance"]) == 32
-    assert len(sample["relevance"][0]) == 32
-    source_index = sample["index"]
-    np.testing.assert_allclose(
-        sample["image"][0][0],
-        data_loader_factory.raw_inputs[source_index, :, 0, 0].tolist(),
-        atol=1e-6,
+
+def test_analysis_metric_helpers_and_lrp_selection_limits() -> None:
+    labels = np.array([0, 0, 1, 1, 2, 2])
+    predictions = np.array([0, 1, 1, 1, 0, 2])
+    probabilities = np.full((6, 10), 0.01)
+    probabilities[np.arange(6), predictions] = 0.91
+    evaluation = analysis.ModelEvaluation(
+        labels=labels,
+        predictions=predictions,
+        probabilities=probabilities,
+        mean_loss=0.25,
+        embeddings=np.zeros((6, 2)),
+        activations={},
     )
-    relevance_values = np.asarray(sample["relevance"])
-    assert relevance_values.min() >= -1.0
-    assert relevance_values.max() <= 1.0
 
+    metrics = analysis.model_metrics(evaluation, analysis.MNIST_CLASS_LABELS, 5)
 
-def test_lrp_balanced_sample_indices_are_seeded_and_class_balanced() -> None:
-    labels = [label for label in range(10) for _ in range(5)]
+    assert metrics.confusion_matrix[0][0] == 1
+    assert metrics.confusion_matrix[0][1] == 1
+    assert metrics.accuracy == 66.66666666666666
+    assert len(metrics.calibration.bins) == 5
+    assert metrics.calibration.brier_score >= 0.0
+    assert metrics.calibration.nll >= 0.0
 
-    first = analysis.balanced_sample_indices(labels, 20, seed=1)
-    second = analysis.balanced_sample_indices(labels, 20, seed=1)
-    resampled = analysis.balanced_sample_indices(labels, 20, seed=2)
+    selected = analysis.representative_lrp_indices(
+        labels,
+        predictions,
+        np.array([0, 0, 1, 2, 0, 2]),
+        sample_count=3,
+    )
+    average_indices = analysis.class_average_indices(labels, limit_per_class=1)
 
-    assert first == second
-    assert first != resampled
-    assert [labels[index] for index in first] == [
-        0,
-        0,
-        1,
-        1,
-        2,
-        2,
-        3,
-        3,
-        4,
-        4,
-        5,
-        5,
-        6,
-        6,
-        7,
-        7,
-        8,
-        8,
-        9,
-        9,
-    ]
+    assert len(selected) == 3
+    assert all(len(indices) <= 1 for indices in average_indices.values())
 
 
 def test_api_delete_checkpoint_run_removes_latest_and_hidden_best(tmp_path) -> None:
@@ -743,7 +787,14 @@ def test_api_reset_clears_loaded_checkpoint_status(tmp_path) -> None:
     assert reset["current_loss"] == 0.0
     assert reset["best_acc"] == 0.0
     assert reset["total_elapsed_seconds"] == 0.0
-    assert reset["history"] == {"loss": [], "acc": [], "mutation_step": []}
+    assert reset["history"] == {
+        "loss": [],
+        "acc": [],
+        "train_acc": [],
+        "val_loss": [],
+        "memory_mb": [],
+        "mutation_step": [],
+    }
     assert reset["checkpoint_path"] is None
     assert client.get("/api/experiments/status").json() == reset
 
