@@ -12,7 +12,6 @@ import {
   Pause,
   Play,
   Plus,
-  RotateCcw,
   Sun,
   Trash2,
 } from "lucide-react"
@@ -182,6 +181,7 @@ const MUTATION_STEP_AXIS_PADDING = 1.05
 const MUTATION_STEP_AXIS_SEGMENTS = 8
 const MUTATION_STEP_TICK_DECIMALS = 2
 const MUTATION_STEP_PLOT_DOMAIN_END = 0.925
+const TRAINING_STATUS_UPDATE_INTERVAL_MS = 200
 const MISSING_VALUE_LABEL = "—"
 
 type ResolvedTheme = "dark" | "light"
@@ -330,21 +330,76 @@ export function App() {
 
   useEffect(() => {
     const source = new EventSource(apiUrl("/api/experiments/events"))
-    const handleEvent = (event: MessageEvent<string>) => {
+    let pendingStepStatus: ExperimentStatus | null = null
+    let pendingStepTimer: number | null = null
+    let lastStatusUpdateAt = 0
+
+    const statusFromEvent = (event: MessageEvent<string>) => {
       const payload = JSON.parse(event.data) as
         | ExperimentStatus
         | { status: ExperimentStatus }
-      setStatus("status" in payload ? payload.status : payload)
+      return "status" in payload ? payload.status : payload
+    }
+
+    const clearPendingStep = () => {
+      if (pendingStepTimer !== null) {
+        window.clearTimeout(pendingStepTimer)
+      }
+      pendingStepTimer = null
+      pendingStepStatus = null
+    }
+
+    const commitStatus = (nextStatus: ExperimentStatus) => {
+      lastStatusUpdateAt = performance.now()
+      setStatus(nextStatus)
+    }
+
+    const commitPendingStep = () => {
+      if (pendingStepStatus !== null) {
+        commitStatus(pendingStepStatus)
+      }
+      pendingStepTimer = null
+      pendingStepStatus = null
+    }
+
+    const handleStepEvent = (event: MessageEvent<string>) => {
+      const nextStatus = statusFromEvent(event)
+      const elapsed = performance.now() - lastStatusUpdateAt
+      if (elapsed >= TRAINING_STATUS_UPDATE_INTERVAL_MS) {
+        clearPendingStep()
+        commitStatus(nextStatus)
+        return
+      }
+
+      pendingStepStatus = nextStatus
+      if (pendingStepTimer === null) {
+        pendingStepTimer = window.setTimeout(
+          commitPendingStep,
+          TRAINING_STATUS_UPDATE_INTERVAL_MS - elapsed
+        )
+      }
+    }
+
+    const handleEvent = (event: MessageEvent<string>) => {
+      clearPendingStep()
+      commitStatus(statusFromEvent(event))
     }
 
     eventTypes.forEach((eventType) => {
-      source.addEventListener(eventType, handleEvent)
+      source.addEventListener(
+        eventType,
+        eventType === "step" ? handleStepEvent : handleEvent
+      )
     })
 
     return () => {
       eventTypes.forEach((eventType) => {
-        source.removeEventListener(eventType, handleEvent)
+        source.removeEventListener(
+          eventType,
+          eventType === "step" ? handleStepEvent : handleEvent
+        )
       })
+      clearPendingStep()
       source.close()
     }
   }, [])
@@ -920,7 +975,7 @@ export function App() {
                 ) : null}
                 {isPaused ? (
                   <Button onClick={resumeExperiment}>
-                    <RotateCcw className="size-4" />
+                    <Play className="size-4" />
                     Resume
                   </Button>
                 ) : null}

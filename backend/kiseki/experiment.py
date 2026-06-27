@@ -1,9 +1,10 @@
 import json
+import math
 import os
 import random
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import datetime
 from pathlib import Path
 from queue import Empty, Queue
@@ -42,6 +43,7 @@ from .schemas import (
 )
 
 VAL_FREQ = 10
+FRONTEND_STEP_UPDATE_INTERVAL_SECONDS = 0.2
 NumericMode = Literal["strict", "fast"]
 NUMERIC_MODES = ("strict", "fast")
 NIXOS_CUDA_LIBRARY = Path("/run/opengl-driver/lib/libcuda.so.1")
@@ -68,6 +70,7 @@ class ExperimentManager:
         self.worker: threading.Thread | None = None
         self._status = ExperimentStatus()
         self._resume_checkpoint_kind: CheckpointKind = "latest"
+        self._last_step_publish_at = 0.0
         self.analysis_service = AnalysisService(
             data_loader_factory=self.data_loader_factory,
             checkpoint_saver=self.checkpoint_saver,
@@ -168,6 +171,7 @@ class ExperimentManager:
             self.stop_event.clear()
             self.pause_event.clear()
             self._resume_checkpoint_kind = "latest"
+            self._last_step_publish_at = 0.0
             self._status = ExperimentStatus(
                 is_running=True,
                 optimizer=effective_request.config.optimizer,
@@ -208,6 +212,7 @@ class ExperimentManager:
             checkpoint_kind = self._resume_checkpoint_kind
             self.stop_event.clear()
             self.pause_event.clear()
+            self._last_step_publish_at = 0.0
             self._status.is_running = True
             self._status.is_paused = False
             self._status.pause_requested = False
@@ -363,6 +368,8 @@ class ExperimentManager:
                 train_batches = cycle_loader(train_loader)
 
             first_step = 1
+            interval_losses: list[float] = []
+            interval_iteration_seconds: list[float] = []
             if checkpoint is not None:
                 saved_status = ExperimentStatus.model_validate(checkpoint["status"])
                 elapsed_offset = saved_status.total_elapsed_seconds
@@ -391,17 +398,26 @@ class ExperimentManager:
                 loss = runner.step(inputs, targets)
                 train_accuracy = batch_accuracy(model, inputs, targets)
                 iteration_seconds = time.perf_counter() - iteration_started_at
+                interval_losses.append(loss)
+                interval_iteration_seconds.append(iteration_seconds)
+                loss_mean, loss_stdev, mean_iteration_seconds = interval_training_stats(
+                    interval_losses,
+                    interval_iteration_seconds,
+                )
                 elapsed_seconds = elapsed_offset + time.perf_counter() - started_at
                 status = self._update_step(
                     step,
                     loss,
                     elapsed_seconds=elapsed_seconds,
                     last_iteration_seconds=iteration_seconds,
+                    loss_mean_since_validation=loss_mean,
+                    loss_stdev_since_validation=loss_stdev,
+                    mean_iteration_seconds_since_validation=mean_iteration_seconds,
                     mutation_step=current_mutation_step(runner),
                     train_accuracy=train_accuracy,
                     peak_memory_mb=peak_memory_mb(device),
                 )
-                self._publish("step", status)
+                self._publish_step(status)
 
                 checkpoint_accuracy = None
                 best_accuracy_surpassed = False
@@ -423,6 +439,8 @@ class ExperimentManager:
                     )
                     self._publish("validation", status)
                     checkpoint_accuracy = accuracy
+                    interval_losses = []
+                    interval_iteration_seconds = []
                     if accuracy >= config.target_acc:
                         target_reached = True
 
@@ -590,6 +608,9 @@ class ExperimentManager:
         *,
         elapsed_seconds: float,
         last_iteration_seconds: float,
+        loss_mean_since_validation: float,
+        loss_stdev_since_validation: float,
+        mean_iteration_seconds_since_validation: float,
         mutation_step: float | None,
         train_accuracy: float | None,
         peak_memory_mb: float | None,
@@ -599,6 +620,11 @@ class ExperimentManager:
             self._status.current_loss = loss
             self._status.total_elapsed_seconds = max(elapsed_seconds, 0.0)
             self._status.last_iteration_seconds = max(last_iteration_seconds, 0.0)
+            self._status.loss_mean_since_validation = loss_mean_since_validation
+            self._status.loss_stdev_since_validation = loss_stdev_since_validation
+            self._status.mean_iteration_seconds_since_validation = (
+                mean_iteration_seconds_since_validation
+            )
             self._status.history.loss.append(loss)
             if train_accuracy is not None:
                 self._status.history.train_acc.append(
@@ -746,6 +772,17 @@ class ExperimentManager:
         for queue in subscribers:
             queue.put((event_type, status))
 
+    def _publish_step(self, status: ExperimentStatus) -> None:
+        now = time.monotonic()
+        with self.lock:
+            if (
+                now - self._last_step_publish_at
+                < FRONTEND_STEP_UPDATE_INTERVAL_SECONDS
+            ):
+                return
+            self._last_step_publish_at = now
+        self._publish("step", status)
+
     def _is_experiment_running(self) -> bool:
         with self.lock:
             return self._status.is_running
@@ -833,6 +870,21 @@ def current_mutation_step(runner: Any) -> float | None:
     if mutation_step is None:
         return None
     return float(mutation_step)
+
+
+def interval_training_stats(
+    losses: Sequence[float],
+    iteration_seconds: Sequence[float],
+) -> tuple[float, float, float]:
+    if not losses:
+        return 0.0, 0.0, 0.0
+
+    loss_mean = sum(losses) / len(losses)
+    loss_variance = sum((loss - loss_mean) ** 2 for loss in losses) / len(losses)
+    iteration_mean = (
+        sum(iteration_seconds) / len(iteration_seconds) if iteration_seconds else 0.0
+    )
+    return loss_mean, math.sqrt(loss_variance), max(iteration_mean, 0.0)
 
 
 def runner_state_dict(runner: Any) -> dict[str, Any]:

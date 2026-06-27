@@ -99,6 +99,9 @@ export type ExperimentStatus = {
   best_acc: number
   total_elapsed_seconds: number
   last_iteration_seconds: number
+  loss_mean_since_validation: number
+  loss_stdev_since_validation: number
+  mean_iteration_seconds_since_validation: number
   requested_device: string
   device: string
   device_name: string
@@ -476,6 +479,9 @@ export const defaultStatus: ExperimentStatus = {
   best_acc: 0.0,
   total_elapsed_seconds: 0.0,
   last_iteration_seconds: 0.0,
+  loss_mean_since_validation: 0.0,
+  loss_stdev_since_validation: 0.0,
+  mean_iteration_seconds_since_validation: 0.0,
   requested_device: "cpu",
   device: "cpu",
   device_name: "cpu",

@@ -914,6 +914,9 @@ def test_api_start_status_stop_flow(tmp_path) -> None:
     assert status["device_name"] == "cpu"
     assert status["total_elapsed_seconds"] > 0
     assert status["last_iteration_seconds"] > 0
+    assert status["loss_mean_since_validation"] > 0
+    assert status["loss_stdev_since_validation"] >= 0
+    assert status["mean_iteration_seconds_since_validation"] > 0
     assert status["current_mutation_step"] is None
     assert status["history"]["mutation_step"] == []
 

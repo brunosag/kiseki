@@ -23,6 +23,7 @@ from kiseki.schemas import (
     RHO_X,
     TAU_PAT,
     ExperimentConfig,
+    ExperimentStatus,
 )
 from kiseki.train import (
     TrainError,
@@ -30,6 +31,7 @@ from kiseki.train import (
     TrainingSignalHandler,
     build_resume_update,
     build_start_request,
+    format_status,
     run_training,
     train_options_from_args,
 )
@@ -246,6 +248,30 @@ def test_run_training_resumes_checkpoint_with_allowed_overrides(tmp_path) -> Non
     assert status.current_step == 3
     assert checkpoint["config"]["iterations"] == 3
     assert checkpoint["config"]["checkpoint_interval"] == 1
+
+
+def test_format_status_uses_interval_stats_and_omits_checkpoint_fields() -> None:
+    status = ExperimentStatus(
+        current_step=1234,
+        best_acc=98.123,
+        total_elapsed_seconds=65.4,
+        loss_mean_since_validation=0.123456,
+        loss_stdev_since_validation=0.001234,
+        mean_iteration_seconds_since_validation=0.01234,
+        current_mutation_step=0.03,
+        last_checkpoint_step=100,
+        checkpoint_path="/tmp/run/latest.pt",
+    )
+
+    line = format_status(status)
+
+    assert line == (
+        "i=1,234 ℓ=0.1235±0.0012 a*=98.12% "
+        "t=1m 05s Δt̄=0.012s ηₘ=0.0300"
+    )
+    assert "loss=" not in line
+    assert "last_checkpoint_step" not in line
+    assert "checkpoint" not in line
 
 
 def test_resume_rejects_trajectory_changing_overrides() -> None:

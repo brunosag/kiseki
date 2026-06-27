@@ -456,6 +456,9 @@ class ExperimentStatus(BaseModel):
     best_acc: float = 0.0
     total_elapsed_seconds: float = 0.0
     last_iteration_seconds: float = 0.0
+    loss_mean_since_validation: float = 0.0
+    loss_stdev_since_validation: float = 0.0
+    mean_iteration_seconds_since_validation: float = 0.0
     requested_device: str = "cpu"
     device: str = "cpu"
     device_name: str = "cpu"

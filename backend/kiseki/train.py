@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import signal
 import sys
 import time
@@ -289,18 +290,16 @@ def wait_for_completion(
     stream: TextIO,
 ) -> ExperimentStatus:
     last_step = -1
-    last_checkpoint_path: str | None = None
     status = initial_status
 
     while status.is_running:
-        if should_print_status(status, last_step, last_checkpoint_path, log_every):
+        if should_print_status(status, last_step, log_every):
             print(format_status(status), file=stream, flush=True)
             last_step = status.current_step
-            last_checkpoint_path = status.checkpoint_path
         time.sleep(max(poll_interval, 0.0))
         status = manager.status()
 
-    if should_print_status(status, last_step, last_checkpoint_path, log_every) or status.current_step:
+    if should_print_status(status, last_step, log_every) or status.current_step:
         print(format_status(status), file=stream, flush=True)
     return status
 
@@ -308,11 +307,8 @@ def wait_for_completion(
 def should_print_status(
     status: ExperimentStatus,
     last_step: int,
-    last_checkpoint_path: str | None,
     log_every: int,
 ) -> bool:
-    if status.checkpoint_path and status.checkpoint_path != last_checkpoint_path:
-        return True
     if status.current_step == last_step:
         return False
     if status.current_step == 0:
@@ -338,15 +334,19 @@ def print_final(status: ExperimentStatus, *, stream: TextIO) -> None:
         return
     if status.is_paused:
         print(
-            f"Paused run_id={status.run_id} checkpoint={status.checkpoint_path}",
+            (
+                f"Paused run_id={status.run_id} i={format_integer(status.current_step)} "
+                f"t={format_duration(status.total_elapsed_seconds)}"
+            ),
             file=stream,
             flush=True,
         )
         return
     print(
         (
-            f"Finished run_id={status.run_id} step={status.current_step} "
-            f"best_acc={status.best_acc:.2f}% checkpoint={status.checkpoint_path}"
+            f"Finished run_id={status.run_id} i={format_integer(status.current_step)} "
+            f"a*={format_percent(status.best_acc)} "
+            f"t={format_duration(status.total_elapsed_seconds)}"
         ),
         file=stream,
         flush=True,
@@ -355,18 +355,65 @@ def print_final(status: ExperimentStatus, *, stream: TextIO) -> None:
 
 def format_status(status: ExperimentStatus) -> str:
     parts = [
-        f"step={status.current_step}",
-        f"loss={status.current_loss:.6f}",
-        f"best_acc={status.best_acc:.2f}%",
-        f"elapsed={status.total_elapsed_seconds:.1f}s",
+        f"i={format_integer(status.current_step)}",
+        (
+            f"ℓ={format_loss(status.loss_mean_since_validation)}"
+            f"±{format_loss(status.loss_stdev_since_validation)}"
+        ),
+        f"a*={format_percent(status.best_acc)}",
+        f"t={format_duration(status.total_elapsed_seconds)}",
+        f"Δt̄={format_seconds(status.mean_iteration_seconds_since_validation)}",
     ]
     if status.current_mutation_step is not None:
-        parts.append(f"mutation_step={status.current_mutation_step:.6f}")
-    if status.last_checkpoint_step is not None:
-        parts.append(f"last_checkpoint_step={status.last_checkpoint_step}")
-    if status.checkpoint_path:
-        parts.append(f"checkpoint={status.checkpoint_path}")
+        parts.append(f"ηₘ={format_loss(status.current_mutation_step)}")
     return " ".join(parts)
+
+
+def format_integer(value: int) -> str:
+    return f"{value:,.0f}"
+
+
+def format_percent(value: float) -> str:
+    if not math.isfinite(value):
+        return "—"
+    return f"{value:.2f}%"
+
+
+def format_loss(value: float) -> str:
+    if not math.isfinite(value):
+        return "—"
+    return f"{value:.4f}"
+
+
+def format_seconds(seconds: float) -> str:
+    safe_seconds = seconds if math.isfinite(seconds) and seconds > 0 else 0.0
+    return f"{safe_seconds:.3f}s"
+
+
+def format_duration(seconds: float) -> str:
+    safe_seconds = seconds if math.isfinite(seconds) and seconds > 0 else 0.0
+    total_seconds = math.floor(safe_seconds + 0.5)
+
+    if total_seconds < 60:
+        return f"{total_seconds}s"
+
+    hours = total_seconds // 3600
+    if hours > 0:
+        minutes = (total_seconds % 3600) // 60
+        remaining_seconds = total_seconds % 60
+        parts = [f"{hours}h"]
+
+        if minutes > 0:
+            parts.append(f"{minutes}m")
+
+        if remaining_seconds > 0:
+            parts.append(f"{remaining_seconds}s")
+
+        return " ".join(parts)
+
+    minutes = total_seconds // 60
+    remaining_seconds = total_seconds % 60
+    return f"{minutes}m {remaining_seconds:02d}s"
 
 
 def install_signal_handlers(handler: TrainingSignalHandler) -> dict[signal.Signals, Any]:
