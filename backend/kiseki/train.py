@@ -35,6 +35,7 @@ DEFAULT_OPTIMIZER_PARAMS = {
     for optimizer, fields in OPTIMIZERS_SCHEMA.items()
 }
 
+METRIC_SEPARATOR = "    "
 RESUME_ONLY_FIELDS = ("iterations", "target_acc", "checkpoint_interval")
 RESUME_BLOCKED_FIELDS = (
     "dataset",
@@ -333,21 +334,27 @@ def print_final(status: ExperimentStatus, *, stream: TextIO) -> None:
         print(f"Failed run_id={status.run_id}: {status.error}", file=stream, flush=True)
         return
     if status.is_paused:
+        metrics = METRIC_SEPARATOR.join(
+            [
+                f"i={format_integer(status.current_step)}",
+                f"t={format_duration(status.total_elapsed_seconds)}",
+            ]
+        )
         print(
-            (
-                f"Paused run_id={status.run_id} i={format_integer(status.current_step)} "
-                f"t={format_duration(status.total_elapsed_seconds)}"
-            ),
+            f"Paused run_id={status.run_id} {metrics}",
             file=stream,
             flush=True,
         )
         return
+    metrics = METRIC_SEPARATOR.join(
+        [
+            f"i={format_integer(status.current_step)}",
+            *format_best_accuracy_metrics(status),
+            f"t={format_duration(status.total_elapsed_seconds)}",
+        ]
+    )
     print(
-        (
-            f"Finished run_id={status.run_id} i={format_integer(status.current_step)} "
-            f"a*={format_percent(status.best_acc)} "
-            f"t={format_duration(status.total_elapsed_seconds)}"
-        ),
+        f"Finished run_id={status.run_id} {metrics}",
         file=stream,
         flush=True,
     )
@@ -358,15 +365,31 @@ def format_status(status: ExperimentStatus) -> str:
         f"i={format_integer(status.current_step)}",
         (
             f"ℓ={format_loss(status.loss_mean_since_validation)}"
-            f"±{format_loss(status.loss_stdev_since_validation)}"
+            f" ± {format_loss(status.loss_stdev_since_validation)}"
         ),
-        f"a*={format_percent(status.best_acc)}",
+        *format_best_accuracy_metrics(status),
         f"t={format_duration(status.total_elapsed_seconds)}",
         f"Δt̄={format_seconds(status.mean_iteration_seconds_since_validation)}",
     ]
     if status.current_mutation_step is not None:
-        parts.append(f"ηₘ={format_loss(status.current_mutation_step)}")
-    return " ".join(parts)
+        parts.append(f"η={format_loss(status.current_mutation_step)}")
+    return METRIC_SEPARATOR.join(parts)
+
+
+def format_best_accuracy_metrics(status: ExperimentStatus) -> list[str]:
+    metric = f"a*={format_percent(status.best_acc)}"
+    step = best_accuracy_step(status)
+    if step is not None:
+        metric = f"{metric} ({format_integer(step)})"
+    return [metric]
+
+
+def best_accuracy_step(status: ExperimentStatus) -> int | None:
+    if math.isfinite(status.best_acc):
+        for point in status.history.acc:
+            if math.isclose(point.value, status.best_acc, rel_tol=1e-12, abs_tol=1e-12):
+                return point.i
+    return status.best_checkpoint_step
 
 
 def format_integer(value: int) -> str:

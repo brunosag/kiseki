@@ -13,6 +13,7 @@ import kiseki.cli as cli
 from kiseki.checkpoint import CheckpointSaver
 from kiseki.experiment import ExperimentManager
 from kiseki.schemas import (
+    AccuracyPoint,
     ETA,
     ETA_0,
     GAMMA,
@@ -262,12 +263,16 @@ def test_format_status_uses_interval_stats_and_omits_checkpoint_fields() -> None
         last_checkpoint_step=100,
         checkpoint_path="/tmp/run/latest.pt",
     )
+    status.history.acc = [
+        AccuracyPoint(i=1000, value=97.0),
+        AccuracyPoint(i=1230, value=98.123),
+    ]
 
     line = format_status(status)
 
     assert line == (
-        "i=1,234 ℓ=0.1235±0.0012 a*=98.12% "
-        "t=1m 05s Δt̄=0.012s ηₘ=0.0300"
+        "i=1,234    ℓ=0.1235 ± 0.0012    a*=98.12% (1,230)    "
+        "t=1m 05s    Δt̄=0.012s    η=0.0300"
     )
     assert "loss=" not in line
     assert "last_checkpoint_step" not in line
