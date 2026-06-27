@@ -1228,6 +1228,16 @@ function AnalysisProgress({ job }: { job: AnalysisComparisonJobStatus | null }) 
   )
 }
 
+const ANALYSIS_REPORT_SECTIONS = [
+  { id: "overview", label: "Overview" },
+  { id: "metrics", label: "Metrics" },
+  { id: "embeddings", label: "Embeddings" },
+  { id: "lrp", label: "LRP" },
+  { id: "robustness", label: "Robustness" },
+] as const
+
+type AnalysisReportSectionId = (typeof ANALYSIS_REPORT_SECTIONS)[number]["id"]
+
 function AnalysisReport({
   plotPalette,
   report,
@@ -1235,31 +1245,183 @@ function AnalysisReport({
   plotPalette: PlotPalette
   report: AnalysisComparisonReport
 }) {
+  const [activeSection, setActiveSection] =
+    useState<AnalysisReportSectionId>("overview")
+  const sectionRefs = useRef<Record<AnalysisReportSectionId, HTMLElement | null>>({
+    overview: null,
+    metrics: null,
+    embeddings: null,
+    lrp: null,
+    robustness: null,
+  })
+
+  useEffect(() => {
+    let frame = 0
+    const updateActiveSection = () => {
+      frame = 0
+      const activationLine = Math.min(window.innerHeight * 0.35, 240)
+      let nextActive: AnalysisReportSectionId = "overview"
+
+      for (const section of ANALYSIS_REPORT_SECTIONS) {
+        const element = sectionRefs.current[section.id]
+        if (!element) {
+          continue
+        }
+        if (element.getBoundingClientRect().top <= activationLine) {
+          nextActive = section.id
+        }
+      }
+
+      setActiveSection((current) =>
+        current === nextActive ? current : nextActive
+      )
+    }
+    const requestUpdate = () => {
+      if (frame !== 0) {
+        return
+      }
+      frame = window.requestAnimationFrame(updateActiveSection)
+    }
+
+    updateActiveSection()
+    window.addEventListener("scroll", requestUpdate, { passive: true })
+    window.addEventListener("resize", requestUpdate)
+
+    return () => {
+      if (frame !== 0) {
+        window.cancelAnimationFrame(frame)
+      }
+      window.removeEventListener("scroll", requestUpdate)
+      window.removeEventListener("resize", requestUpdate)
+    }
+  }, [report])
+
   return (
-    <Tabs className="min-h-0 flex-1" defaultValue="overview">
-      <TabsList className="w-fit">
-        <TabsTrigger value="overview">Overview</TabsTrigger>
-        <TabsTrigger value="metrics">Metrics</TabsTrigger>
-        <TabsTrigger value="embeddings">Embeddings</TabsTrigger>
-        <TabsTrigger value="lrp">LRP</TabsTrigger>
-        <TabsTrigger value="robustness">Robustness</TabsTrigger>
-      </TabsList>
-      <TabsContent className="mt-4" value="overview">
-        <AnalysisOverview plotPalette={plotPalette} report={report} />
-      </TabsContent>
-      <TabsContent className="mt-4" value="metrics">
-        <AnalysisMetrics plotPalette={plotPalette} report={report} />
-      </TabsContent>
-      <TabsContent className="mt-4" value="embeddings">
-        <AnalysisEmbeddingsView plotPalette={plotPalette} report={report} />
-      </TabsContent>
-      <TabsContent className="mt-4" value="lrp">
-        <AnalysisLrpView report={report} />
-      </TabsContent>
-      <TabsContent className="mt-4" value="robustness">
-        <AnalysisRobustnessView plotPalette={plotPalette} report={report} />
-      </TabsContent>
-    </Tabs>
+    <div className="grid min-h-0 flex-1 gap-4 pb-6 lg:grid-cols-[10rem_minmax(0,1fr)] xl:grid-cols-[12rem_minmax(0,1fr)]">
+      <AnalysisReportToc
+        activeSection={activeSection}
+        onSelect={setActiveSection}
+      />
+      <div className="grid min-w-0 gap-8">
+        <AnalysisReportSection
+          id="overview"
+          sectionRef={(element) => {
+            sectionRefs.current.overview = element
+          }}
+          title="Overview"
+        >
+          <AnalysisOverview plotPalette={plotPalette} report={report} />
+        </AnalysisReportSection>
+        <AnalysisReportSection
+          id="metrics"
+          sectionRef={(element) => {
+            sectionRefs.current.metrics = element
+          }}
+          title="Metrics"
+        >
+          <AnalysisMetrics plotPalette={plotPalette} report={report} />
+        </AnalysisReportSection>
+        <AnalysisReportSection
+          id="embeddings"
+          sectionRef={(element) => {
+            sectionRefs.current.embeddings = element
+          }}
+          title="Embeddings"
+        >
+          <AnalysisEmbeddingsView plotPalette={plotPalette} report={report} />
+        </AnalysisReportSection>
+        <AnalysisReportSection
+          id="lrp"
+          sectionRef={(element) => {
+            sectionRefs.current.lrp = element
+          }}
+          title="LRP"
+        >
+          <AnalysisLrpView report={report} />
+        </AnalysisReportSection>
+        <AnalysisReportSection
+          id="robustness"
+          sectionRef={(element) => {
+            sectionRefs.current.robustness = element
+          }}
+          title="Robustness"
+        >
+          <AnalysisRobustnessView plotPalette={plotPalette} report={report} />
+        </AnalysisReportSection>
+      </div>
+    </div>
+  )
+}
+
+function AnalysisReportToc({
+  activeSection,
+  onSelect,
+}: {
+  activeSection: AnalysisReportSectionId
+  onSelect: (section: AnalysisReportSectionId) => void
+}) {
+  return (
+    <aside className="lg:sticky lg:top-4 lg:self-start">
+      <nav aria-label="Analysis report sections" className="py-1">
+        <div className="relative grid gap-1">
+          <div
+            aria-hidden="true"
+            className="absolute top-3 bottom-3 left-1.5 border-l border-dashed border-muted-foreground/40"
+          />
+          {ANALYSIS_REPORT_SECTIONS.map((section) => {
+            const isActive = activeSection === section.id
+            return (
+              <a
+                aria-current={isActive ? "location" : undefined}
+                className={cn(
+                  "relative grid grid-cols-[0.75rem_minmax(0,1fr)] items-center gap-3 py-1 text-sm",
+                  isActive
+                    ? "font-medium text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                )}
+                href={`#analysis-${section.id}`}
+                key={section.id}
+                onClick={() => onSelect(section.id)}
+              >
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "z-10 size-3 rounded-full border bg-background",
+                    isActive
+                      ? "border-foreground bg-foreground"
+                      : "border-muted-foreground"
+                  )}
+                />
+                {section.label}
+              </a>
+            )
+          })}
+        </div>
+      </nav>
+    </aside>
+  )
+}
+
+function AnalysisReportSection({
+  children,
+  id,
+  sectionRef,
+  title,
+}: {
+  children: ReactElement
+  id: AnalysisReportSectionId
+  sectionRef: (element: HTMLElement | null) => void
+  title: string
+}) {
+  return (
+    <section
+      className="grid scroll-mt-4 gap-3"
+      id={`analysis-${id}`}
+      ref={sectionRef}
+    >
+      <h2 className="text-lg font-semibold tracking-normal">{title}</h2>
+      {children}
+    </section>
   )
 }
 
