@@ -20,6 +20,7 @@ import type {
   ComponentType,
   KeyboardEvent,
   ReactElement,
+  RefObject,
 } from "react"
 import type { PlotParams } from "react-plotly.js"
 import type { Data, Layout } from "plotly.js"
@@ -617,7 +618,6 @@ export function App() {
   const plotLayout = useMemo<MultiAxisLayout>(
     () => ({
       autosize: true,
-      height: 420,
       uirevision: `${PLOT_UI_REVISION}-${stepAxisUpperBound}-${lossAxisUpperBound}-${mutationStepAxisUpperBound}`,
       margin: { l: 52, r: showMutationStepAxis ? 76 : 46, t: 42, b: 48 },
       xaxis: {
@@ -862,7 +862,7 @@ export function App() {
 
   return (
     <Tabs
-      className="min-h-dvh gap-0 p-4"
+      className="h-dvh min-h-0 gap-0 overflow-hidden p-4"
       value={activeTab}
       onValueChange={(value) => setActiveTab(value as AppTab)}
     >
@@ -899,159 +899,174 @@ export function App() {
           <ThemeToggle resolvedTheme={resolvedTheme} />
         </div>
       </div>
-      <TabsContent className="mt-0" value="training">
-      <div className="flex flex-col gap-6 md:flex-row">
-        <div className="flex w-full max-w-3xl flex-col gap-3 md:max-w-md">
-          <Card className="w-full">
-            <CardHeader>
-              <CardTitle className="text-xl">Configuration</CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="flex flex-col gap-2">
-                {configOrder.map((key) => {
-                  const field = schema.config_schema[key]
-                  return (
-                    <ConfigControl
-                      key={key}
-                      fieldKey={key}
-                      field={field}
-                      value={config[key]}
-                      disabled={
-                        runtimeEditableConfigKeys.has(key)
-                          ? isRunning
-                          : controlsDisabled
-                      }
-                      onChange={(value) => updateConfig(key, value)}
-                    />
-                  )
-                })}
-              </div>
+      <TabsContent
+        className="mt-0 min-h-0 overflow-y-auto md:flex md:overflow-hidden"
+        value="training"
+      >
+        <div className="flex w-full flex-col gap-6 md:min-h-0 md:flex-1 md:flex-row">
+          <div className="flex w-full max-w-3xl flex-col gap-3 md:max-h-full md:max-w-md">
+            <Card className="w-full md:h-fit md:max-h-full">
+              <CardHeader>
+                <CardTitle className="text-xl">Configuration</CardTitle>
+              </CardHeader>
+              <CardContent className="min-h-0 md:flex md:flex-col md:overflow-hidden">
+                <ScrollArea className="h-auto md:min-h-0 md:max-h-full md:pr-3">
+                  <div className="flex flex-col gap-2">
+                    {configOrder.map((key) => {
+                      const field = schema.config_schema[key]
+                      return (
+                        <ConfigControl
+                          key={key}
+                          fieldKey={key}
+                          field={field}
+                          value={config[key]}
+                          disabled={
+                            runtimeEditableConfigKeys.has(key)
+                              ? isRunning
+                              : controlsDisabled
+                          }
+                          onChange={(value) => updateConfig(key, value)}
+                        />
+                      )
+                    })}
+                  </div>
 
-              <div className="mt-6 flex flex-col gap-3 rounded-lg border p-4">
-                <h4 className="font-medium">{config.optimizer} parameters</h4>
-                <div className="mt-2 grid grid-cols-[max-content_auto_1fr] items-center gap-x-3 gap-y-2">
-                  {activeOptimizerSchema.map((param) => (
-                    <div className="contents" key={param.key}>
-                      <span className="text-lg">
-                        <MathLabel math={param.label} />
-                      </span>
-                      <Input
-                        className="h-8 w-24"
-                        type={param.type}
-                        step={param.step}
-                        disabled={controlsDisabled}
-                        value={optParams[config.optimizer]?.[param.key] ?? ""}
-                        onChange={(event) =>
-                          updateOptimizerParam(
-                            param.key,
-                            Number(event.currentTarget.value)
-                          )
-                        }
-                      />
-                      <Label className="text-sm font-normal text-muted-foreground">
-                        {param.desc}
-                      </Label>
+                  <div className="mt-6 flex flex-col gap-3 rounded-lg border p-4">
+                    <h4 className="font-medium">
+                      {config.optimizer} parameters
+                    </h4>
+                    <div className="mt-2 grid grid-cols-[max-content_auto_1fr] items-center gap-x-3 gap-y-2">
+                      {activeOptimizerSchema.map((param) => (
+                        <div className="contents" key={param.key}>
+                          <span className="text-lg">
+                            <MathLabel math={param.label} />
+                          </span>
+                          <Input
+                            className="h-8 w-24"
+                            type={param.type}
+                            step={param.step}
+                            disabled={controlsDisabled}
+                            value={
+                              optParams[config.optimizer]?.[param.key] ?? ""
+                            }
+                            onChange={(event) =>
+                              updateOptimizerParam(
+                                param.key,
+                                Number(event.currentTarget.value)
+                              )
+                            }
+                          />
+                          <Label className="text-sm font-normal text-muted-foreground">
+                            {param.desc}
+                          </Label>
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
-              </div>
+                  </div>
 
-              <div className="mt-6 grid grid-cols-1 gap-2">
-                {!isRunning && !isPaused ? (
-                  <Button onClick={startExperiment}>
-                    <Play className="size-4" />
-                    Start
-                  </Button>
+                  <div className="mt-6 grid grid-cols-1 gap-2">
+                    {!isRunning && !isPaused ? (
+                      <Button onClick={startExperiment}>
+                        <Play className="size-4" />
+                        Start
+                      </Button>
+                    ) : null}
+                    {isRunning ? (
+                      <Button
+                        disabled={status.pause_requested}
+                        variant="secondary"
+                        onClick={pauseExperiment}
+                      >
+                        <Pause className="size-4" />
+                        Pause
+                      </Button>
+                    ) : null}
+                    {isPaused ? (
+                      <Button onClick={resumeExperiment}>
+                        <Play className="size-4" />
+                        Resume
+                      </Button>
+                    ) : null}
+                  </div>
+                </ScrollArea>
+              </CardContent>
+            </Card>
+          </div>
+
+          <Card className="min-h-[520px] w-full md:min-h-0 md:flex-1">
+            <CardHeader>
+              <CardTitle className="text-xl">Metrics</CardTitle>
+            </CardHeader>
+            <CardContent className="flex min-h-0 flex-1 flex-col">
+              <div
+                className={cn(
+                  "grid gap-x-4 gap-y-5 rounded-lg sm:grid-cols-3",
+                  showMutationStepAxis ? "xl:grid-cols-6" : "xl:grid-cols-5"
+                )}
+              >
+                <Metric
+                  label="Step"
+                  value={formatInteger(status.current_step)}
+                />
+                <Metric
+                  label="Total elapsed"
+                  value={formatDuration(status.total_elapsed_seconds)}
+                />
+                <Metric
+                  label="Last iteration"
+                  value={formatSeconds(status.last_iteration_seconds)}
+                />
+                <Metric label="Loss" value={status.current_loss.toFixed(4)} />
+                <Metric
+                  label="Best accuracy"
+                  value={`${status.best_acc.toFixed(2)}%`}
+                  detail={
+                    bestAccuracyStep
+                      ? `at ${formatInteger(bestAccuracyStep)}`
+                      : undefined
+                  }
+                />
+                {showMutationStepAxis ? (
+                  <Metric
+                    label="Mutation step"
+                    value={formatMutationStep(mutationStepMetricValue)}
+                  />
                 ) : null}
-                {isRunning ? (
-                  <Button
-                    disabled={status.pause_requested}
-                    variant="secondary"
-                    onClick={pauseExperiment}
-                  >
-                    <Pause className="size-4" />
-                    Pause
-                  </Button>
-                ) : null}
-                {isPaused ? (
-                  <Button onClick={resumeExperiment}>
-                    <Play className="size-4" />
-                    Resume
-                  </Button>
-                ) : null}
+              </div>
+              {status.error ? (
+                <div className="mt-4 rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
+                  {status.error}
+                </div>
+              ) : null}
+              {status.checkpoint_warnings.length ? (
+                <div className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-700 dark:text-amber-300">
+                  {status.checkpoint_warnings.join(" ")}
+                </div>
+              ) : null}
+
+              <div className="mt-6 min-h-[320px] w-full flex-1">
+                <Plot
+                  className="h-full w-full"
+                  data={plotData}
+                  layout={plotLayout}
+                  config={{
+                    displayModeBar: false,
+                    displaylogo: false,
+                    scrollZoom: false,
+                    responsive: true,
+                  }}
+                  useResizeHandler
+                  style={{ width: "100%", height: "100%" }}
+                />
               </div>
             </CardContent>
           </Card>
         </div>
-
-        <Card className="h-fit w-full">
-          <CardHeader>
-            <CardTitle className="text-xl">Metrics</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div
-              className={cn(
-                "grid gap-x-4 gap-y-5 rounded-lg sm:grid-cols-3",
-                showMutationStepAxis ? "xl:grid-cols-6" : "xl:grid-cols-5"
-              )}
-            >
-              <Metric label="Step" value={formatInteger(status.current_step)} />
-              <Metric
-                label="Total elapsed"
-                value={formatDuration(status.total_elapsed_seconds)}
-              />
-              <Metric
-                label="Last iteration"
-                value={formatSeconds(status.last_iteration_seconds)}
-              />
-              <Metric label="Loss" value={status.current_loss.toFixed(4)} />
-              <Metric
-                label="Best accuracy"
-                value={`${status.best_acc.toFixed(2)}%`}
-                detail={
-                  bestAccuracyStep
-                    ? `at ${formatInteger(bestAccuracyStep)}`
-                    : undefined
-                }
-              />
-              {showMutationStepAxis ? (
-                <Metric
-                  label="Mutation step"
-                  value={formatMutationStep(mutationStepMetricValue)}
-                />
-              ) : null}
-            </div>
-            {status.error ? (
-              <div className="mt-4 rounded-lg border border-destructive/40 bg-destructive/10 p-4 text-sm text-destructive">
-                {status.error}
-              </div>
-            ) : null}
-            {status.checkpoint_warnings.length ? (
-              <div className="mt-4 rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-700 dark:text-amber-300">
-                {status.checkpoint_warnings.join(" ")}
-              </div>
-            ) : null}
-
-            <div className="mt-6 w-full">
-      <Plot
-                className="w-full"
-                data={plotData}
-                layout={plotLayout}
-                config={{
-                  displayModeBar: false,
-                  displaylogo: false,
-                  scrollZoom: false,
-                  responsive: true,
-                }}
-                useResizeHandler
-                style={{ width: "100%", height: "420px" }}
-              />
-            </div>
-          </CardContent>
-        </Card>
-      </div>
       </TabsContent>
-      <TabsContent className="mt-0 flex min-h-0 flex-1" value="analysis">
+      <TabsContent
+        className="mt-0 flex min-h-0 flex-1 overflow-hidden"
+        value="analysis"
+      >
         <AnalysisTab
           busy={analysisBusy}
           checkpoints={analysisCheckpoints}
@@ -1100,6 +1115,7 @@ function AnalysisTab({
   onLoadCheckpoint,
   onRun,
 }: AnalysisTabProps) {
+  const scrollRootRef = useRef<HTMLDivElement | null>(null)
   const canRun =
     checkpoints.left !== null &&
     checkpoints.right !== null &&
@@ -1108,7 +1124,12 @@ function AnalysisTab({
   const showSetup = report === null
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-4">
+    <div
+      className={cn(
+        "flex min-h-0 flex-1 flex-col gap-4",
+        report ? "overflow-hidden" : "overflow-y-auto pr-1"
+      )}
+    >
       {showSetup ? (
         <div className="grid gap-4 md:grid-cols-2">
           {ANALYSIS_SIDES.map((side) => (
@@ -1176,7 +1197,16 @@ function AnalysisTab({
       ) : null}
 
       {report ? (
-        <AnalysisReport plotPalette={plotPalette} report={report} />
+        <ScrollArea
+          className="min-h-0 flex-1 pr-1"
+          viewportRef={scrollRootRef}
+        >
+          <AnalysisReport
+            plotPalette={plotPalette}
+            report={report}
+            scrollRootRef={scrollRootRef}
+          />
+        </ScrollArea>
       ) : !busy ? (
         <Empty className="min-h-96 border">
           <EmptyHeader>
@@ -1296,9 +1326,11 @@ type AnalysisReportSectionId = (typeof ANALYSIS_REPORT_SECTIONS)[number]["id"]
 function AnalysisReport({
   plotPalette,
   report,
+  scrollRootRef,
 }: {
   plotPalette: PlotPalette
   report: AnalysisComparisonReport
+  scrollRootRef: RefObject<HTMLDivElement | null>
 }) {
   const [activeSection, setActiveSection] =
     useState<AnalysisReportSectionId>("overview")
@@ -1312,9 +1344,13 @@ function AnalysisReport({
 
   useEffect(() => {
     let frame = 0
+    const scrollRoot = scrollRootRef.current
     const updateActiveSection = () => {
       frame = 0
-      const activationLine = Math.min(window.innerHeight * 0.35, 240)
+      const activationLine = scrollRoot
+        ? scrollRoot.getBoundingClientRect().top +
+          Math.min(scrollRoot.clientHeight * 0.35, 240)
+        : Math.min(window.innerHeight * 0.35, 240)
       let nextActive: AnalysisReportSectionId = "overview"
 
       for (const section of ANALYSIS_REPORT_SECTIONS) {
@@ -1339,23 +1375,32 @@ function AnalysisReport({
     }
 
     updateActiveSection()
-    window.addEventListener("scroll", requestUpdate, { passive: true })
+    const scrollTarget: Window | HTMLDivElement = scrollRoot ?? window
+    scrollTarget.addEventListener("scroll", requestUpdate, { passive: true })
     window.addEventListener("resize", requestUpdate)
 
     return () => {
       if (frame !== 0) {
         window.cancelAnimationFrame(frame)
       }
-      window.removeEventListener("scroll", requestUpdate)
+      scrollTarget.removeEventListener("scroll", requestUpdate)
       window.removeEventListener("resize", requestUpdate)
     }
-  }, [report])
+  }, [report, scrollRootRef])
+
+  function selectSection(sectionId: AnalysisReportSectionId) {
+    setActiveSection(sectionId)
+    sectionRefs.current[sectionId]?.scrollIntoView({
+      block: "start",
+      behavior: "smooth",
+    })
+  }
 
   return (
     <div className="grid min-h-0 flex-1 gap-4 pb-6 lg:grid-cols-[10rem_minmax(0,1fr)] xl:grid-cols-[12rem_minmax(0,1fr)]">
       <AnalysisReportToc
         activeSection={activeSection}
-        onSelect={setActiveSection}
+        onSelect={selectSection}
       />
       <div className="grid min-w-0 gap-8">
         <AnalysisReportSection
@@ -1436,7 +1481,10 @@ function AnalysisReportToc({
                 )}
                 href={`#analysis-${section.id}`}
                 key={section.id}
-                onClick={() => onSelect(section.id)}
+                onClick={(event) => {
+                  event.preventDefault()
+                  onSelect(section.id)
+                }}
               >
                 <span
                   aria-hidden="true"
