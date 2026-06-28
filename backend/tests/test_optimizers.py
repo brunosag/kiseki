@@ -6,10 +6,13 @@ from torch import nn
 import kiseki.optimizers as optimizers
 from kiseki.models import CNN2C2DMNIST, count_parameters
 from kiseki.optimizers import (
+    CosyneConfig,
+    CosyneRunner,
     LEEAConfig,
     LEEARunner,
     SGDConfig,
     SGDRunner,
+    build_optimizer_runner,
     copy_vector_to_model,
     flatten_parameters,
 )
@@ -72,6 +75,69 @@ def test_leea_step_is_finite() -> None:
     assert math.isfinite(loss)
 
 
+def test_cosyne_step_is_finite_on_cnn_and_tiny_classifier() -> None:
+    cnn_runner = CosyneRunner(
+        CNN2C2DMNIST(),
+        CosyneConfig(
+            population_size=6,
+            mutation_stdev=0.01,
+            mutation_probability=0.2,
+            evaluation_chunk_size=2,
+        ),
+        device=torch.device("cpu"),
+        seed=7,
+    )
+    tiny_runner = CosyneRunner(
+        TinyClassifier(),
+        CosyneConfig(
+            population_size=4,
+            mutation_stdev=0.01,
+            mutation_probability=0.2,
+            evaluation_chunk_size=2,
+        ),
+        device=torch.device("cpu"),
+        seed=11,
+    )
+
+    assert math.isfinite(cnn_runner.step(*synthetic_batch()))
+    assert math.isfinite(tiny_runner.step(*tiny_batch()))
+
+
+def test_cosyne_state_round_trip_restores_generation_state() -> None:
+    config = CosyneConfig(
+        population_size=6,
+        mutation_stdev=0.02,
+        mutation_probability=0.3,
+        evaluation_chunk_size=2,
+    )
+    source = CosyneRunner(TinyClassifier(), config, device=torch.device("cpu"), seed=7)
+    source.step(*tiny_batch())
+
+    restored = CosyneRunner(TinyClassifier(), config, device=torch.device("cpu"), seed=99)
+    restored.load_state_dict(source.state_dict())
+
+    assert torch.allclose(restored.population, source.population)
+    assert torch.allclose(restored.population_losses, source.population_losses)
+    assert restored.is_first_generation == source.is_first_generation
+    assert restored.manual_evaluation_chunk_size == source.manual_evaluation_chunk_size
+    assert restored.evaluation_chunk_size == source.evaluation_chunk_size
+    assert torch.equal(restored.generator.get_state(), source.generator.get_state())
+
+
+def test_cosyne_builder_maps_zero_sbx_eta_and_children_to_none() -> None:
+    runner = build_optimizer_runner(
+        "CoSyNE",
+        TinyClassifier(),
+        {"eta_sbx": 0, "num_children": 0},
+        device=torch.device("cpu"),
+        seed=7,
+    )
+
+    assert isinstance(runner, CosyneRunner)
+    assert runner.config.sbx_eta is None
+    assert runner.config.num_children is None
+
+
 def test_leea_state_round_trip_restores_internal_generation_state() -> None:
     config = LEEAConfig(
         population_size=4,
@@ -96,6 +162,72 @@ def test_leea_state_round_trip_restores_internal_generation_state() -> None:
     assert restored.is_first_step == source.is_first_step
     assert restored.evaluation_chunk_size == source.evaluation_chunk_size
     assert torch.equal(restored.generator.get_state(), source.generator.get_state())
+
+
+def test_cosyne_elites_are_included_before_children_and_permuted_population(monkeypatch) -> None:
+    runner = CosyneRunner(
+        TinyClassifier(),
+        CosyneConfig(population_size=8, mutation_stdev=0.0, elitism_ratio=0.25),
+        device=torch.device("cpu"),
+        seed=7,
+    )
+    population = torch.arange(
+        runner.population_size * runner.num_parameters,
+        dtype=runner.population.dtype,
+    ).reshape(runner.population_size, runner.num_parameters)
+    runner.population = population
+    runner.population_losses = torch.tensor(
+        [7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0.0],
+        device=runner.device,
+    )
+    runner.is_first_generation = False
+    children = torch.full((4, runner.num_parameters), -1.0)
+    captured: list[torch.Tensor] = []
+
+    monkeypatch.setattr(runner, "_crossover", lambda parents, losses: children)
+    monkeypatch.setattr(runner, "_mutate", lambda child_batch: child_batch)
+    monkeypatch.setattr(
+        runner,
+        "_cosyne_permutation",
+        lambda current_population, losses: current_population + 100,
+    )
+
+    def fake_evaluate_vectors(
+        vectors: torch.Tensor,
+        inputs: torch.Tensor,
+        targets: torch.Tensor,
+    ) -> torch.Tensor:
+        del inputs, targets
+        captured.append(vectors.clone())
+        return torch.arange(vectors.shape[0], dtype=vectors.dtype)
+
+    monkeypatch.setattr(runner, "_evaluate_vectors", fake_evaluate_vectors)
+
+    runner.step(*tiny_batch())
+
+    merged = captured[0]
+    assert torch.equal(merged[:2], population[[7, 6]])
+    assert torch.equal(merged[2:6], children)
+    assert torch.equal(merged[6:], population + 100)
+
+
+def test_cosyne_selective_permutation_matches_evotorch_reassignment() -> None:
+    runner = CosyneRunner(
+        TinyClassifier(),
+        CosyneConfig(population_size=4, permute_all=False),
+        device=torch.device("cpu"),
+        seed=17,
+    )
+    population = torch.arange(16, dtype=runner.population.dtype).reshape(4, 4)
+    losses = torch.tensor([3.0, 0.5, 2.0, 1.0])
+
+    runner.generator = torch.Generator(device=runner.device).manual_seed(123)
+    expected_generator = torch.Generator(device=runner.device).manual_seed(123)
+
+    actual = runner._cosyne_permutation(population, losses)
+    expected = expected_cosyne_permutation(population, losses, expected_generator)
+
+    assert torch.equal(actual, expected)
 
 
 def test_leea_generic_evaluator_supports_other_models() -> None:
@@ -464,3 +596,60 @@ def test_flatten_and_copy_support_channels_last_parameters() -> None:
     assert vector.numel() == count_parameters(model)
     assert model.conv1.weight.is_contiguous(memory_format=torch.channels_last)
     assert torch.allclose(flatten_parameters(model), replacement)
+
+
+def expected_cosyne_permutation(
+    population: torch.Tensor,
+    losses: torch.Tensor,
+    generator: torch.Generator,
+) -> torch.Tensor:
+    ranks = torch.empty_like(losses)
+    sorted_indices = losses.argsort(descending=True)
+    ranks[sorted_indices] = (
+        torch.arange(losses.numel(), dtype=losses.dtype) / (losses.numel() - 1)
+    ) - 0.5
+    prob_permute = (
+        1 - (ranks + 0.5).pow(1 / float(population.shape[1]))
+    ).unsqueeze(1).expand_as(population)
+
+    perm_mask = (
+        torch.rand(
+            prob_permute.shape,
+            generator=generator,
+            device=population.device,
+            dtype=prob_permute.dtype,
+        )
+        <= prob_permute
+    )
+    perm_mask_sorted = torch.sort(
+        perm_mask.to(torch.long),
+        descending=True,
+        dim=0,
+    )[0].to(torch.bool)
+
+    perm_rand = torch.rand(
+        prob_permute.shape,
+        generator=generator,
+        device=population.device,
+        dtype=prob_permute.dtype,
+    )
+    perm_rand[torch.logical_not(perm_mask)] = 1.0
+    permutations = torch.argsort(perm_rand, dim=0)
+
+    perm_sort = (
+        torch.arange(0, perm_mask.shape[0], device=population.device)
+        .unsqueeze(-1)
+        .repeat(1, perm_mask.shape[1])
+    )
+    perm_sort[torch.logical_not(perm_mask)] += perm_mask.shape[0] + 1
+    perm_sort = torch.sort(perm_sort, dim=0)[0]
+
+    _, permutation_columns = torch.nonzero(perm_mask_sorted, as_tuple=True)
+    permutation_origin_indices = perm_sort[perm_mask_sorted]
+    permutation_target_indices = permutations[perm_mask_sorted]
+    expected = population.clone()
+    expected[permutation_origin_indices, permutation_columns] = expected[
+        permutation_target_indices,
+        permutation_columns,
+    ]
+    return expected

@@ -10,7 +10,7 @@ A PyTorch-based machine learning framework designed to investigate whether gradi
 ## Architecture and core modules
 
 * **Models:** Neural network architectures are implemented in PyTorch. The backend supports MNIST and CIFAR-10 models.
-* **Optimizers:** The framework exports `SGD` for standard gradient descent and `LEEA`, a population-based evolutionary optimization algorithm with mutation, crossover, retention, and fitness decay controls.
+* **Optimizers:** The framework exports `SGD` for standard gradient descent, `LEEA` for population-based evolutionary optimization with mutation, crossover, retention, and fitness decay controls, and `CoSyNE` for cooperative synapse neuroevolution with crossover, mutation, elitism, and permutation controls.
 * **Data handling:** The backend loads MNIST and CIFAR-10 through torchvision and creates deterministic streams when exact reproducibility is requested.
 * **Experiment management:** `ExperimentManager` coordinates model initialization, CPU/GPU device mapping, batch sizing, checkpointing, pause/resume, and early stopping based on target accuracy.
 * **Checkpoints:** Training checkpoints are stored under `backend/checkpoints/` with model state, optimizer state, status, config, runtime metadata, and JSON summaries.
@@ -38,7 +38,7 @@ backend Python process starts.
 
 The repository features a reactive web user interface built with GenieFramework and StippleLatex. The application (`scripts/app.jl`) allows users to:
 
-* Configure experiment hyperparameters, including dataset parameters, hardware device, and optimizer-specific variables (e.g., learning rate for SGD, or population size and initial mutation step size for LEEA).
+* Configure experiment hyperparameters, including dataset parameters, hardware device, and optimizer-specific variables (e.g., learning rate for SGD, population size and initial mutation step size for LEEA, or tournament and permutation settings for CoSyNE).
 * Visualize real-time training telemetry, plotting loss and accuracy metrics onto Plotly-based graphs.
 * Start, interrupt, and monitor experiments asynchronously.
 

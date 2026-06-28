@@ -14,9 +14,9 @@ export type ConfigField = {
 export type OptimizerParamField = {
   key: string
   label: string
-  type: "number"
-  default: number
-  step: number
+  type: "number" | "boolean"
+  default: number | boolean
+  step?: number | null
   desc: string
 }
 
@@ -26,6 +26,7 @@ export type SchemaResponse = {
 }
 
 export type DatasetName = "mnist" | "cifar10"
+export type OptimizerName = "LEEA" | "SGD" | "CoSyNE"
 
 export type ExperimentConfig = {
   dataset: DatasetName
@@ -36,7 +37,7 @@ export type ExperimentConfig = {
   target_acc: number
   deterministic: boolean
   checkpoint_interval: number
-  optimizer: "LEEA" | "SGD"
+  optimizer: OptimizerName
 }
 
 export type CheckpointKind = "latest" | "best"
@@ -50,7 +51,7 @@ export type CheckpointSelection = {
 export type CheckpointSummary = CheckpointSelection & {
   saved_at: string
   step: number
-  optimizer: "LEEA" | "SGD"
+  optimizer: OptimizerName
   dataset: DatasetName
   seed: number
   requested_device?: string | null
@@ -91,7 +92,7 @@ export type ExperimentStatus = {
   is_running: boolean
   is_paused: boolean
   pause_requested: boolean
-  optimizer?: "LEEA" | "SGD" | null
+  optimizer?: OptimizerName | null
   run_id?: string | null
   current_step: number
   current_loss: number
@@ -119,7 +120,8 @@ export type ExperimentStatus = {
   checkpoint_warnings: string[]
 }
 
-export type OptimizerParams = Record<string, Record<string, number>>
+export type OptimizerParamValue = number | boolean
+export type OptimizerParams = Record<string, Record<string, OptimizerParamValue>>
 
 export type TsneLearningRateMode = "auto" | "numeric"
 
@@ -384,6 +386,7 @@ export const fallbackSchema: SchemaResponse = {
       options: [
         { label: "LEEA", value: "LEEA" },
         { label: "SGD", value: "SGD" },
+        { label: "CoSyNE", value: "CoSyNE" },
       ],
     },
   },
@@ -464,6 +467,71 @@ export const fallbackSchema: SchemaResponse = {
         desc: "Validation patience threshold",
       },
     ],
+    CoSyNE: [
+      {
+        key: "N",
+        label: "N",
+        type: "number",
+        default: 1000,
+        step: 1,
+        desc: "Population size",
+      },
+      {
+        key: "k",
+        label: "k",
+        type: "number",
+        default: 4,
+        step: 1,
+        desc: "Tournament size",
+      },
+      {
+        key: "sigma_m",
+        label: "\\sigma_{\\mathrm{m}}",
+        type: "number",
+        default: 0.03,
+        step: 0.01,
+        desc: "Gaussian mutation stdev",
+      },
+      {
+        key: "p_m",
+        label: "p_{\\mathrm{m}}",
+        type: "number",
+        default: 1.0,
+        step: 0.01,
+        desc: "Mutation probability",
+      },
+      {
+        key: "permute_all",
+        label: "\\mathrm{permute\\ all}",
+        type: "boolean",
+        default: false,
+        desc: "Permute every gene column",
+      },
+      {
+        key: "rho_e",
+        label: "\\rho_{\\mathrm{e}}",
+        type: "number",
+        default: 0.01,
+        step: 0.01,
+        desc: "Elitism ratio",
+      },
+      {
+        key: "eta_sbx",
+        label: "\\eta_{\\mathrm{SBX}}",
+        type: "number",
+        default: 0,
+        step: 1,
+        desc: "SBX eta; 0 uses one-point crossover",
+      },
+      {
+        key: "num_children",
+        label: "\\mathrm{children}",
+        type: "number",
+        default: 0,
+        step: 1,
+        desc: "Children per generation; 0 uses default",
+      },
+    ],
   },
 }
 
@@ -523,9 +591,7 @@ export function configDefaults(schema: SchemaResponse): ExperimentConfig {
       schema.config_schema.checkpoint_interval,
       50
     ),
-    optimizer: selectDefault(schema.config_schema.optimizer, "LEEA") as
-      | "LEEA"
-      | "SGD",
+    optimizer: selectDefault(schema.config_schema.optimizer, "LEEA") as OptimizerName,
   }
 }
 

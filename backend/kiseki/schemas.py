@@ -15,6 +15,14 @@ RHO = "\u03c1"
 RHO_X = "\u03c1\u2093"
 LAMBDA = "\u03bb"
 TAU_PAT = "\u03c4_pat"
+TOURNAMENT_SIZE = "k"
+SIGMA_M = "sigma_m"
+COSYNE_P_M = "p_m"
+PERMUTE_ALL = "permute_all"
+RHO_E = "rho_e"
+ETA_SBX = "eta_sbx"
+NUM_CHILDREN = "num_children"
+OptimizerName = Literal["LEEA", "SGD", "CoSyNE"]
 
 
 class SelectOption(BaseModel):
@@ -33,9 +41,9 @@ class ConfigField(BaseModel):
 class OptimizerParamField(BaseModel):
     key: str
     label: str
-    type: Literal["number"] = "number"
-    default: float
-    step: float
+    type: Literal["number", "boolean"] = "number"
+    default: float | bool
+    step: float | None = None
     desc: str
 
 
@@ -46,7 +54,7 @@ class ExperimentConfig(BaseModel):
     batch_size: int = 512
     iterations: int = 100000
     target_acc: float = 100.0
-    optimizer: Literal["LEEA", "SGD"] = "LEEA"
+    optimizer: OptimizerName = "LEEA"
     deterministic: bool = False
     checkpoint_interval: int = 50
 
@@ -371,7 +379,7 @@ class AnalysisComparisonJobStatus(BaseModel):
 
 class StartExperimentRequest(BaseModel):
     config: ExperimentConfig = Field(default_factory=ExperimentConfig)
-    opt_params: dict[str, dict[str, float]] = Field(default_factory=dict)
+    opt_params: dict[str, dict[str, float | bool]] = Field(default_factory=dict)
     checkpoint: CheckpointSelection | None = None
 
 
@@ -407,7 +415,7 @@ class CheckpointSummary(BaseModel):
     kind: CheckpointKind
     saved_at: str
     step: int
-    optimizer: Literal["LEEA", "SGD"]
+    optimizer: OptimizerName
     dataset: DatasetName
     seed: int
     requested_device: str | None = None
@@ -422,7 +430,7 @@ class CheckpointSummary(BaseModel):
     reproducibility_status: str
     compatibility_warnings: list[str] = Field(default_factory=list)
     config: ExperimentConfig
-    optimizer_params: dict[str, dict[str, float]] = Field(default_factory=dict)
+    optimizer_params: dict[str, dict[str, float | bool]] = Field(default_factory=dict)
 
 
 class AccuracyPoint(BaseModel):
@@ -448,7 +456,7 @@ class ExperimentStatus(BaseModel):
     is_running: bool = False
     is_paused: bool = False
     pause_requested: bool = False
-    optimizer: Literal["LEEA", "SGD"] | None = None
+    optimizer: OptimizerName | None = None
     run_id: str | None = None
     current_step: int = 0
     current_loss: float = 0.0
@@ -511,7 +519,11 @@ CONFIG_SCHEMA: dict[str, ConfigField] = {
     "optimizer": ConfigField(
         type="select",
         label="Optimizer",
-        options=[SelectOption(label="LEEA", value="LEEA"), SelectOption(label="SGD", value="SGD")],
+        options=[
+            SelectOption(label="LEEA", value="LEEA"),
+            SelectOption(label="SGD", value="SGD"),
+            SelectOption(label="CoSyNE", value="CoSyNE"),
+        ],
     ),
 }
 
@@ -575,6 +587,58 @@ OPTIMIZERS_SCHEMA: dict[str, list[OptimizerParamField]] = {
             default=5,
             step=1,
             desc="Validation patience threshold",
+        ),
+    ],
+    "CoSyNE": [
+        OptimizerParamField(key="N", label="N", default=1000, step=1, desc="Population size"),
+        OptimizerParamField(
+            key=TOURNAMENT_SIZE,
+            label="k",
+            default=4,
+            step=1,
+            desc="Tournament size",
+        ),
+        OptimizerParamField(
+            key=SIGMA_M,
+            label=r"\sigma_{\mathrm{m}}",
+            default=0.03,
+            step=0.01,
+            desc="Gaussian mutation stdev",
+        ),
+        OptimizerParamField(
+            key=COSYNE_P_M,
+            label=r"p_{\mathrm{m}}",
+            default=1.0,
+            step=0.01,
+            desc="Mutation probability",
+        ),
+        OptimizerParamField(
+            key=PERMUTE_ALL,
+            label=r"\mathrm{permute\ all}",
+            type="boolean",
+            default=False,
+            desc="Permute every gene column",
+        ),
+        OptimizerParamField(
+            key=RHO_E,
+            label=r"\rho_{\mathrm{e}}",
+            default=0.01,
+            step=0.01,
+            desc="Elitism ratio",
+        ),
+        OptimizerParamField(
+            key=ETA_SBX,
+            label=r"\eta_{\mathrm{SBX}}",
+            default=0,
+            step=1,
+            desc="SBX eta; 0 uses one-point crossover",
+        ),
+        OptimizerParamField(
+            key=NUM_CHILDREN,
+            label=r"\mathrm{children}",
+            default=0,
+            step=1,
+            desc="Children per generation; 0 uses default",
         ),
     ],
 }

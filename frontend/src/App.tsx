@@ -121,6 +121,7 @@ import {
   type ConfigField,
   type ExperimentConfig,
   type ExperimentStatus,
+  type OptimizerParamValue,
   type OptimizerParams,
   type SchemaResponse,
   type SelectOption,
@@ -806,7 +807,7 @@ export function App() {
     setConfig((current) => ({ ...current, [key]: value }))
   }
 
-  function updateOptimizerParam(key: string, value: number) {
+  function updateOptimizerParam(key: string, value: OptimizerParamValue) {
     setOptParams((current) => ({
       ...current,
       [config.optimizer]: {
@@ -954,31 +955,55 @@ export function App() {
                       {config.optimizer} parameters
                     </h4>
                     <div className="mt-2 grid grid-cols-[max-content_auto_1fr] items-center gap-x-3 gap-y-2">
-                      {activeOptimizerSchema.map((param) => (
-                        <div className="contents" key={param.key}>
-                          <span className="text-lg">
-                            <MathLabel math={param.label} />
-                          </span>
-                          <Input
-                            className="h-8 w-24"
-                            type={param.type}
-                            step={param.step}
-                            disabled={controlsDisabled}
-                            value={
-                              optParams[config.optimizer]?.[param.key] ?? ""
-                            }
-                            onChange={(event) =>
-                              updateOptimizerParam(
-                                param.key,
-                                Number(event.currentTarget.value)
-                              )
-                            }
-                          />
-                          <Label className="text-sm font-normal text-muted-foreground">
-                            {param.desc}
-                          </Label>
-                        </div>
-                      ))}
+                      {activeOptimizerSchema.map((param) => {
+                        const value =
+                          optParams[config.optimizer]?.[param.key] ??
+                          param.default
+                        const inputId = `optimizer-${config.optimizer}-${param.key}`
+
+                        return (
+                          <div className="contents" key={param.key}>
+                            <span className="text-lg">
+                              <MathLabel math={param.label} />
+                            </span>
+                            {param.type === "boolean" ? (
+                              <div className="flex h-8 w-24 items-center">
+                                <Checkbox
+                                  checked={Boolean(value)}
+                                  disabled={controlsDisabled}
+                                  id={inputId}
+                                  onCheckedChange={(checked) =>
+                                    updateOptimizerParam(param.key, Boolean(checked))
+                                  }
+                                />
+                              </div>
+                            ) : (
+                              <Input
+                                className="h-8 w-24"
+                                type="number"
+                                step={param.step ?? 1}
+                                disabled={controlsDisabled}
+                                id={inputId}
+                                value={
+                                  typeof value === "number" ? value : ""
+                                }
+                                onChange={(event) =>
+                                  updateOptimizerParam(
+                                    param.key,
+                                    Number(event.currentTarget.value)
+                                  )
+                                }
+                              />
+                            )}
+                            <Label
+                              className="text-sm font-normal text-muted-foreground"
+                              htmlFor={inputId}
+                            >
+                              {param.desc}
+                            </Label>
+                          </div>
+                        )
+                      })}
                     </div>
                   </div>
 
@@ -3508,22 +3533,36 @@ function formatInteger(value: number): string {
 function optimizerParamEntries(
   checkpoint: CheckpointSummary,
   schema: SchemaResponse
-): [string, string, number][] {
+): [string, string, OptimizerParamValue][] {
   const params = checkpoint.optimizer_params[checkpoint.optimizer] ?? {}
   const fields = schema.optimizers_schema[checkpoint.optimizer] ?? []
   const fieldKeys = new Set(fields.map((field) => field.key))
-  const schemaEntries: [string, string, number][] = fields.flatMap((field) => {
+  const schemaEntries: [string, string, OptimizerParamValue][] = fields.flatMap((field) => {
     const value = params[field.key]
-    return Number.isFinite(value) ? [[field.key, field.label, value]] : []
+    if (field.type === "boolean") {
+      return typeof value === "boolean" ? [[field.key, field.label, value]] : []
+    }
+    return typeof value === "number" && Number.isFinite(value)
+      ? [[field.key, field.label, value]]
+      : []
   })
-  const extraEntries: [string, string, number][] = Object.entries(params)
-    .filter(([key, value]) => !fieldKeys.has(key) && Number.isFinite(value))
+  const extraEntries: [string, string, OptimizerParamValue][] = Object.entries(params)
+    .filter(
+      ([key, value]) =>
+        !fieldKeys.has(key) &&
+        ((typeof value === "number" && Number.isFinite(value)) ||
+          typeof value === "boolean")
+    )
     .map(([key, value]) => [key, key, value])
 
   return [...schemaEntries, ...extraEntries]
 }
 
-function formatParamValue(value: number): string {
+function formatParamValue(value: OptimizerParamValue): string {
+  if (typeof value === "boolean") {
+    return value ? "On" : "Off"
+  }
+
   if (Number.isInteger(value)) {
     return formatInteger(value)
   }
@@ -3776,9 +3815,13 @@ function initialMutationStepFor(
   }
 
   const value = optParams.LEEA?.[mutationStepField.key]
-  return typeof value === "number" && Number.isFinite(value)
-    ? value
-    : mutationStepField.default
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value
+  }
+
+  return typeof mutationStepField.default === "number"
+    ? mutationStepField.default
+    : undefined
 }
 
 function readStoredConfig(schema: SchemaResponse): ExperimentConfig {
@@ -3828,6 +3871,7 @@ function readStoredOptimizerParams(schema: SchemaResponse): OptimizerParams {
   return Object.fromEntries(
     Object.entries(defaults).map(([optimizer, params]) => {
       const storedParams = stored[optimizer]
+      const fields = schema.optimizers_schema[optimizer] ?? []
 
       if (!isRecord(storedParams)) {
         return [optimizer, params]
@@ -3836,10 +3880,18 @@ function readStoredOptimizerParams(schema: SchemaResponse): OptimizerParams {
       return [
         optimizer,
         Object.fromEntries(
-          Object.entries(params).map(([key, defaultValue]) => [
-            key,
-            coerceNumber(storedParams[key], defaultValue),
-          ])
+          fields.map((field) => {
+            const defaultValue = params[field.key] ?? field.default
+            const value =
+              field.type === "boolean"
+                ? coerceBoolean(storedParams[field.key], Boolean(defaultValue))
+                : coerceNumber(
+                    storedParams[field.key],
+                    typeof defaultValue === "number" ? defaultValue : 0
+                  )
+
+            return [field.key, value]
+          })
         ),
       ]
     })

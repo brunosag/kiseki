@@ -14,15 +14,22 @@ from kiseki.checkpoint import CheckpointSaver
 from kiseki.experiment import ExperimentManager
 from kiseki.schemas import (
     AccuracyPoint,
+    COSYNE_P_M,
     ETA,
     ETA_0,
+    ETA_SBX,
     GAMMA,
     LAMBDA,
+    NUM_CHILDREN,
     OPTIMIZERS_SCHEMA,
+    PERMUTE_ALL,
     P_M,
     RHO,
+    RHO_E,
     RHO_X,
+    SIGMA_M,
     TAU_PAT,
+    TOURNAMENT_SIZE,
     ExperimentConfig,
     ExperimentStatus,
 )
@@ -66,6 +73,17 @@ def test_train_defaults_match_frontend_schema() -> None:
     assert request.opt_params["LEEA"][RHO_X] == leea_defaults[RHO_X]
     assert request.opt_params["LEEA"][LAMBDA] == leea_defaults[LAMBDA]
     assert request.opt_params["LEEA"][TAU_PAT] == leea_defaults[TAU_PAT]
+
+    cosyne_request = build_start_request(TrainOptions(optimizer="CoSyNE"))
+    cosyne_defaults = {field.key: field.default for field in OPTIMIZERS_SCHEMA["CoSyNE"]}
+    assert cosyne_request.opt_params["CoSyNE"]["N"] == cosyne_defaults["N"]
+    assert cosyne_request.opt_params["CoSyNE"][TOURNAMENT_SIZE] == cosyne_defaults[TOURNAMENT_SIZE]
+    assert cosyne_request.opt_params["CoSyNE"][SIGMA_M] == cosyne_defaults[SIGMA_M]
+    assert cosyne_request.opt_params["CoSyNE"][COSYNE_P_M] == cosyne_defaults[COSYNE_P_M]
+    assert cosyne_request.opt_params["CoSyNE"][PERMUTE_ALL] == cosyne_defaults[PERMUTE_ALL]
+    assert cosyne_request.opt_params["CoSyNE"][RHO_E] == 0.01
+    assert cosyne_request.opt_params["CoSyNE"][ETA_SBX] == cosyne_defaults[ETA_SBX]
+    assert cosyne_request.opt_params["CoSyNE"][NUM_CHILDREN] == cosyne_defaults[NUM_CHILDREN]
 
 
 def test_train_argument_parsing_builds_start_request() -> None:
@@ -135,6 +153,49 @@ def test_train_argument_parsing_builds_start_request() -> None:
     }
 
 
+def test_train_cosyne_argument_parsing_builds_start_request() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(
+        [
+            "train",
+            "--device",
+            "cpu",
+            "--optimizer",
+            "CoSyNE",
+            "--iterations",
+            "20",
+            "--population-size",
+            "12",
+            "--mutation-probability",
+            "0.7",
+            "--tournament-size",
+            "5",
+            "--mutation-stdev",
+            "0.04",
+            "--permute-all",
+            "--elitism-ratio",
+            "0.2",
+            "--sbx-eta",
+            "3",
+            "--num-children",
+            "6",
+        ]
+    )
+    request = build_start_request(train_options_from_args(args))
+
+    assert request.config.optimizer == "CoSyNE"
+    assert request.opt_params["CoSyNE"] == {
+        "N": 12.0,
+        TOURNAMENT_SIZE: 5.0,
+        SIGMA_M: 0.04,
+        COSYNE_P_M: 0.7,
+        PERMUTE_ALL: True,
+        RHO_E: 0.2,
+        ETA_SBX: 3.0,
+        NUM_CHILDREN: 6.0,
+    }
+
+
 def test_train_sgd_params_and_rejects_leea_only_flags() -> None:
     request = build_start_request(
         TrainOptions(
@@ -150,10 +211,24 @@ def test_train_sgd_params_and_rejects_leea_only_flags() -> None:
     with pytest.raises(TrainError, match="--population-size"):
         build_start_request(TrainOptions(optimizer="SGD", population_size=4))
 
+    with pytest.raises(TrainError, match="--sbx-eta"):
+        build_start_request(TrainOptions(optimizer="SGD", sbx_eta=2.0))
+
 
 def test_train_leea_rejects_sgd_only_flags() -> None:
     with pytest.raises(TrainError, match="--learning-rate"):
         build_start_request(TrainOptions(optimizer="LEEA", learning_rate=0.05))
+
+    with pytest.raises(TrainError, match="--mutation-stdev"):
+        build_start_request(TrainOptions(optimizer="LEEA", mutation_stdev=0.05))
+
+
+def test_train_cosyne_rejects_incompatible_flags() -> None:
+    with pytest.raises(TrainError, match="--learning-rate"):
+        build_start_request(TrainOptions(optimizer="CoSyNE", learning_rate=0.05))
+
+    with pytest.raises(TrainError, match="--mutation-step"):
+        build_start_request(TrainOptions(optimizer="CoSyNE", mutation_step=0.05))
 
 
 def test_run_training_saves_checkpoint(tmp_path) -> None:
@@ -282,6 +357,9 @@ def test_format_status_uses_interval_stats_and_omits_checkpoint_fields() -> None
 def test_resume_rejects_trajectory_changing_overrides() -> None:
     with pytest.raises(TrainError, match="--optimizer"):
         build_resume_update(TrainOptions(resume="run-1", optimizer="SGD", iterations=10))
+
+    with pytest.raises(TrainError, match="--sbx-eta"):
+        build_resume_update(TrainOptions(resume="run-1", sbx_eta=2.0, iterations=10))
 
 
 def test_signal_handler_pauses_then_stops() -> None:

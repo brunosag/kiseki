@@ -14,15 +14,22 @@ from .checkpoint import CheckpointNotFoundError
 from .dataset_types import DatasetName
 from .experiment import ExperimentManager
 from .schemas import (
+    COSYNE_P_M,
     ETA,
     ETA_0,
+    ETA_SBX,
     GAMMA,
     LAMBDA,
+    NUM_CHILDREN,
     OPTIMIZERS_SCHEMA,
+    PERMUTE_ALL,
     P_M,
     RHO,
+    RHO_E,
     RHO_X,
+    SIGMA_M,
     TAU_PAT,
+    TOURNAMENT_SIZE,
     CheckpointSelection,
     ExperimentConfig,
     ExperimentControlsUpdate,
@@ -48,11 +55,17 @@ RESUME_BLOCKED_FIELDS = (
     "population_size",
     "mutation_probability",
     "mutation_step",
+    "mutation_stdev",
     "mutation_decay",
     "retention_fraction",
     "crossover_fraction",
     "fitness_decay",
     "validation_patience",
+    "tournament_size",
+    "permute_all",
+    "elitism_ratio",
+    "sbx_eta",
+    "num_children",
 )
 
 
@@ -76,11 +89,17 @@ class TrainOptions:
     population_size: int | None = None
     mutation_probability: float | None = None
     mutation_step: float | None = None
+    mutation_stdev: float | None = None
     mutation_decay: float | None = None
     retention_fraction: float | None = None
     crossover_fraction: float | None = None
     fitness_decay: float | None = None
     validation_patience: int | None = None
+    tournament_size: int | None = None
+    permute_all: bool | None = None
+    elitism_ratio: float | None = None
+    sbx_eta: float | None = None
+    num_children: int | None = None
     resume: str | None = None
 
 
@@ -135,11 +154,17 @@ def train_options_from_args(args: Any) -> TrainOptions:
         population_size=args.population_size,
         mutation_probability=args.mutation_probability,
         mutation_step=args.mutation_step,
+        mutation_stdev=args.mutation_stdev,
         mutation_decay=args.mutation_decay,
         retention_fraction=args.retention_fraction,
         crossover_fraction=args.crossover_fraction,
         fitness_decay=args.fitness_decay,
         validation_patience=args.validation_patience,
+        tournament_size=args.tournament_size,
+        permute_all=args.permute_all,
+        elitism_ratio=args.elitism_ratio,
+        sbx_eta=args.sbx_eta,
+        num_children=args.num_children,
         resume=args.resume,
     )
 
@@ -236,25 +261,43 @@ def build_resume_update(options: TrainOptions) -> ExperimentControlsUpdate:
     )
 
 
-def optimizer_params_for(optimizer: str, options: TrainOptions) -> dict[str, float]:
+def optimizer_params_for(optimizer: str, options: TrainOptions) -> dict[str, float | bool]:
     if optimizer == "SGD":
-        leea_fields = (
+        evolutionary_fields = (
             "population_size",
             "mutation_probability",
             "mutation_step",
+            "mutation_stdev",
             "mutation_decay",
             "retention_fraction",
             "crossover_fraction",
             "fitness_decay",
             "validation_patience",
+            "tournament_size",
+            "permute_all",
+            "elitism_ratio",
+            "sbx_eta",
+            "num_children",
         )
-        reject_optimizer_fields(leea_fields, options, optimizer)
+        reject_optimizer_fields(evolutionary_fields, options, optimizer)
         return {
             ETA: float(value_or_default(options.learning_rate, DEFAULT_OPTIMIZER_PARAMS["SGD"][ETA]))
         }
 
     if optimizer == "LEEA":
-        reject_optimizer_fields(("learning_rate",), options, optimizer)
+        reject_optimizer_fields(
+            (
+                "learning_rate",
+                "mutation_stdev",
+                "tournament_size",
+                "permute_all",
+                "elitism_ratio",
+                "sbx_eta",
+                "num_children",
+            ),
+            options,
+            optimizer,
+        )
         defaults = DEFAULT_OPTIMIZER_PARAMS["LEEA"]
         return {
             "N": float(value_or_default(options.population_size, defaults["N"])),
@@ -265,6 +308,36 @@ def optimizer_params_for(optimizer: str, options: TrainOptions) -> dict[str, flo
             RHO_X: float(value_or_default(options.crossover_fraction, defaults[RHO_X])),
             LAMBDA: float(value_or_default(options.fitness_decay, defaults[LAMBDA])),
             TAU_PAT: float(value_or_default(options.validation_patience, defaults[TAU_PAT])),
+        }
+
+    if optimizer == "CoSyNE":
+        reject_optimizer_fields(
+            (
+                "learning_rate",
+                "mutation_step",
+                "mutation_decay",
+                "retention_fraction",
+                "crossover_fraction",
+                "fitness_decay",
+                "validation_patience",
+            ),
+            options,
+            optimizer,
+        )
+        defaults = DEFAULT_OPTIMIZER_PARAMS["CoSyNE"]
+        return {
+            "N": float(value_or_default(options.population_size, defaults["N"])),
+            TOURNAMENT_SIZE: float(
+                value_or_default(options.tournament_size, defaults[TOURNAMENT_SIZE])
+            ),
+            SIGMA_M: float(value_or_default(options.mutation_stdev, defaults[SIGMA_M])),
+            COSYNE_P_M: float(
+                value_or_default(options.mutation_probability, defaults[COSYNE_P_M])
+            ),
+            PERMUTE_ALL: bool(value_or_default(options.permute_all, defaults[PERMUTE_ALL])),
+            RHO_E: float(value_or_default(options.elitism_ratio, defaults[RHO_E])),
+            ETA_SBX: float(value_or_default(options.sbx_eta, defaults[ETA_SBX])),
+            NUM_CHILDREN: float(value_or_default(options.num_children, defaults[NUM_CHILDREN])),
         }
 
     raise TrainError(f"Unsupported optimizer: {optimizer}")
@@ -278,7 +351,10 @@ def reject_optimizer_fields(fields: Sequence[str], options: TrainOptions, optimi
     raise TrainError(f"{rejected_text} cannot be used with --optimizer {optimizer}.")
 
 
-def value_or_default(value: int | float | None, default: int | float) -> int | float:
+def value_or_default(
+    value: int | float | bool | None,
+    default: int | float | bool,
+) -> int | float | bool:
     return default if value is None else value
 
 

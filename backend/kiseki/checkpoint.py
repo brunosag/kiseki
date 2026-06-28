@@ -219,7 +219,7 @@ class CheckpointSaver:
         config: ExperimentConfig,
         optimizer: str,
         run_id: str | None = None,
-        optimizer_params: dict[str, dict[str, float]] | None = None,
+        optimizer_params: dict[str, dict[str, float | bool]] | None = None,
         optimizer_state: dict[str, Any] | None = None,
         loader_state: dict[str, Any] | None = None,
         rng_state: dict[str, Any] | None = None,
@@ -293,7 +293,7 @@ def checkpoint_metadata(
     status: ExperimentStatus,
     config: ExperimentConfig,
     optimizer: str,
-    optimizer_params: dict[str, dict[str, float]],
+    optimizer_params: dict[str, dict[str, float | bool]],
     runtime_manifest: dict[str, Any],
     compatibility_warnings: list[str],
 ) -> dict[str, Any]:

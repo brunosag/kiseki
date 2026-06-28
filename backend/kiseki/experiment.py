@@ -539,7 +539,7 @@ class ExperimentManager:
         train_batches: Any,
         run_id: str,
         config: ExperimentConfig,
-        opt_params: dict[str, dict[str, float]],
+        opt_params: dict[str, dict[str, float | bool]],
         device: torch.device,
         checkpoint_accuracy: float | None,
     ) -> ExperimentStatus:
