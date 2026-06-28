@@ -209,6 +209,11 @@ type MultiAxisLayout = Partial<Layout> & {
   yaxis3?: Record<string, unknown>
 }
 
+type PlotLegendItem = {
+  color: string
+  label: string
+}
+
 const fallbackPlotPalettes: Record<ResolvedTheme, PlotPalette> = {
   light: {
     accuracy: "#2563eb",
@@ -236,6 +241,18 @@ const fallbackPlotPalettes: Record<ResolvedTheme, PlotPalette> = {
 
 const LONG_CHECKPOINT_DELETE_SECONDS = 600
 const ANALYSIS_SIDES: AnalysisSide[] = ["left", "right"]
+const EMBEDDING_CLASS_COLORS = [
+  "#2563eb",
+  "#dc2626",
+  "#16a34a",
+  "#d97706",
+  "#7c3aed",
+  "#0891b2",
+  "#be123c",
+  "#65a30d",
+  "#c026d3",
+  "#4f46e5",
+]
 const DEFAULT_ANALYSIS_PARAMS: AnalysisComparisonParams = {
   tsne_perplexity: 30,
   tsne_max_iter: 1000,
@@ -1617,16 +1634,48 @@ function AnalysisEmbeddingsView({
   plotPalette: PlotPalette
   report: AnalysisComparisonReport
 }) {
+  const tsneLeftData = embeddingSideData(
+    report.embeddings.tsne.left,
+    "left",
+    report.left.dataset
+  )
+  const tsneRightData = embeddingSideData(
+    report.embeddings.tsne.right,
+    "right",
+    report.right.dataset
+  )
+  const pcaData = embeddingData(report.embeddings.pca, report.left.dataset)
+
   return (
     <div className="grid gap-4 xl:grid-cols-2">
       <ReportPlot
-        data={embeddingData(report.embeddings.pca, "PCA")}
-        layout={embeddingLayout("Joint PCA", plotPalette)}
+        className="xl:aspect-[5/3] xl:h-auto"
+        data={tsneLeftData}
+        layout={embeddingLayout("t-SNE Model A", plotPalette)}
+        legendItems={embeddingLegendItems(
+          report.embeddings.tsne.left,
+          report.left.dataset
+        )}
       />
       <ReportPlot
-        data={embeddingData(report.embeddings.tsne, "t-SNE")}
-        layout={embeddingLayout("Joint t-SNE", plotPalette)}
+        className="xl:aspect-[5/3] xl:h-auto"
+        data={tsneRightData}
+        layout={embeddingLayout("t-SNE Model B", plotPalette)}
+        legendItems={embeddingLegendItems(
+          report.embeddings.tsne.right,
+          report.right.dataset
+        )}
       />
+      <div className="xl:col-span-2">
+        <ReportPlot
+          data={pcaData}
+          layout={embeddingLayout("Joint PCA", plotPalette)}
+          legendItems={embeddingLegendItems(
+            [...report.embeddings.pca.left, ...report.embeddings.pca.right],
+            report.left.dataset
+          )}
+        />
+      </div>
     </div>
   )
 }
@@ -1772,22 +1821,49 @@ function PerClassMetricTable({ report }: { report: AnalysisComparisonReport }) {
   )
 }
 
-function ReportPlot({ data, layout }: { data: Data[]; layout: Partial<Layout> }) {
+function ReportPlot({
+  className,
+  data,
+  layout,
+  legendItems,
+}: {
+  className?: string
+  data: Data[]
+  layout: Partial<Layout>
+  legendItems?: PlotLegendItem[]
+}) {
+  const plotLayout = legendItems ? { ...layout, showlegend: false } : layout
+
   return (
-    <div className="min-h-[24rem] rounded-lg border p-2">
-      <Plot
-        className="h-full w-full"
-        config={{
-          displayModeBar: false,
-          displaylogo: false,
-          responsive: true,
-          scrollZoom: false,
-        }}
-        data={data}
-        layout={layout}
-        style={{ height: "24rem", width: "100%" }}
-        useResizeHandler
-      />
+    <div className={cn("flex h-[24rem] flex-col rounded-lg border p-2", className)}>
+      <div className="min-h-0 flex-1">
+        <Plot
+          className="h-full w-full"
+          config={{
+            displayModeBar: false,
+            displaylogo: false,
+            responsive: true,
+            scrollZoom: false,
+          }}
+          data={data}
+          layout={plotLayout}
+          style={{ height: "100%", width: "100%" }}
+          useResizeHandler
+        />
+      </div>
+      {legendItems ? (
+        <div className="flex shrink-0 flex-wrap items-center justify-center gap-x-5 gap-y-1 pb-1 pt-2 text-xs text-muted-foreground">
+          {legendItems.map((item) => (
+            <span className="inline-flex items-center gap-2" key={item.label}>
+              <span
+                className="size-1 rounded-full"
+                style={{ backgroundColor: item.color }}
+              />
+              {item.label}
+            </span>
+          ))}
+        </div>
+      ) : null}
     </div>
   )
 }
@@ -2805,20 +2881,77 @@ function calibrationData(report: AnalysisComparisonReport): Data[] {
   ]
 }
 
+type AnalysisEmbeddingPlotPoint =
+  AnalysisEmbeddingProjection["left"][number] & {
+    side: AnalysisSide
+  }
+
+function embeddingSideData(
+  points: AnalysisEmbeddingProjection["left"],
+  side: AnalysisSide,
+  dataset: CheckpointSummary["dataset"]
+): Data[] {
+  return embeddingClassData(
+    points.map((point) => ({ ...point, side })),
+    dataset
+  )
+}
+
 function embeddingData(
   projection: AnalysisEmbeddingProjection,
-  name: string
+  dataset: CheckpointSummary["dataset"]
 ): Data[] {
-  return [
-    embeddingTrace(projection.left, `${name} Model A`, "#2563eb"),
-    embeddingTrace(projection.right, `${name} Model B`, "#dc2626"),
+  const points: AnalysisEmbeddingPlotPoint[] = [
+    ...projection.left.map((point) => ({ ...point, side: "left" as const })),
+    ...projection.right.map((point) => ({ ...point, side: "right" as const })),
   ]
+
+  return embeddingClassData(points, dataset)
+}
+
+function embeddingClassData(
+  points: AnalysisEmbeddingPlotPoint[],
+  dataset: CheckpointSummary["dataset"]
+): Data[] {
+  const grouped = new Map<number, AnalysisEmbeddingPlotPoint[]>()
+  for (const point of points) {
+    const group = grouped.get(point.label)
+    if (group) {
+      group.push(point)
+    } else {
+      grouped.set(point.label, [point])
+    }
+  }
+
+  return Array.from(grouped.entries())
+    .sort(([leftLabel], [rightLabel]) => leftLabel - rightLabel)
+    .map(([label, classPoints]) =>
+      embeddingTrace(
+        classPoints,
+        classLabelFor(dataset, label),
+        embeddingClassColor(label),
+        dataset
+      )
+    )
+}
+
+function embeddingLegendItems(
+  points: AnalysisEmbeddingProjection["left"],
+  dataset: CheckpointSummary["dataset"]
+): PlotLegendItem[] {
+  return Array.from(new Set(points.map((point) => point.label)))
+    .sort((leftLabel, rightLabel) => leftLabel - rightLabel)
+    .map((label) => ({
+      color: embeddingClassColor(label),
+      label: classLabelFor(dataset, label),
+    }))
 }
 
 function embeddingTrace(
-  points: AnalysisEmbeddingProjection["left"],
+  points: AnalysisEmbeddingPlotPoint[],
   name: string,
-  color: string
+  color: string,
+  dataset: CheckpointSummary["dataset"]
 ): Data {
   return {
     type: "scattergl",
@@ -2827,14 +2960,26 @@ function embeddingTrace(
     x: points.map((point) => point.x),
     y: points.map((point) => point.y),
     customdata: points.map((point) => [
-      point.label,
-      point.prediction,
+      sideLabel(point.side),
+      classLabelFor(dataset, point.label),
+      classLabelFor(dataset, point.prediction),
       point.correct ? "correct" : "incorrect",
     ]),
     hovertemplate:
-      "<b>%{fullData.name}</b><br>Label %{customdata[0]}<br>Prediction %{customdata[1]}<br>%{customdata[2]}<extra></extra>",
-    marker: { color, opacity: 0.58, size: 4 },
+      "<b>%{customdata[0]}</b><br>Class %{customdata[1]}<br>Prediction %{customdata[2]}<br>%{customdata[3]}<extra></extra>",
+    marker: {
+      color,
+      opacity: 0.58,
+      size: 2.5,
+      symbol: points.map((point) => (point.side === "left" ? "circle" : "x")),
+    },
   }
+}
+
+function embeddingClassColor(label: number): string {
+  return EMBEDDING_CLASS_COLORS[
+    Math.abs(label) % EMBEDDING_CLASS_COLORS.length
+  ]
 }
 
 function robustnessData(report: AnalysisComparisonReport): Data[] {
@@ -2943,6 +3088,8 @@ function embeddingLayout(title: string, plotPalette: PlotPalette): Partial<Layou
   return {
     ...plotLayout(title, plotPalette),
     dragmode: "pan",
+    height: undefined,
+    margin: { b: 24, l: 48, r: 36, t: 42 },
     xaxis: { visible: false },
     yaxis: { visible: false },
   }
