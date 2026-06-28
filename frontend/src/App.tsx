@@ -5,6 +5,7 @@ import {
   AlertTriangle,
   ArrowDown,
   ArrowUpDown,
+  CircleHelp,
   Funnel,
   FolderOpen,
   LoaderCircle,
@@ -63,6 +64,11 @@ import {
   EmptyMedia,
   EmptyTitle,
 } from "@/components/ui/empty"
+import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from "@/components/ui/hover-card"
 import { Input } from "@/components/ui/input"
 import {
   InputGroup,
@@ -139,6 +145,13 @@ const Plot = (
     default: ComponentType<PlotParams>
   }
 ).default
+
+const OPTIMIZER_PARAM_HELP: Record<string, string> = {
+  eta_sbx: "0 uses one-point crossover; positive values use SBX.",
+  num_children: "0 uses the automatic CoSyNE child count.",
+  permute_all:
+    "If enabled, permutes every parameter column rather than rank-selective columns.",
+}
 
 const configOrder: (keyof ExperimentConfig)[] = [
   "dataset",
@@ -960,6 +973,7 @@ export function App() {
                           optParams[config.optimizer]?.[param.key] ??
                           param.default
                         const inputId = `optimizer-${config.optimizer}-${param.key}`
+                        const helpText = OPTIMIZER_PARAM_HELP[param.key]
 
                         return (
                           <div className="contents" key={param.key}>
@@ -995,12 +1009,35 @@ export function App() {
                                 }
                               />
                             )}
-                            <Label
-                              className="text-sm font-normal text-muted-foreground"
-                              htmlFor={inputId}
-                            >
-                              {param.desc}
-                            </Label>
+                            <div className="flex min-w-0 items-center gap-1.5">
+                              <Label
+                                className="min-w-0 text-sm font-normal text-muted-foreground"
+                                htmlFor={inputId}
+                              >
+                                {param.desc}
+                              </Label>
+                              {helpText ? (
+                                <HoverCard openDelay={150} closeDelay={100}>
+                                  <HoverCardTrigger asChild>
+                                    <Button
+                                      aria-label={`About ${param.desc}`}
+                                      className="size-5 text-muted-foreground/60 hover:text-muted-foreground"
+                                      size="icon-xs"
+                                      type="button"
+                                      variant="ghost"
+                                    >
+                                      <CircleHelp className="size-3.5" />
+                                    </Button>
+                                  </HoverCardTrigger>
+                                  <HoverCardContent
+                                    align="start"
+                                    className="w-72 text-center leading-relaxed text-muted-foreground"
+                                  >
+                                    {helpText}
+                                  </HoverCardContent>
+                                </HoverCard>
+                              ) : null}
+                            </div>
                           </div>
                         )
                       })}
