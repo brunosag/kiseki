@@ -192,6 +192,7 @@ type CheckpointOptimizerFilter = ExperimentConfig["optimizer"] | "all"
 type CheckpointDatasetFilter = ExperimentConfig["dataset"] | "all"
 type AppTab = "training" | "analysis"
 type AnalysisSide = "left" | "right"
+type AnalysisSideLabels = Record<AnalysisSide, string>
 
 type PlotPalette = {
   accuracy: string
@@ -1139,6 +1140,7 @@ function AnalysisTab({
     comparisonError === null &&
     !busy
   const showSetup = report === null
+  const reportSideLabels = report ? analysisSideLabels(report) : undefined
 
   return (
     <div
@@ -1189,7 +1191,9 @@ function AnalysisTab({
           <AlertTriangle className="size-4" />
           <AlertTitle>Cached report is stale</AlertTitle>
           <AlertDescription>
-            Changed checkpoint side: {job.stale_sides.map(sideLabel).join(", ")}.
+            {`Changed checkpoint side: ${job.stale_sides
+              .map((side) => sideLabel(side, reportSideLabels))
+              .join(", ")}.`}
           </AlertDescription>
           <AlertAction>
             <Button
@@ -1351,6 +1355,7 @@ function AnalysisReport({
 }) {
   const [activeSection, setActiveSection] =
     useState<AnalysisReportSectionId>("overview")
+  const sideLabels = analysisSideLabels(report)
   const sectionRefs = useRef<Record<AnalysisReportSectionId, HTMLElement | null>>({
     overview: null,
     metrics: null,
@@ -1427,7 +1432,11 @@ function AnalysisReport({
           }}
           title="Overview"
         >
-          <AnalysisOverview plotPalette={plotPalette} report={report} />
+          <AnalysisOverview
+            plotPalette={plotPalette}
+            report={report}
+            sideLabels={sideLabels}
+          />
         </AnalysisReportSection>
         <AnalysisReportSection
           id="metrics"
@@ -1436,7 +1445,11 @@ function AnalysisReport({
           }}
           title="Metrics"
         >
-          <AnalysisMetrics plotPalette={plotPalette} report={report} />
+          <AnalysisMetrics
+            plotPalette={plotPalette}
+            report={report}
+            sideLabels={sideLabels}
+          />
         </AnalysisReportSection>
         <AnalysisReportSection
           id="embeddings"
@@ -1445,7 +1458,11 @@ function AnalysisReport({
           }}
           title="Embeddings"
         >
-          <AnalysisEmbeddingsView plotPalette={plotPalette} report={report} />
+          <AnalysisEmbeddingsView
+            plotPalette={plotPalette}
+            report={report}
+            sideLabels={sideLabels}
+          />
         </AnalysisReportSection>
         <AnalysisReportSection
           id="lrp"
@@ -1454,7 +1471,7 @@ function AnalysisReport({
           }}
           title="LRP"
         >
-          <AnalysisLrpView report={report} />
+          <AnalysisLrpView report={report} sideLabels={sideLabels} />
         </AnalysisReportSection>
         <AnalysisReportSection
           id="robustness"
@@ -1463,7 +1480,11 @@ function AnalysisReport({
           }}
           title="Robustness"
         >
-          <AnalysisRobustnessView plotPalette={plotPalette} report={report} />
+          <AnalysisRobustnessView
+            plotPalette={plotPalette}
+            report={report}
+            sideLabels={sideLabels}
+          />
         </AnalysisReportSection>
       </div>
     </div>
@@ -1548,19 +1569,21 @@ function AnalysisReportSection({
 function AnalysisOverview({
   plotPalette,
   report,
+  sideLabels,
 }: {
   plotPalette: PlotPalette
   report: AnalysisComparisonReport
+  sideLabels: AnalysisSideLabels
 }) {
   return (
     <div className="grid gap-4">
       <div className="grid gap-3 md:grid-cols-4">
         <ReportMetric
-          label="Model A accuracy"
+          label={`${sideLabel("left", sideLabels)} accuracy`}
           value={formatOptionalPercent(report.metrics.left.accuracy)}
         />
         <ReportMetric
-          label="Model B accuracy"
+          label={`${sideLabel("right", sideLabels)} accuracy`}
           value={formatOptionalPercent(report.metrics.right.accuracy)}
         />
         <ReportMetric
@@ -1573,19 +1596,24 @@ function AnalysisOverview({
         />
       </div>
       <div className="grid gap-4 xl:grid-cols-2">
-        <AnalysisRowsTable rows={report.metadata} title="Checkpoints" />
+        <AnalysisRowsTable
+          rows={report.metadata}
+          sideLabels={sideLabels}
+          title="Checkpoints"
+        />
         <AnalysisRowsTable
           rows={report.runtime.rows.filter((row) => row.label !== "Steps")}
+          sideLabels={sideLabels}
           title="Runtime"
         />
       </div>
       <div className="grid gap-4 xl:grid-cols-2">
         <ReportPlot
-          data={trainingCurveData(report)}
+          data={trainingCurveData(report, sideLabels)}
           layout={plotLayout("Training History", plotPalette)}
         />
         <ReportPlot
-          data={overlapData(report)}
+          data={overlapData(report, sideLabels)}
           layout={plotLayout("Outcome Overlap", plotPalette)}
         />
       </div>
@@ -1596,32 +1624,54 @@ function AnalysisOverview({
 function AnalysisMetrics({
   plotPalette,
   report,
+  sideLabels,
 }: {
   plotPalette: PlotPalette
   report: AnalysisComparisonReport
+  sideLabels: AnalysisSideLabels
 }) {
+  const confusionDeltaLabel = `${sideShortLabel(
+    "left",
+    sideLabels
+  )} - ${sideShortLabel("right", sideLabels)}`
+
   return (
     <div className="grid gap-4">
       <div className="grid gap-4 xl:grid-cols-3">
         <ReportPlot
-          data={confusionData(report.metrics.left.confusion_matrix, "Model A")}
-          layout={heatmapLayout("Model A Confusion", plotPalette)}
+          data={confusionData(
+            report.metrics.left.confusion_matrix,
+            sideLabel("left", sideLabels)
+          )}
+          layout={heatmapLayout(
+            `${sideLabel("left", sideLabels)} Confusion`,
+            plotPalette
+          )}
         />
         <ReportPlot
-          data={confusionData(report.metrics.right.confusion_matrix, "Model B")}
-          layout={heatmapLayout("Model B Confusion", plotPalette)}
+          data={confusionData(
+            report.metrics.right.confusion_matrix,
+            sideLabel("right", sideLabels)
+          )}
+          layout={heatmapLayout(
+            `${sideLabel("right", sideLabels)} Confusion`,
+            plotPalette
+          )}
         />
         <ReportPlot
-          data={confusionData(report.confusion_difference, "A - B")}
-          layout={heatmapLayout("Confusion Delta", plotPalette)}
+          data={confusionData(report.confusion_difference, confusionDeltaLabel)}
+          layout={heatmapLayout(
+            `Confusion Delta (${confusionDeltaLabel})`,
+            plotPalette
+          )}
         />
       </div>
       <div className="grid gap-4 xl:grid-cols-2">
         <ReportPlot
-          data={calibrationData(report)}
+          data={calibrationData(report, sideLabels)}
           layout={plotLayout("Calibration", plotPalette)}
         />
-        <PerClassMetricTable report={report} />
+        <PerClassMetricTable report={report} sideLabels={sideLabels} />
       </div>
     </div>
   )
@@ -1630,28 +1680,39 @@ function AnalysisMetrics({
 function AnalysisEmbeddingsView({
   plotPalette,
   report,
+  sideLabels,
 }: {
   plotPalette: PlotPalette
   report: AnalysisComparisonReport
+  sideLabels: AnalysisSideLabels
 }) {
   const tsneLeftData = embeddingSideData(
     report.embeddings.tsne.left,
     "left",
-    report.left.dataset
+    report.left.dataset,
+    sideLabels
   )
   const tsneRightData = embeddingSideData(
     report.embeddings.tsne.right,
     "right",
-    report.right.dataset
+    report.right.dataset,
+    sideLabels
   )
-  const pcaData = embeddingData(report.embeddings.pca, report.left.dataset)
+  const pcaData = embeddingData(
+    report.embeddings.pca,
+    report.left.dataset,
+    sideLabels
+  )
 
   return (
     <div className="grid gap-4 xl:grid-cols-2">
       <ReportPlot
         className="xl:aspect-[5/3] xl:h-auto"
         data={tsneLeftData}
-        layout={embeddingLayout("t-SNE Model A", plotPalette)}
+        layout={embeddingLayout(
+          `t-SNE ${sideLabel("left", sideLabels)}`,
+          plotPalette
+        )}
         legendItems={embeddingLegendItems(
           report.embeddings.tsne.left,
           report.left.dataset
@@ -1660,7 +1721,10 @@ function AnalysisEmbeddingsView({
       <ReportPlot
         className="xl:aspect-[5/3] xl:h-auto"
         data={tsneRightData}
-        layout={embeddingLayout("t-SNE Model B", plotPalette)}
+        layout={embeddingLayout(
+          `t-SNE ${sideLabel("right", sideLabels)}`,
+          plotPalette
+        )}
         legendItems={embeddingLegendItems(
           report.embeddings.tsne.right,
           report.right.dataset
@@ -1680,7 +1744,13 @@ function AnalysisEmbeddingsView({
   )
 }
 
-function AnalysisLrpView({ report }: { report: AnalysisComparisonReport }) {
+function AnalysisLrpView({
+  report,
+  sideLabels,
+}: {
+  report: AnalysisComparisonReport
+  sideLabels: AnalysisSideLabels
+}) {
   if (report.lrp.samples.length === 0) {
     return (
       <Empty className="min-h-72 border">
@@ -1700,6 +1770,7 @@ function AnalysisLrpView({ report }: { report: AnalysisComparisonReport }) {
             dataset={report.left.dataset}
             key={sample.index}
             sample={sample}
+            sideLabels={sideLabels}
           />
         ))}
       </div>
@@ -1723,19 +1794,21 @@ function AnalysisLrpView({ report }: { report: AnalysisComparisonReport }) {
 function AnalysisRobustnessView({
   plotPalette,
   report,
+  sideLabels,
 }: {
   plotPalette: PlotPalette
   report: AnalysisComparisonReport
+  sideLabels: AnalysisSideLabels
 }) {
   return (
     <div className="grid gap-4">
       <ReportPlot
-        data={robustnessData(report)}
+        data={robustnessData(report, sideLabels)}
         layout={plotLayout("Robustness", plotPalette)}
       />
       <div className="grid gap-4 xl:grid-cols-2">
         <ReportPlot
-          data={activationData(report)}
+          data={activationData(report, sideLabels)}
           layout={plotLayout("Activation Sparsity", plotPalette)}
         />
         <ReportPlot
@@ -1758,9 +1831,11 @@ function ReportMetric({ label, value }: { label: string; value: string }) {
 
 function AnalysisRowsTable({
   rows,
+  sideLabels,
   title,
 }: {
   rows: AnalysisTableRow[]
+  sideLabels: AnalysisSideLabels
   title: string
 }) {
   return (
@@ -1770,8 +1845,8 @@ function AnalysisRowsTable({
         <TableHeader>
           <TableRow>
             <TableHead>Field</TableHead>
-            <TableHead>Model A</TableHead>
-            <TableHead>Model B</TableHead>
+            <TableHead>{sideLabel("left", sideLabels)}</TableHead>
+            <TableHead>{sideLabel("right", sideLabels)}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
@@ -1788,7 +1863,13 @@ function AnalysisRowsTable({
   )
 }
 
-function PerClassMetricTable({ report }: { report: AnalysisComparisonReport }) {
+function PerClassMetricTable({
+  report,
+  sideLabels,
+}: {
+  report: AnalysisComparisonReport
+  sideLabels: AnalysisSideLabels
+}) {
   return (
     <div className="rounded-lg border p-3">
       <div className="mb-2 text-sm font-medium">Per-class F1</div>
@@ -1797,8 +1878,8 @@ function PerClassMetricTable({ report }: { report: AnalysisComparisonReport }) {
           <TableHeader>
             <TableRow>
               <TableHead>Class</TableHead>
-              <TableHead>Model A</TableHead>
-              <TableHead>Model B</TableHead>
+              <TableHead>{sideLabel("left", sideLabels)}</TableHead>
+              <TableHead>{sideLabel("right", sideLabels)}</TableHead>
               <TableHead>Support</TableHead>
             </TableRow>
           </TableHeader>
@@ -1871,9 +1952,11 @@ function ReportPlot({
 function LrpSampleCard({
   dataset,
   sample,
+  sideLabels,
 }: {
   dataset: CheckpointSummary["dataset"]
   sample: AnalysisLrpSample
+  sideLabels: AnalysisSideLabels
 }) {
   return (
     <div className="rounded-lg border p-3">
@@ -1883,23 +1966,25 @@ function LrpSampleCard({
             {classLabelFor(dataset, sample.label)}
           </div>
           <div className="truncate text-xs text-muted-foreground">
-            #{sample.index} · {sample.group.replaceAll("_", " ")}
+            #{sample.index} · {overlapSetLabel(sample.group, sideLabels)}
           </div>
         </div>
         <Badge variant="outline">
-          A {classLabelFor(dataset, sample.left_prediction)} · B{" "}
+          {sideShortLabel("left", sideLabels)}{" "}
+          {classLabelFor(dataset, sample.left_prediction)} ·{" "}
+          {sideShortLabel("right", sideLabels)}{" "}
           {classLabelFor(dataset, sample.right_prediction)}
         </Badge>
       </div>
       <div className="grid grid-cols-3 gap-2">
         <LrpCanvasPanel
           image={sample.image}
-          label="Model A"
+          label={sideLabel("left", sideLabels)}
           relevance={sample.left_relevance}
         />
         <LrpCanvasPanel
           image={sample.image}
-          label="Model B"
+          label={sideLabel("right", sideLabels)}
           relevance={sample.right_relevance}
         />
         <LrpCanvasPanel
@@ -1910,11 +1995,11 @@ function LrpSampleCard({
       </div>
       <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
         <CheckpointMetric
-          label="A conf."
+          label={`${sideShortLabel("left", sideLabels)} conf.`}
           value={formatOptionalPercent(sample.left_confidence * 100)}
         />
         <CheckpointMetric
-          label="B conf."
+          label={`${sideShortLabel("right", sideLabels)} conf.`}
           value={formatOptionalPercent(sample.right_confidence * 100)}
         />
       </div>
@@ -2762,7 +2847,11 @@ function comparisonSelectionError(
     return null
   }
   if (checkpoints.left.dataset !== checkpoints.right.dataset) {
-    return "Model A and Model B must use the same dataset"
+    const sideLabels = checkpointSideLabels(checkpoints.left, checkpoints.right)
+    return `${sideLabel("left", sideLabels)} and ${sideLabel(
+      "right",
+      sideLabels
+    )} must use the same dataset`
   }
   return null
 }
@@ -2784,16 +2873,71 @@ function isFiniteInRange(value: number, min: number, max: number): boolean {
   return Number.isFinite(value) && value >= min && value <= max
 }
 
-function sideLabel(side: AnalysisSide): string {
-  return side === "left" ? "Model A" : "Model B"
+function analysisSideLabels(report: AnalysisComparisonReport): AnalysisSideLabels {
+  return checkpointSideLabels(report.left, report.right)
 }
 
-function trainingCurveData(report: AnalysisComparisonReport): Data[] {
+function checkpointSideLabels(
+  left: CheckpointSummary,
+  right: CheckpointSummary
+): AnalysisSideLabels {
+  if (left.optimizer !== right.optimizer) {
+    return { left: left.optimizer, right: right.optimizer }
+  }
+  return { left: "Model A", right: "Model B" }
+}
+
+function sideLabel(
+  side: AnalysisSide,
+  sideLabels?: AnalysisSideLabels
+): string {
+  return sideLabels?.[side] ?? (side === "left" ? "Model A" : "Model B")
+}
+
+function sideShortLabel(
+  side: AnalysisSide,
+  sideLabels?: AnalysisSideLabels
+): string {
+  const label = sideLabel(side, sideLabels)
+  if (label === "Model A") {
+    return "A"
+  }
+  if (label === "Model B") {
+    return "B"
+  }
+  return label
+}
+
+function overlapSetLabel(set: string, sideLabels: AnalysisSideLabels): string {
+  switch (set) {
+    case "correct_both":
+      return "Both correct"
+    case "left_only_correct":
+      return `${sideLabel("left", sideLabels)} only correct`
+    case "right_only_correct":
+      return `${sideLabel("right", sideLabels)} only correct`
+    case "error_both_same_prediction":
+      return "Both incorrect, same prediction"
+    case "error_both_different_prediction":
+      return "Both incorrect, different predictions"
+    case "disagreement":
+      return "Disagreement"
+    case "disagreements":
+      return "Disagreements"
+    default:
+      return set.replaceAll("_", " ")
+  }
+}
+
+function trainingCurveData(
+  report: AnalysisComparisonReport,
+  sideLabels: AnalysisSideLabels
+): Data[] {
   return [
     {
       type: "scatter",
       mode: traceMode(report.curves.left.training_loss.length),
-      name: "A train loss",
+      name: `${sideShortLabel("left", sideLabels)} train loss`,
       x: report.curves.left.training_loss.map((_, index) => index + 1),
       y: report.curves.left.training_loss,
       line: { color: "#2563eb", width: 1.5 },
@@ -2801,7 +2945,7 @@ function trainingCurveData(report: AnalysisComparisonReport): Data[] {
     {
       type: "scatter",
       mode: traceMode(report.curves.right.training_loss.length),
-      name: "B train loss",
+      name: `${sideShortLabel("right", sideLabels)} train loss`,
       x: report.curves.right.training_loss.map((_, index) => index + 1),
       y: report.curves.right.training_loss,
       line: { color: "#dc2626", width: 1.5 },
@@ -2809,7 +2953,7 @@ function trainingCurveData(report: AnalysisComparisonReport): Data[] {
     {
       type: "scatter",
       mode: accuracyTraceMode(report.curves.left.validation_accuracy.length),
-      name: "A val acc.",
+      name: `${sideShortLabel("left", sideLabels)} val acc.`,
       x: report.curves.left.validation_accuracy.map((point) => point.i),
       y: report.curves.left.validation_accuracy.map((point) => point.value),
       yaxis: "y2",
@@ -2818,7 +2962,7 @@ function trainingCurveData(report: AnalysisComparisonReport): Data[] {
     {
       type: "scatter",
       mode: accuracyTraceMode(report.curves.right.validation_accuracy.length),
-      name: "B val acc.",
+      name: `${sideShortLabel("right", sideLabels)} val acc.`,
       x: report.curves.right.validation_accuracy.map((point) => point.i),
       y: report.curves.right.validation_accuracy.map((point) => point.value),
       yaxis: "y2",
@@ -2827,13 +2971,18 @@ function trainingCurveData(report: AnalysisComparisonReport): Data[] {
   ]
 }
 
-function overlapData(report: AnalysisComparisonReport): Data[] {
+function overlapData(
+  report: AnalysisComparisonReport,
+  sideLabels: AnalysisSideLabels
+): Data[] {
   return [
     {
       type: "bar",
       orientation: "h",
       x: report.overlap.upset.map((row) => row.count),
-      y: report.overlap.upset.map((row) => row.set.replaceAll("_", " ")),
+      y: report.overlap.upset.map((row) =>
+        overlapSetLabel(row.set, sideLabels)
+      ),
       marker: { color: "#2563eb" },
     },
   ]
@@ -2852,12 +3001,15 @@ function confusionData(matrix: number[][], name: string): Data[] {
   ]
 }
 
-function calibrationData(report: AnalysisComparisonReport): Data[] {
+function calibrationData(
+  report: AnalysisComparisonReport,
+  sideLabels: AnalysisSideLabels
+): Data[] {
   return [
     {
       type: "scatter",
       mode: "lines+markers",
-      name: "Model A",
+      name: sideLabel("left", sideLabels),
       x: report.metrics.left.calibration.bins.map((bin) => bin.confidence),
       y: report.metrics.left.calibration.bins.map((bin) => bin.accuracy),
       line: { color: "#2563eb", width: 1.5 },
@@ -2865,7 +3017,7 @@ function calibrationData(report: AnalysisComparisonReport): Data[] {
     {
       type: "scatter",
       mode: "lines+markers",
-      name: "Model B",
+      name: sideLabel("right", sideLabels),
       x: report.metrics.right.calibration.bins.map((bin) => bin.confidence),
       y: report.metrics.right.calibration.bins.map((bin) => bin.accuracy),
       line: { color: "#dc2626", width: 1.5 },
@@ -2889,29 +3041,33 @@ type AnalysisEmbeddingPlotPoint =
 function embeddingSideData(
   points: AnalysisEmbeddingProjection["left"],
   side: AnalysisSide,
-  dataset: CheckpointSummary["dataset"]
+  dataset: CheckpointSummary["dataset"],
+  sideLabels: AnalysisSideLabels
 ): Data[] {
   return embeddingClassData(
     points.map((point) => ({ ...point, side })),
-    dataset
+    dataset,
+    sideLabels
   )
 }
 
 function embeddingData(
   projection: AnalysisEmbeddingProjection,
-  dataset: CheckpointSummary["dataset"]
+  dataset: CheckpointSummary["dataset"],
+  sideLabels: AnalysisSideLabels
 ): Data[] {
   const points: AnalysisEmbeddingPlotPoint[] = [
     ...projection.left.map((point) => ({ ...point, side: "left" as const })),
     ...projection.right.map((point) => ({ ...point, side: "right" as const })),
   ]
 
-  return embeddingClassData(points, dataset)
+  return embeddingClassData(points, dataset, sideLabels)
 }
 
 function embeddingClassData(
   points: AnalysisEmbeddingPlotPoint[],
-  dataset: CheckpointSummary["dataset"]
+  dataset: CheckpointSummary["dataset"],
+  sideLabels: AnalysisSideLabels
 ): Data[] {
   const grouped = new Map<number, AnalysisEmbeddingPlotPoint[]>()
   for (const point of points) {
@@ -2930,7 +3086,8 @@ function embeddingClassData(
         classPoints,
         classLabelFor(dataset, label),
         embeddingClassColor(label),
-        dataset
+        dataset,
+        sideLabels
       )
     )
 }
@@ -2951,7 +3108,8 @@ function embeddingTrace(
   points: AnalysisEmbeddingPlotPoint[],
   name: string,
   color: string,
-  dataset: CheckpointSummary["dataset"]
+  dataset: CheckpointSummary["dataset"],
+  sideLabels: AnalysisSideLabels
 ): Data {
   return {
     type: "scattergl",
@@ -2960,7 +3118,7 @@ function embeddingTrace(
     x: points.map((point) => point.x),
     y: points.map((point) => point.y),
     customdata: points.map((point) => [
-      sideLabel(point.side),
+      sideLabel(point.side, sideLabels),
       classLabelFor(dataset, point.label),
       classLabelFor(dataset, point.prediction),
       point.correct ? "correct" : "incorrect",
@@ -2982,12 +3140,15 @@ function embeddingClassColor(label: number): string {
   ]
 }
 
-function robustnessData(report: AnalysisComparisonReport): Data[] {
+function robustnessData(
+  report: AnalysisComparisonReport,
+  sideLabels: AnalysisSideLabels
+): Data[] {
   return report.robustness.flatMap((curve) => [
     {
       type: "scatter",
       mode: "lines+markers",
-      name: `A ${curve.perturbation}`,
+      name: `${sideShortLabel("left", sideLabels)} ${curve.perturbation}`,
       x: curve.points.map((point) => point.level),
       y: curve.points.map((point) => point.left_accuracy),
       line: { width: 1.5 },
@@ -2995,7 +3156,7 @@ function robustnessData(report: AnalysisComparisonReport): Data[] {
     {
       type: "scatter",
       mode: "lines+markers",
-      name: `B ${curve.perturbation}`,
+      name: `${sideShortLabel("right", sideLabels)} ${curve.perturbation}`,
       x: curve.points.map((point) => point.level),
       y: curve.points.map((point) => point.right_accuracy),
       line: { width: 1.5, dash: "dot" },
@@ -3003,7 +3164,10 @@ function robustnessData(report: AnalysisComparisonReport): Data[] {
   ])
 }
 
-function activationData(report: AnalysisComparisonReport): Data[] {
+function activationData(
+  report: AnalysisComparisonReport,
+  sideLabels: AnalysisSideLabels
+): Data[] {
   const names = [
     ...new Set([
       ...report.activations.left.map((layer) => layer.name),
@@ -3013,7 +3177,7 @@ function activationData(report: AnalysisComparisonReport): Data[] {
   return [
     {
       type: "bar",
-      name: "Model A",
+      name: sideLabel("left", sideLabels),
       x: names,
       y: names.map(
         (name) =>
@@ -3024,7 +3188,7 @@ function activationData(report: AnalysisComparisonReport): Data[] {
     },
     {
       type: "bar",
-      name: "Model B",
+      name: sideLabel("right", sideLabels),
       x: names,
       y: names.map(
         (name) =>

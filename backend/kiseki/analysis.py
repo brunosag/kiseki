@@ -373,10 +373,11 @@ def build_comparison_report(
 
     left_model = load_model(left_payload, dataset, device)
     right_model = load_model(right_payload, dataset, device)
+    left_label, right_label = comparison_side_labels(left_summary, right_summary)
 
-    progress("inference", "Running Model A over the full test set.", 0.14)
+    progress("inference", f"Running {left_label} over the full test set.", 0.14)
     left_eval = evaluate_model(left_model, inputs, labels, device=device)
-    progress("inference", "Running Model B over the full test set.", 0.25)
+    progress("inference", f"Running {right_label} over the full test set.", 0.25)
     right_eval = evaluate_model(right_model, inputs, labels, device=device)
 
     progress("metrics", "Computing metrics, confusion, and calibration.", 0.34)
@@ -1114,6 +1115,15 @@ def normalize_inputs(inputs: torch.Tensor, dataset: DatasetName) -> torch.Tensor
         std = torch.tensor(CIFAR10_STD, dtype=outputs.dtype).view(1, 3, 1, 1)
         outputs = (outputs - mean) / std
     return outputs
+
+
+def comparison_side_labels(
+    left: CheckpointSummary,
+    right: CheckpointSummary,
+) -> tuple[str, str]:
+    if left.optimizer != right.optimizer:
+        return left.optimizer, right.optimizer
+    return "Model A", "Model B"
 
 
 def metadata_rows(
