@@ -15,6 +15,7 @@ from .dataset_types import DatasetName
 from .experiment import ExperimentManager
 from .schemas import (
     COSYNE_P_M,
+    CONFIG_SCHEMA,
     ETA,
     ETA_0,
     ETA_SBX,
@@ -43,6 +44,21 @@ DEFAULT_OPTIMIZER_PARAMS = {
 }
 
 METRIC_SEPARATOR = "    "
+UNICODE_OPTIMIZER_LABELS = {
+    r"\eta": "η",
+    r"\eta_0": "η₀",
+    r"p_{\mathrm{m}}": "pₘ",
+    r"\gamma": "γ",
+    r"\rho": "ρ",
+    r"\rho_{\mathrm{x}}": "ρₓ",
+    r"\lambda": "λ",
+    r"\tau_{\mathrm{pat}}": "τₚₐₜ",
+    r"\sigma_{\mathrm{m}}": "σₘ",
+    r"\rho_{\mathrm{e}}": "ρₑ",
+    r"\eta_{\mathrm{SBX}}": "η_SBX",
+    r"\lambda_{\mathrm{c}}": "λ_c",
+    r"\pi_{\mathrm{all}}": "π_all",
+}
 RESUME_ONLY_FIELDS = ("iterations", "target_acc", "checkpoint_interval")
 RESUME_BLOCKED_FIELDS = (
     "dataset",
@@ -366,8 +382,8 @@ def wait_for_completion(
     poll_interval: float,
     stream: TextIO,
 ) -> ExperimentStatus:
-    last_step = -1
     status = initial_status
+    last_step = 0 if status.current_step == 0 else -1
 
     while status.is_running:
         if should_print_status(status, last_step, log_every):
@@ -394,15 +410,125 @@ def should_print_status(
 
 
 def print_start(status: ExperimentStatus, options: TrainOptions, *, stream: TextIO) -> None:
-    action = "Resumed" if options.resume else "Started"
-    print(
-        (
-            f"{action} run_id={status.run_id} optimizer={status.optimizer} "
-            f"requested_device={status.requested_device}"
+    print(format_start_summary(status, options), file=stream, flush=True)
+
+
+def format_start_summary(status: ExperimentStatus, options: TrainOptions) -> str:
+    if options.resume:
+        return format_resume_summary(status, options)
+
+    request = build_start_request(options)
+    config = request.config
+    optimizer = config.optimizer
+    optimizer_params = request.opt_params.get(optimizer, {})
+    lines = [
+        "Started training",
+        *format_aligned_rows([("Run ID", status.run_id or "—")], indent="  "),
+        "",
+        "Configuration",
+        *format_aligned_rows(
+            [
+                (CONFIG_SCHEMA["dataset"].label, config.dataset),
+                (CONFIG_SCHEMA["optimizer"].label, config.optimizer),
+                ("Requested device", config.device),
+                (CONFIG_SCHEMA["seed"].label, config.seed),
+                (CONFIG_SCHEMA["batch_size"].label, config.batch_size),
+                (CONFIG_SCHEMA["iterations"].label, config.iterations),
+                (CONFIG_SCHEMA["target_acc"].label, format_percent(config.target_acc)),
+                (CONFIG_SCHEMA["deterministic"].label, config.deterministic),
+                (
+                    CONFIG_SCHEMA["checkpoint_interval"].label,
+                    config.checkpoint_interval,
+                ),
+            ],
+            indent="  ",
         ),
-        file=stream,
-        flush=True,
-    )
+        "",
+        f"{optimizer} parameters",
+        *format_optimizer_rows(optimizer, optimizer_params),
+    ]
+    return "\n".join(lines)
+
+
+def format_resume_summary(status: ExperimentStatus, options: TrainOptions) -> str:
+    rows: list[tuple[str, Any]] = [
+        ("Run ID", status.run_id or options.resume or "—"),
+    ]
+    if status.optimizer is not None:
+        rows.append(("Optimizer", status.optimizer))
+    rows.append(("Requested device", status.requested_device))
+
+    override_rows = [
+        (CONFIG_SCHEMA["iterations"].label, options.iterations),
+        (CONFIG_SCHEMA["target_acc"].label, format_percent(options.target_acc))
+        if options.target_acc is not None
+        else (CONFIG_SCHEMA["target_acc"].label, None),
+        (CONFIG_SCHEMA["checkpoint_interval"].label, options.checkpoint_interval),
+    ]
+    override_rows = [(label, value) for label, value in override_rows if value is not None]
+
+    lines = [
+        "Resumed training",
+        *format_aligned_rows(rows, indent="  "),
+    ]
+    if override_rows:
+        lines.extend(["", "Resume controls", *format_aligned_rows(override_rows, indent="  ")])
+    return "\n".join(lines)
+
+
+def format_optimizer_rows(
+    optimizer: str,
+    optimizer_params: dict[str, float | bool],
+) -> list[str]:
+    fields = OPTIMIZERS_SCHEMA.get(optimizer, [])
+    rows = [
+        (
+            unicode_optimizer_label(field.label),
+            format_optimizer_value(optimizer_params.get(field.key, field.default), field.step),
+            field.desc,
+        )
+        for field in fields
+    ]
+    if not rows:
+        return ["  none"]
+
+    label_width = max(len(label) for label, _, _ in rows)
+    value_width = max(len(value) for _, value, _ in rows)
+    return [
+        f"  {label:<{label_width}}  {value:<{value_width}}  {desc}"
+        for label, value, desc in rows
+    ]
+
+
+def unicode_optimizer_label(label: str) -> str:
+    return UNICODE_OPTIMIZER_LABELS.get(label, label)
+
+
+def format_aligned_rows(rows: Sequence[tuple[str, Any]], *, indent: str) -> list[str]:
+    label_width = max(len(label) for label, _ in rows)
+    return [
+        f"{indent}{label:<{label_width}}  {format_display_value(value)}"
+        for label, value in rows
+    ]
+
+
+def format_display_value(value: Any) -> str:
+    if isinstance(value, bool):
+        return "yes" if value else "no"
+    if isinstance(value, int):
+        return format_integer(value)
+    if isinstance(value, float):
+        return format_number(value)
+    return str(value)
+
+
+def format_optimizer_value(value: float | bool, step: float | None) -> str:
+    if isinstance(value, bool):
+        return format_display_value(value)
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        if step is None or step >= 1:
+            return format_integer(int(value))
+    return format_number(value)
 
 
 def print_final(status: ExperimentStatus, *, stream: TextIO) -> None:
@@ -482,6 +608,14 @@ def format_loss(value: float) -> str:
     if not math.isfinite(value):
         return "—"
     return f"{value:.4f}"
+
+
+def format_number(value: int | float) -> str:
+    if not math.isfinite(value):
+        return "—"
+    if isinstance(value, int) or value.is_integer():
+        return format_integer(int(value))
+    return f"{value:.6g}"
 
 
 def format_seconds(seconds: float) -> str:

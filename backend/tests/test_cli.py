@@ -39,6 +39,7 @@ from kiseki.train import (
     TrainingSignalHandler,
     build_resume_update,
     build_start_request,
+    format_start_summary,
     format_status,
     run_training,
     train_options_from_args,
@@ -262,7 +263,10 @@ def test_run_training_saves_checkpoint(tmp_path) -> None:
 
     assert exit_code == 0
     assert errors.getvalue() == ""
-    assert "Started run_id=" in output.getvalue()
+    assert "Started training" in output.getvalue()
+    assert "Configuration" in output.getvalue()
+    assert "SGD parameters" in output.getvalue()
+    assert "η" in output.getvalue()
     assert "Finished run_id=" in output.getvalue()
     assert status.current_step == 2
     assert status.checkpoint_path == str(tmp_path / status.run_id / "latest.pt")
@@ -320,10 +324,57 @@ def test_run_training_resumes_checkpoint_with_allowed_overrides(tmp_path) -> Non
     checkpoint = saver.load_latest(run_id)
 
     assert exit_code == 0
-    assert "Resumed run_id=" in output.getvalue()
+    assert "Resumed training" in output.getvalue()
     assert status.current_step == 3
     assert checkpoint["config"]["iterations"] == 3
     assert checkpoint["config"]["checkpoint_interval"] == 1
+
+
+def test_format_start_summary_shows_config_and_unicode_optimizer_params() -> None:
+    status = ExperimentStatus(run_id="run-1", optimizer="CoSyNE", requested_device="gpu")
+    summary = format_start_summary(
+        status,
+        TrainOptions(
+            dataset="cifar10",
+            device="gpu",
+            optimizer="CoSyNE",
+            iterations=20,
+            population_size=12,
+            mutation_probability=0.7,
+            tournament_size=5,
+            mutation_stdev=0.04,
+            permute_all=True,
+            elitism_ratio=0.2,
+            sbx_eta=3,
+            num_children=6,
+        ),
+    )
+
+    assert summary == (
+        "Started training\n"
+        "  Run ID  run-1\n"
+        "\n"
+        "Configuration\n"
+        "  Dataset              cifar10\n"
+        "  Optimizer            CoSyNE\n"
+        "  Requested device     gpu\n"
+        "  Seed                 42\n"
+        "  Batch size           512\n"
+        "  Iterations           20\n"
+        "  Target accuracy      100.00%\n"
+        "  Deterministic        no\n"
+        "  Checkpoint interval  50\n"
+        "\n"
+        "CoSyNE parameters\n"
+        "  N      12    Population size\n"
+        "  k      5     Tournament size\n"
+        "  σₘ     0.04  Mutation standard deviation\n"
+        "  pₘ     0.7   Mutation probability\n"
+        "  ρₑ     0.2   Elitism fraction\n"
+        "  η_SBX  3     SBX distribution index\n"
+        "  λ_c    6     Children count\n"
+        "  π_all  yes   Permute all columns"
+    )
 
 
 def test_format_status_uses_interval_stats_and_omits_checkpoint_fields() -> None:
