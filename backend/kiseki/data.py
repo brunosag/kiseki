@@ -136,8 +136,6 @@ def load_cifar10_test(
 def cifar10_train_transform() -> transforms.Compose:
     return transforms.Compose(
         [
-            transforms.RandomCrop(32, padding=4),
-            transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             transforms.Normalize(CIFAR10_MEAN, CIFAR10_STD),
         ]

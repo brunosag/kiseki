@@ -25,12 +25,12 @@ def test_cifar10_cnn_output_shape_hidden_activation_and_parameter_count() -> Non
     output = model(inputs)
 
     assert output.shape == (4, 10)
-    assert model.final_hidden(inputs).shape == (4, 256)
-    assert model.named_activations(inputs, ("final_hidden",))["final_hidden"].shape == (4, 256)
+    assert model.final_hidden(inputs).shape == (4, 32)
+    assert model.named_activations(inputs, ("final_hidden",))["final_hidden"].shape == (4, 32)
     probabilities = model.predict_proba(inputs)
     assert probabilities.shape == (4, 10)
     assert torch.allclose(probabilities.sum(dim=1), torch.ones(4), atol=1e-6)
-    assert count_parameters(model) == 175018
+    assert count_parameters(model) == 18514
 
 
 def test_leea_can_step_cifar10_cnn_population() -> None:

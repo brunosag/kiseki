@@ -62,11 +62,12 @@ class CNN2C2DMNIST(nn.Module):
 class CIFAR10CNN(nn.Module):
     def __init__(self) -> None:
         super().__init__()
-        self.conv1 = nn.Conv2d(3, 32, kernel_size=3)
-        self.conv2 = nn.Conv2d(32, 32, kernel_size=3)
-        self.conv3 = nn.Conv2d(32, 64, kernel_size=3)
-        self.conv4 = nn.Conv2d(64, 64, kernel_size=3)
-        self.conv5 = nn.Conv2d(64, 128, kernel_size=3)
+        self.conv1 = nn.Conv2d(3, 8, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(8, 8, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(8, 16, kernel_size=3, padding=1)
+        self.conv4 = nn.Conv2d(16, 16, kernel_size=3, padding=1)
+        self.conv5 = nn.Conv2d(16, 32, kernel_size=3, padding=1)
+        self.conv6 = nn.Conv2d(32, 32, kernel_size=3, padding=1)
         self.relu1 = nn.ReLU()
         self.relu2 = nn.ReLU()
         self.relu3 = nn.ReLU()
@@ -75,9 +76,8 @@ class CIFAR10CNN(nn.Module):
         self.relu6 = nn.ReLU()
         self.pool1 = nn.MaxPool2d(2)
         self.pool2 = nn.MaxPool2d(2)
-        self.pool3 = nn.MaxPool2d(2)
-        self.fc1 = nn.Linear(128, 256)
-        self.fc2 = nn.Linear(256, 10)
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Linear(32, 10)
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
@@ -91,7 +91,7 @@ class CIFAR10CNN(nn.Module):
                 nn.init.zeros_(module.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.fc2(self.final_hidden(x))
+        return self.fc(self.final_hidden(x))
 
     def predict_proba(self, x: torch.Tensor) -> torch.Tensor:
         return torch.softmax(self.forward(x), dim=1)
@@ -104,9 +104,10 @@ class CIFAR10CNN(nn.Module):
         x = self.relu4(self.conv4(x))
         x = self.pool2(x)
         x = self.relu5(self.conv5(x))
-        x = self.pool3(x)
+        x = self.relu6(self.conv6(x))
+        x = self.avgpool(x)
         x = torch.flatten(x, 1)
-        return self.relu6(self.fc1(x))
+        return x
 
     def named_activations(
         self,

@@ -97,8 +97,6 @@ def test_cifar10_loader_split_shape_and_transforms(tmp_path, monkeypatch) -> Non
     train_transform = train_loader.dataset.dataset.transform
     val_transform = val_loader.dataset.dataset.transform
     assert [type(transform) for transform in train_transform.transforms] == [
-        transforms.RandomCrop,
-        transforms.RandomHorizontalFlip,
         transforms.ToTensor,
         transforms.Normalize,
     ]
