@@ -892,6 +892,13 @@ export function App() {
     setStatus(nextStatus)
   }
 
+  function newAnalysis() {
+    setAnalysisCheckpoints({ left: null, right: null })
+    setAnalysisJob(null)
+    setAnalysisError(null)
+    setAnalysisStarting(false)
+  }
+
   return (
     <Tabs
       className="h-dvh min-h-0 gap-0 overflow-hidden p-4"
@@ -921,6 +928,12 @@ export function App() {
                 </Button>
               ) : null}
             </>
+          ) : null}
+          {activeTab === "analysis" && currentAnalysisReport ? (
+            <Button variant="outline" onClick={newAnalysis}>
+              <Plus className="size-4" />
+              New analysis
+            </Button>
           ) : null}
         </div>
         <TabsList>
