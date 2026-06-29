@@ -35,9 +35,10 @@ from `backend/`, tees output to `logs/`, and attaches immediately. Detach with
 tmux attach -t kiseki-train
 ```
 
-Resume from a saved checkpoint with:
+Resume from the newest checkpoint, or pass a specific run ID:
 
 ```bash
+npm run train -- --resume
 npm run train -- --resume <run_id>
 ```
 

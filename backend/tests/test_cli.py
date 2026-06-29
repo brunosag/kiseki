@@ -12,6 +12,7 @@ from torch.utils.data import DataLoader, TensorDataset
 import kiseki.cli as cli
 from kiseki.checkpoint import CheckpointSaver
 from kiseki.experiment import ExperimentManager
+from kiseki.models import build_model
 from kiseki.schemas import (
     AccuracyPoint,
     COSYNE_P_M,
@@ -34,6 +35,7 @@ from kiseki.schemas import (
     ExperimentStatus,
 )
 from kiseki.train import (
+    RESUME_LATEST_RUN_ID,
     TrainError,
     TrainOptions,
     TrainingSignalHandler,
@@ -58,6 +60,39 @@ class SyntheticLoaderFactory:
             DataLoader(dataset, batch_size=batch_size, shuffle=True),
             DataLoader(dataset, batch_size=batch_size, shuffle=False),
         )
+
+
+def save_cli_resume_checkpoint(
+    saver: CheckpointSaver,
+    *,
+    run_id: str,
+    saved_at: str,
+    step: int = 1,
+) -> None:
+    config = ExperimentConfig(
+        device="cpu",
+        optimizer="SGD",
+        iterations=step,
+        batch_size=4,
+        checkpoint_interval=0,
+    )
+    status = ExperimentStatus(
+        run_id=run_id,
+        optimizer="SGD",
+        current_step=step,
+        last_checkpoint_step=step,
+        last_checkpoint_saved_at=saved_at,
+        checkpoint_path=str(saver.latest_pt_path(run_id)),
+    )
+    saver.save(
+        model=build_model("mnist"),
+        status=status,
+        config=config,
+        optimizer="SGD",
+        run_id=run_id,
+        optimizer_params={"SGD": {ETA: 0.01}},
+        saved_at=saved_at,
+    )
 
 
 def test_train_defaults_match_frontend_schema() -> None:
@@ -87,6 +122,16 @@ def test_train_defaults_match_frontend_schema() -> None:
     assert cosyne_request.opt_params["CoSyNE"][RHO_E] == 0.01
     assert cosyne_request.opt_params["CoSyNE"][ETA_SBX] == cosyne_defaults[ETA_SBX]
     assert cosyne_request.opt_params["CoSyNE"][NUM_CHILDREN] == cosyne_defaults[NUM_CHILDREN]
+
+
+def test_train_resume_flag_accepts_missing_checkpoint_id() -> None:
+    parser = cli.build_parser()
+
+    resume_latest_args = parser.parse_args(["train", "--resume"])
+    resume_named_args = parser.parse_args(["train", "--resume", "run-1"])
+
+    assert train_options_from_args(resume_latest_args).resume == RESUME_LATEST_RUN_ID
+    assert train_options_from_args(resume_named_args).resume == "run-1"
 
 
 def test_train_argument_parsing_builds_start_request() -> None:
@@ -338,6 +383,68 @@ def test_run_training_resumes_checkpoint_with_allowed_overrides(tmp_path) -> Non
     assert status.current_step == 3
     assert checkpoint["config"]["iterations"] == 3
     assert checkpoint["config"]["checkpoint_interval"] == 1
+
+
+def test_run_training_resumes_newest_checkpoint_when_resume_id_omitted(tmp_path) -> None:
+    saver = CheckpointSaver(tmp_path)
+    save_cli_resume_checkpoint(
+        saver,
+        run_id="older-run",
+        saved_at="2026-06-20T12:00:00+00:00",
+    )
+    save_cli_resume_checkpoint(
+        saver,
+        run_id="newer-run",
+        saved_at="2026-06-21T12:00:00+00:00",
+    )
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=saver,
+    )
+    output = io.StringIO()
+    errors = io.StringIO()
+
+    exit_code = run_training(
+        TrainOptions(
+            resume=RESUME_LATEST_RUN_ID,
+            iterations=2,
+            log_every=1,
+        ),
+        manager=manager,
+        stream=output,
+        error_stream=errors,
+        poll_interval=0.001,
+        enable_signal_handlers=False,
+    )
+
+    status = manager.status()
+
+    assert exit_code == 0
+    assert errors.getvalue() == ""
+    assert status.run_id == "newer-run"
+    assert status.current_step == 2
+    assert "Resumed training" in output.getvalue()
+    assert "newer-run" in output.getvalue()
+
+
+def test_run_training_resume_without_id_rejects_empty_checkpoint_directory(tmp_path) -> None:
+    manager = ExperimentManager(
+        data_loader_factory=SyntheticLoaderFactory(),
+        checkpoint_saver=CheckpointSaver(tmp_path),
+    )
+    errors = io.StringIO()
+
+    exit_code = run_training(
+        TrainOptions(resume=RESUME_LATEST_RUN_ID),
+        manager=manager,
+        stream=io.StringIO(),
+        error_stream=errors,
+        poll_interval=0.001,
+        enable_signal_handlers=False,
+    )
+
+    assert exit_code == 1
+    assert "No checkpoints were found to resume" in errors.getvalue()
 
 
 def test_format_start_summary_shows_config_and_unicode_optimizer_params() -> None:

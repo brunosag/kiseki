@@ -3,7 +3,7 @@ import sys
 from collections.abc import Sequence
 
 from .dataset_types import REAL_DATASETS
-from .train import run_training, train_options_from_args
+from .train import RESUME_LATEST_RUN_ID, run_training, train_options_from_args
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -47,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     train.add_argument("--elitism-ratio", type=probability)
     train.add_argument("--sbx-eta", type=non_negative_float)
     train.add_argument("--num-children", type=non_negative_int)
-    train.add_argument("--resume")
+    train.add_argument("--resume", nargs="?", const=RESUME_LATEST_RUN_ID)
     return parser
 
 

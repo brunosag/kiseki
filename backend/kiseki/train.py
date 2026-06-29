@@ -44,6 +44,7 @@ DEFAULT_OPTIMIZER_PARAMS = {
 }
 
 METRIC_SEPARATOR = "    "
+RESUME_LATEST_RUN_ID = ""
 UNICODE_OPTIMIZER_LABELS = {
     r"\eta": "η",
     r"\eta_0": "η₀",
@@ -231,11 +232,23 @@ def run_training(
 def start_or_resume(manager: ExperimentManager, options: TrainOptions) -> ExperimentStatus:
     if options.resume is not None:
         update = build_resume_update(options)
-        manager.load_checkpoint(CheckpointSelection(run_id=options.resume, kind="latest"))
+        run_id = resolve_resume_run_id(manager, options.resume)
+        options.resume = run_id
+        manager.load_checkpoint(CheckpointSelection(run_id=run_id, kind="latest"))
         return manager.resume(update)
 
     request = build_start_request(options)
     return manager.start(request)
+
+
+def resolve_resume_run_id(manager: ExperimentManager, resume: str) -> str:
+    if resume:
+        return resume
+
+    summaries = manager.checkpoints()
+    if not summaries:
+        raise CheckpointNotFoundError("No checkpoints were found to resume")
+    return summaries[0].run_id
 
 
 def build_start_request(options: TrainOptions) -> StartExperimentRequest:
@@ -414,7 +427,7 @@ def print_start(status: ExperimentStatus, options: TrainOptions, *, stream: Text
 
 
 def format_start_summary(status: ExperimentStatus, options: TrainOptions) -> str:
-    if options.resume:
+    if options.resume is not None:
         return format_resume_summary(status, options)
 
     request = build_start_request(options)

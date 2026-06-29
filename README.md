@@ -54,9 +54,10 @@ This creates and attaches to a `kiseki-train` tmux session, runs
 `uv run kiseki train` from `backend/`, and writes a matching log under `logs/`.
 Detach with `Ctrl-b d`; reattach with `tmux attach -t kiseki-train`.
 
-Resume from a checkpoint:
+Resume from the newest checkpoint, or pass a specific run ID:
 
 ```bash
+npm run train -- --resume
 npm run train -- --resume <run_id>
 ```
 
