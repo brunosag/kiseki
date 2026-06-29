@@ -4156,7 +4156,15 @@ function formatMutationStep(value: number): string {
 function formatSeconds(seconds: number): string {
   const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 0
 
-  return `${safeSeconds.toFixed(3)}s`
+  if (safeSeconds < 1) {
+    return `${Math.round(safeSeconds * 1000)}ms`
+  }
+
+  return `${formatSignificantNumber(safeSeconds, 3)}s`
+}
+
+function formatSignificantNumber(value: number, digits: number): string {
+  return Number(value.toPrecision(digits)).toString()
 }
 
 function formatDuration(seconds: number): string {

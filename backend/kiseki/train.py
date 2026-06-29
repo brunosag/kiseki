@@ -620,7 +620,10 @@ def format_number(value: int | float) -> str:
 
 def format_seconds(seconds: float) -> str:
     safe_seconds = seconds if math.isfinite(seconds) and seconds > 0 else 0.0
-    return f"{safe_seconds:.3f}s"
+    if safe_seconds < 1:
+        milliseconds = math.floor(safe_seconds * 1000 + 0.5)
+        return f"{milliseconds}ms"
+    return f"{safe_seconds:.3g}s"
 
 
 def format_duration(seconds: float) -> str:
@@ -628,25 +631,17 @@ def format_duration(seconds: float) -> str:
     total_seconds = math.floor(safe_seconds + 0.5)
 
     if total_seconds < 60:
-        return f"{total_seconds}s"
+        return f"{total_seconds:02d}s"
 
     hours = total_seconds // 3600
     if hours > 0:
         minutes = (total_seconds % 3600) // 60
         remaining_seconds = total_seconds % 60
-        parts = [f"{hours}h"]
-
-        if minutes > 0:
-            parts.append(f"{minutes}m")
-
-        if remaining_seconds > 0:
-            parts.append(f"{remaining_seconds}s")
-
-        return " ".join(parts)
+        return f"{hours}h {minutes:02d}m {remaining_seconds:02d}s"
 
     minutes = total_seconds // 60
     remaining_seconds = total_seconds % 60
-    return f"{minutes}m {remaining_seconds:02d}s"
+    return f"{minutes:02d}m {remaining_seconds:02d}s"
 
 
 def install_signal_handlers(handler: TrainingSignalHandler) -> dict[signal.Signals, Any]:

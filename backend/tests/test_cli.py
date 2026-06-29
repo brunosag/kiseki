@@ -39,6 +39,8 @@ from kiseki.train import (
     TrainingSignalHandler,
     build_resume_update,
     build_start_request,
+    format_duration,
+    format_seconds,
     format_start_summary,
     format_status,
     run_training,
@@ -398,11 +400,42 @@ def test_format_status_uses_interval_stats_and_omits_checkpoint_fields() -> None
 
     assert line == (
         "i=1,234    ℓ=0.1235 ± 0.0012    a*=98.12% (1,230)    "
-        "t=1m 05s    Δt̄=0.012s    η=0.0300"
+        "t=01m 05s    Δt̄=12ms    η=0.0300"
     )
     assert "loss=" not in line
     assert "last_checkpoint_step" not in line
     assert "checkpoint" not in line
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [
+        (0.0, "0ms"),
+        (0.01234, "12ms"),
+        (0.999, "999ms"),
+        (1.271, "1.27s"),
+        (14.24, "14.2s"),
+        (102.4, "102s"),
+    ],
+)
+def test_format_seconds_uses_milliseconds_below_one_second(
+    seconds: float, expected: str
+) -> None:
+    assert format_seconds(seconds) == expected
+
+
+@pytest.mark.parametrize(
+    ("seconds", "expected"),
+    [
+        (5.4, "05s"),
+        (65.4, "01m 05s"),
+        (3600.0, "1h 00m 00s"),
+        (3605.4, "1h 00m 05s"),
+        (3723.4, "1h 02m 03s"),
+    ],
+)
+def test_format_duration_pads_minutes_and_seconds(seconds: float, expected: str) -> None:
+    assert format_duration(seconds) == expected
 
 
 def test_resume_rejects_trajectory_changing_overrides() -> None:
