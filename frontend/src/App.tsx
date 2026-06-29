@@ -875,7 +875,9 @@ export function App() {
       >
         <div className="flex w-full flex-col gap-6 md:min-h-0 md:flex-1 md:flex-row">
           <div className="flex w-full max-w-3xl flex-col gap-3 md:max-h-full md:max-w-md">
-            <Card className="w-full md:h-fit md:max-h-full">
+            <Card
+              className="w-full rounded-lg border bg-transparent ring-0 md:h-fit md:max-h-full"
+            >
               <CardHeader>
                 <CardTitle className="text-xl">Configuration</CardTitle>
               </CardHeader>
@@ -1011,7 +1013,9 @@ export function App() {
             </Card>
           </div>
 
-          <Card className="min-h-[520px] w-full md:min-h-0 md:flex-1">
+          <Card
+            className="min-h-[520px] w-full rounded-lg border bg-transparent ring-0 md:min-h-0 md:flex-1"
+          >
             <CardHeader>
               <CardTitle className="text-xl">Metrics</CardTitle>
             </CardHeader>
@@ -5271,7 +5275,7 @@ function Metric({
   detail?: string
 }) {
   return (
-    <div className="min-w-0 rounded-xl border bg-input/30 px-4 py-3">
+    <div className="min-w-0 rounded-lg border px-4 py-3">
       <p className="text-sm text-muted-foreground/80">{label}</p>
       <p className="flex min-w-0 items-baseline gap-1.5">
         <span className="truncate text-2xl tabular-nums">{value}</span>
