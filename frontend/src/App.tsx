@@ -2,6 +2,22 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import ReactPlotly from "react-plotly.js"
 import katex from "katex"
 import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  ComposedChart,
+  Line,
+  Scatter,
+  ScatterChart,
+  type ScatterShapeProps,
+  type TooltipPayloadEntry,
+  type TooltipValueType,
+  XAxis,
+  YAxis,
+  ZAxis,
+} from "recharts"
+import {
   AlertTriangle,
   ArrowDown,
   ArrowUpDown,
@@ -21,10 +37,11 @@ import type {
   ComponentType,
   KeyboardEvent,
   ReactElement,
+  ReactNode,
   RefObject,
 } from "react"
 import type { PlotParams } from "react-plotly.js"
-import type { Data, Layout } from "plotly.js"
+import type { Data as PlotlyData, Layout } from "plotly.js"
 
 import "katex/dist/katex.min.css"
 
@@ -46,7 +63,20 @@ import {
 } from "@/components/ui/alert"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card"
+import {
+  ChartContainer,
+  ChartLegend,
+  ChartLegendContent,
+  ChartTooltip,
+  type ChartConfig,
+} from "@/components/ui/chart"
 import { Checkbox } from "@/components/ui/checkbox"
 import {
   Dialog,
@@ -186,18 +216,16 @@ const eventTypes = [
   "failed",
 ]
 
-const PLOT_UI_REVISION = "training-telemetry"
 const CONFIG_STORAGE_KEY = "kiseki.config.v1"
 const OPT_PARAMS_STORAGE_KEY = "kiseki.optimizerParams.v1"
 const MARKER_POINT_LIMIT = 20
-const Y_AXIS_SEGMENTS = 10
 const MUTATION_STEP_AXIS_MIN_UPPER_BOUND = 0.001
 const MUTATION_STEP_AXIS_PADDING = 1.05
-const MUTATION_STEP_AXIS_SEGMENTS = 8
-const MUTATION_STEP_TICK_DECIMALS = 2
-const MUTATION_STEP_PLOT_DOMAIN_END = 0.925
 const TRAINING_STATUS_UPDATE_INTERVAL_MS = 200
 const MISSING_VALUE_LABEL = "—"
+const LINE_RENDER_POINT_LIMIT = 2500
+const TSNE_SIDE_SAMPLE_LIMIT = 1000
+const PCA_TOTAL_SAMPLE_LIMIT = 2000
 
 type ResolvedTheme = "dark" | "light"
 type CheckpointSortKey = "saved_at" | "accuracy" | "step" | "elapsed"
@@ -220,13 +248,48 @@ type PlotPalette = {
   text: string
 }
 
-type MultiAxisLayout = Partial<Layout> & {
-  yaxis3?: Record<string, unknown>
-}
-
-type PlotLegendItem = {
+type ChartLegendItem = {
   color: string
   label: string
+}
+
+type NumericSeriesPoint = {
+  x: number
+  y: number
+}
+
+type NumericChartDatum = {
+  x: number
+} & Record<string, number | undefined>
+
+type CategoryChartDatum = {
+  label: string
+} & Record<string, number | string | undefined>
+
+type ChartSeries = {
+  color: string
+  dataKey: string
+  dashed?: boolean
+  label: string
+}
+
+type ChartValueFormatter = (value: number) => string
+
+type ChartTooltipConfig = Record<
+  string,
+  {
+    color: string
+    formatter?: ChartValueFormatter
+    label: string
+  }
+>
+
+type EmbeddingChartPoint = AnalysisEmbeddingProjection["left"][number] & {
+  className: string
+  correctText: string
+  predictionName: string
+  side: AnalysisSide
+  sideName: string
 }
 
 const fallbackPlotPalettes: Record<ResolvedTheme, PlotPalette> = {
@@ -282,6 +345,18 @@ const DEFAULT_ANALYSIS_PARAMS: AnalysisComparisonParams = {
   robustness_brightness_levels: [0.0, 0.1, 0.2],
   robustness_cutout_levels: [0.0, 0.125, 0.25],
 }
+const REPORT_LEFT_COLOR = "#2563eb"
+const REPORT_RIGHT_COLOR = "#dc2626"
+const REPORT_LEFT_ACCENT_COLOR = "#0891b2"
+const REPORT_RIGHT_ACCENT_COLOR = "#ea580c"
+const ROBUSTNESS_SERIES_COLORS = [
+  "#2563eb",
+  "#dc2626",
+  "#16a34a",
+  "#d97706",
+  "#7c3aed",
+  "#0891b2",
+]
 
 const CIFAR10_CLASS_LABELS = [
   "airplane",
@@ -523,27 +598,10 @@ export function App() {
     status.history.loss,
     status.current_loss
   )
-  const lossTickValues = useMemo(
-    () => axisTickValues(lossAxisUpperBound, Y_AXIS_SEGMENTS),
-    [lossAxisUpperBound]
-  )
   const mutationStepAxisUpperBound = mutationStepAxisUpperBoundFor(
     mutationStepHistory.map((point) => point.value),
     status.current_mutation_step,
     shouldUseSelectedMutationStep ? selectedInitialMutationStep : undefined
-  )
-  const mutationStepTickValues = useMemo(
-    () =>
-      fixedPrecisionTickValues(
-        mutationStepAxisUpperBound,
-        MUTATION_STEP_AXIS_SEGMENTS,
-        MUTATION_STEP_TICK_DECIMALS
-      ),
-    [mutationStepAxisUpperBound]
-  )
-  const mutationStepTickText = useMemo(
-    () => fixedTickText(mutationStepTickValues, MUTATION_STEP_TICK_DECIMALS),
-    [mutationStepTickValues]
   )
   const comparisonError = useMemo(
     () => comparisonSelectionError(analysisCheckpoints),
@@ -556,224 +614,45 @@ export function App() {
     analysisJob?.status === "queued" ||
     analysisJob?.status === "running"
 
-  const plotData = useMemo<Data[]>(() => {
-    const lossPointCount = status.history.loss.length
-    const accuracyPointCount = status.history.acc.length
-
-    const lossTrace: Data = {
-      type: "scatter",
-      mode: traceMode(lossPointCount),
-      name: "Loss",
-      uid: "loss",
-      x: status.history.loss.map((_, index) => index + 1),
-      y: status.history.loss,
-      hoverlabel: {
-        align: "left",
-        bgcolor: plotPalette.hoverBackground,
-        bordercolor: plotPalette.hoverBorder,
-        font: { color: plotPalette.hoverText, size: 12 },
-      },
-      hovertemplate: "<b>Loss</b><br>Step %{x}<br>%{y:.4f}<extra></extra>",
-      line: { color: plotPalette.loss, width: 1.5 },
-      marker: { color: plotPalette.loss, size: 5 },
-    }
-
-    const accuracyTrace: Data = {
-      type: "scatter",
-      mode: accuracyTraceMode(accuracyPointCount),
-      name: "Accuracy",
-      uid: "accuracy",
-      x: status.history.acc.map((point) => point.i),
-      y: status.history.acc.map((point) => point.value),
-      hoverlabel: {
-        align: "left",
-        bgcolor: plotPalette.hoverBackground,
-        bordercolor: plotPalette.hoverBorder,
-        font: { color: plotPalette.hoverText, size: 12 },
-      },
-      hovertemplate: "<b>Accuracy</b><br>Step %{x}<br>%{y:.2f}%<extra></extra>",
-      yaxis: "y2",
-      line: { color: plotPalette.accuracy, width: 1.5 },
-      marker: { color: plotPalette.accuracy, size: 5 },
-    }
-
-    if (!mutationStepHistory.length && !showMutationStepAxis) {
-      return [lossTrace, accuracyTrace]
-    }
-
-    const mutationStepTrace: Data = mutationStepHistory.length
-      ? {
-          type: "scatter",
-          mode: "lines",
-          name: "Mutation step",
-          uid: "mutation-step",
-          x: mutationStepHistory.map((point) => point.i),
-          y: mutationStepHistory.map((point) => point.value),
-          hoverlabel: {
-            align: "left",
-            bgcolor: plotPalette.hoverBackground,
-            bordercolor: plotPalette.hoverBorder,
-            font: { color: plotPalette.hoverText, size: 12 },
-          },
-          hovertemplate:
-            "<b>Mutation step</b><br>Step %{x}<br>%{y:.4f}<extra></extra>",
-          yaxis: "y3",
-          line: { color: plotPalette.mutationStep, width: 1.5, dash: "dot" },
-        }
-      : {
-          type: "scatter",
-          mode: "markers",
-          name: "Mutation step",
-          uid: "mutation-step-axis-anchor",
-          x: [0],
-          y: [0],
-          hoverinfo: "skip",
-          marker: { color: "rgba(0,0,0,0)", size: 1 },
-          showlegend: false,
-          yaxis: "y3",
-        }
-
-    return [mutationStepTrace, lossTrace, accuracyTrace]
-  }, [
-    mutationStepHistory,
-    plotPalette.accuracy,
-    plotPalette.hoverBackground,
-    plotPalette.hoverBorder,
-    plotPalette.hoverText,
-    plotPalette.loss,
-    plotPalette.mutationStep,
-    showMutationStepAxis,
-    status.history.acc,
-    status.history.loss,
-  ])
-
-  const plotLayout = useMemo<MultiAxisLayout>(
+  const trainingTelemetryData = useMemo(
+    () =>
+      trainingTelemetryChartData(
+        status.history.loss,
+        status.history.acc,
+        mutationStepHistory
+      ),
+    [mutationStepHistory, status.history.acc, status.history.loss]
+  )
+  const trainingTelemetryConfig = useMemo<ChartConfig>(
     () => ({
-      autosize: true,
-      uirevision: `${PLOT_UI_REVISION}-${stepAxisUpperBound}-${lossAxisUpperBound}-${mutationStepAxisUpperBound}`,
-      margin: { l: 52, r: showMutationStepAxis ? 76 : 46, t: 42, b: 48 },
-      xaxis: {
-        color: plotPalette.muted,
-        ...(showMutationStepAxis
-          ? { domain: [0, MUTATION_STEP_PLOT_DOMAIN_END] }
-          : {}),
-        automargin: true,
-        tickfont: { color: plotPalette.muted },
-        ticks: "",
-        title: { text: "Step", font: { color: plotPalette.muted } },
-        range: [0, stepAxisUpperBound],
-        tickmode: "auto",
-        nticks: 12,
-        fixedrange: true,
-        showgrid: false,
-        showline: false,
-        zeroline: false,
+      loss: { label: "Loss", color: plotPalette.loss },
+      accuracy: { label: "Accuracy", color: plotPalette.accuracy },
+      mutationStep: {
+        label: "Mutation step",
+        color: plotPalette.mutationStep,
       },
-      yaxis: {
-        color: plotPalette.muted,
-        automargin: true,
-        tickfont: { color: plotPalette.muted },
-        ticks: "",
-        title: {
-          text: "Loss",
-          font: { color: plotPalette.muted },
-          standoff: 18,
-        },
-        range: [0, lossAxisUpperBound],
-        tickmode: "array",
-        tickvals: lossTickValues,
-        tickformat: ".1f",
-        fixedrange: true,
-        gridcolor: plotPalette.grid,
-        gridwidth: 1,
-        showgrid: true,
-        showline: false,
-        mirror: false,
-        zeroline: false,
-      },
-      yaxis2: {
-        color: plotPalette.muted,
-        automargin: true,
-        tickfont: { color: plotPalette.muted },
-        ticks: "",
-        title: {
-          text: "Accuracy (%)",
-          font: { color: plotPalette.muted },
-          standoff: 14,
-        },
-        range: [0, 100],
-        tick0: 0,
-        dtick: 100 / Y_AXIS_SEGMENTS,
-        fixedrange: true,
-        overlaying: "y",
-        side: "right",
-        showgrid: false,
-        showline: false,
-        mirror: false,
-        zeroline: false,
-      },
-      ...(showMutationStepAxis
-        ? {
-            yaxis3: {
-              color: plotPalette.muted,
-              automargin: true,
-              tickfont: { color: plotPalette.muted },
-              ticks: "",
-              title: {
-                text: "Mutation step",
-                font: { color: plotPalette.muted },
-                standoff: 14,
-              },
-              range: [0, mutationStepAxisUpperBound],
-              tickmode: "array",
-              tickvals: mutationStepTickValues,
-              ticktext: mutationStepTickText,
-              fixedrange: true,
-              overlaying: "y",
-              side: "right",
-              anchor: "free",
-              position: 1,
-              showgrid: false,
-              showline: false,
-              mirror: false,
-              zeroline: false,
-            },
-          }
-        : {}),
-      legend: {
-        orientation: "h",
-        x: 0.5,
-        y: 1.0,
-        xanchor: "center",
-        yanchor: "bottom",
-        uirevision: PLOT_UI_REVISION,
-        font: { color: plotPalette.muted },
-      },
-      hoverlabel: {
-        align: "left",
-        bgcolor: plotPalette.hoverBackground,
-        bordercolor: plotPalette.hoverBorder,
-        font: {
-          color: plotPalette.hoverText,
-          family: "Geist Variable, sans-serif",
-          size: 12,
-        },
-      },
-      font: { color: plotPalette.text, family: "Geist Variable, sans-serif" },
-      paper_bgcolor: "transparent",
-      plot_bgcolor: "transparent",
-      dragmode: false,
     }),
-    [
-      lossAxisUpperBound,
-      lossTickValues,
-      mutationStepAxisUpperBound,
-      mutationStepTickText,
-      mutationStepTickValues,
-      plotPalette,
-      showMutationStepAxis,
-      stepAxisUpperBound,
-    ]
+    [plotPalette.accuracy, plotPalette.loss, plotPalette.mutationStep]
+  )
+  const trainingTelemetryTooltip = useMemo<ChartTooltipConfig>(
+    () => ({
+      loss: {
+        label: "Loss",
+        color: plotPalette.loss,
+        formatter: (value) => value.toFixed(4),
+      },
+      accuracy: {
+        label: "Accuracy",
+        color: plotPalette.accuracy,
+        formatter: (value) => `${value.toFixed(2)}%`,
+      },
+      mutationStep: {
+        label: "Mutation step",
+        color: plotPalette.mutationStep,
+        formatter: formatMutationStep,
+      },
+    }),
+    [plotPalette.accuracy, plotPalette.loss, plotPalette.mutationStep]
   )
 
   async function startExperiment() {
@@ -1138,18 +1017,17 @@ export function App() {
               ) : null}
 
               <div className="mt-6 min-h-[320px] w-full flex-1">
-                <Plot
-                  className="h-full w-full"
-                  data={plotData}
-                  layout={plotLayout}
-                  config={{
-                    displayModeBar: false,
-                    displaylogo: false,
-                    scrollZoom: false,
-                    responsive: true,
-                  }}
-                  useResizeHandler
-                  style={{ width: "100%", height: "100%" }}
+                <TrainingTelemetryChart
+                  accuracyPointCount={status.history.acc.length}
+                  config={trainingTelemetryConfig}
+                  data={trainingTelemetryData}
+                  lossAxisUpperBound={lossAxisUpperBound}
+                  lossPointCount={status.history.loss.length}
+                  mutationStepAxisUpperBound={mutationStepAxisUpperBound}
+                  mutationStepPointCount={mutationStepHistory.length}
+                  showMutationStepAxis={showMutationStepAxis}
+                  stepAxisUpperBound={stepAxisUpperBound}
+                  tooltipConfig={trainingTelemetryTooltip}
                 />
               </div>
             </CardContent>
@@ -1534,7 +1412,6 @@ function AnalysisReport({
           title="Embeddings"
         >
           <AnalysisEmbeddingsView
-            plotPalette={plotPalette}
             report={report}
             sideLabels={sideLabels}
           />
@@ -1683,13 +1560,14 @@ function AnalysisOverview({
         />
       </div>
       <div className="grid gap-4 xl:grid-cols-2">
-        <ReportPlot
-          data={trainingCurveData(report, sideLabels)}
-          layout={plotLayout("Training History", plotPalette)}
+        <TrainingHistoryChart
+          report={report}
+          sideLabels={sideLabels}
         />
-        <ReportPlot
-          data={overlapData(report, sideLabels)}
-          layout={plotLayout("Outcome Overlap", plotPalette)}
+        <OutcomeOverlapChart
+          plotPalette={plotPalette}
+          report={report}
+          sideLabels={sideLabels}
         />
       </div>
     </div>
@@ -1713,38 +1591,33 @@ function AnalysisMetrics({
   return (
     <div className="grid gap-4">
       <div className="grid gap-4 xl:grid-cols-3">
-        <ReportPlot
+        <HeatmapPlot
           data={confusionData(
             report.metrics.left.confusion_matrix,
             sideLabel("left", sideLabels)
           )}
-          layout={heatmapLayout(
-            `${sideLabel("left", sideLabels)} Confusion`,
-            plotPalette
-          )}
+          layout={heatmapLayout(plotPalette)}
+          title={`${sideLabel("left", sideLabels)} Confusion`}
         />
-        <ReportPlot
+        <HeatmapPlot
           data={confusionData(
             report.metrics.right.confusion_matrix,
             sideLabel("right", sideLabels)
           )}
-          layout={heatmapLayout(
-            `${sideLabel("right", sideLabels)} Confusion`,
-            plotPalette
-          )}
+          layout={heatmapLayout(plotPalette)}
+          title={`${sideLabel("right", sideLabels)} Confusion`}
         />
-        <ReportPlot
+        <HeatmapPlot
           data={confusionData(report.confusion_difference, confusionDeltaLabel)}
-          layout={heatmapLayout(
-            `Confusion Delta (${confusionDeltaLabel})`,
-            plotPalette
-          )}
+          layout={heatmapLayout(plotPalette)}
+          title={`Confusion Delta (${confusionDeltaLabel})`}
         />
       </div>
       <div className="grid gap-4 xl:grid-cols-2">
-        <ReportPlot
-          data={calibrationData(report, sideLabels)}
-          layout={plotLayout("Calibration", plotPalette)}
+        <CalibrationChart
+          plotPalette={plotPalette}
+          report={report}
+          sideLabels={sideLabels}
         />
         <PerClassMetricTable report={report} sideLabels={sideLabels} />
       </div>
@@ -1753,66 +1626,52 @@ function AnalysisMetrics({
 }
 
 function AnalysisEmbeddingsView({
-  plotPalette,
   report,
   sideLabels,
 }: {
-  plotPalette: PlotPalette
   report: AnalysisComparisonReport
   sideLabels: AnalysisSideLabels
 }) {
-  const tsneLeftData = embeddingSideData(
+  const tsneLeftPoints = embeddingSidePoints(
     report.embeddings.tsne.left,
-    "left",
-    report.left.dataset,
-    sideLabels
+    "left"
   )
-  const tsneRightData = embeddingSideData(
+  const tsneRightPoints = embeddingSidePoints(
     report.embeddings.tsne.right,
-    "right",
-    report.right.dataset,
-    sideLabels
+    "right"
   )
-  const pcaData = embeddingData(
-    report.embeddings.pca,
-    report.left.dataset,
-    sideLabels
-  )
+  const pcaPoints = embeddingProjectionPoints(report.embeddings.pca)
 
   return (
     <div className="grid gap-4 xl:grid-cols-2">
-      <ReportPlot
-        className="xl:aspect-[5/3] xl:h-auto"
-        data={tsneLeftData}
-        layout={embeddingLayout(
-          `t-SNE ${sideLabel("left", sideLabels)}`,
-          plotPalette
-        )}
-        legendItems={embeddingLegendItems(
-          report.embeddings.tsne.left,
-          report.left.dataset
-        )}
+      <EmbeddingChartPanel
+        bodyClassName="h-[20rem] xl:h-auto xl:flex-1"
+        className="xl:aspect-[5/3]"
+        dataset={report.left.dataset}
+        pointShape="circle"
+        points={tsneLeftPoints}
+        sampleLimit={TSNE_SIDE_SAMPLE_LIMIT}
+        sideLabels={sideLabels}
+        title={`t-SNE ${sideLabel("left", sideLabels)}`}
       />
-      <ReportPlot
-        className="xl:aspect-[5/3] xl:h-auto"
-        data={tsneRightData}
-        layout={embeddingLayout(
-          `t-SNE ${sideLabel("right", sideLabels)}`,
-          plotPalette
-        )}
-        legendItems={embeddingLegendItems(
-          report.embeddings.tsne.right,
-          report.right.dataset
-        )}
+      <EmbeddingChartPanel
+        bodyClassName="h-[20rem] xl:h-auto xl:flex-1"
+        className="xl:aspect-[5/3]"
+        dataset={report.left.dataset}
+        pointShape="circle"
+        points={tsneRightPoints}
+        sampleLimit={TSNE_SIDE_SAMPLE_LIMIT}
+        sideLabels={sideLabels}
+        title={`t-SNE ${sideLabel("right", sideLabels)}`}
       />
       <div className="xl:col-span-2">
-        <ReportPlot
-          data={pcaData}
-          layout={embeddingLayout("Joint PCA", plotPalette)}
-          legendItems={embeddingLegendItems(
-            [...report.embeddings.pca.left, ...report.embeddings.pca.right],
-            report.left.dataset
-          )}
+        <EmbeddingChartPanel
+          dataset={report.left.dataset}
+          pointShape="circle"
+          points={pcaPoints}
+          sampleLimit={PCA_TOTAL_SAMPLE_LIMIT}
+          sideLabels={sideLabels}
+          title="Joint PCA"
         />
       </div>
     </div>
@@ -1877,19 +1736,13 @@ function AnalysisRobustnessView({
 }) {
   return (
     <div className="grid gap-4">
-      <ReportPlot
-        data={robustnessData(report, sideLabels)}
-        layout={plotLayout("Robustness", plotPalette)}
-      />
+      <RobustnessChart report={report} sideLabels={sideLabels} />
       <div className="grid gap-4 xl:grid-cols-2">
-        <ReportPlot
-          data={activationData(report, sideLabels)}
-          layout={plotLayout("Activation Sparsity", plotPalette)}
+        <ActivationSparsityChart
+          report={report}
+          sideLabels={sideLabels}
         />
-        <ReportPlot
-          data={weightData(report)}
-          layout={plotLayout("Relative Weight Distance", plotPalette)}
-        />
+        <WeightDistanceChart plotPalette={plotPalette} report={report} />
       </div>
     </div>
   )
@@ -1977,50 +1830,887 @@ function PerClassMetricTable({
   )
 }
 
-function ReportPlot({
+function ChartPanel({
+  bodyClassName = "h-[20rem]",
+  children,
+  className,
+  description,
+  footer,
+  title,
+}: {
+  bodyClassName?: string
+  children: ReactNode
+  className?: string
+  description?: string
+  footer?: ReactNode
+  title: string
+}) {
+  return (
+    <Card className={cn("min-h-0", className)}>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm">{title}</CardTitle>
+        {description ? <CardDescription>{description}</CardDescription> : null}
+      </CardHeader>
+      <CardContent className="flex min-h-0 flex-1 flex-col">
+        <div className={cn("min-h-0", bodyClassName)}>{children}</div>
+        {footer ? (
+          <div className="mt-3 flex shrink-0 flex-wrap items-center justify-between gap-2 text-xs text-muted-foreground">
+            {footer}
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  )
+}
+
+function FormattedChartTooltip({
+  active,
+  config,
+  label,
+  labelFormatter,
+  payload,
+}: {
+  active?: boolean
+  config: ChartTooltipConfig
+  label?: unknown
+  labelFormatter?: (label: unknown) => string
+  payload?: readonly TooltipPayloadEntry<TooltipValueType, string | number>[]
+}) {
+  const rows = (payload ?? []).filter(
+    (item) => item.type !== "none" && item.value !== undefined
+  )
+
+  if (!active || rows.length === 0) {
+    return null
+  }
+
+  return (
+    <div className="grid min-w-36 items-start gap-1.5 rounded-lg border border-border/50 bg-background px-2.5 py-1.5 text-xs shadow-xl">
+      {labelFormatter ? (
+        <div className="font-medium">{labelFormatter(label)}</div>
+      ) : null}
+      <div className="grid gap-1.5">
+        {rows.map((item, index) => {
+          const dataKey = tooltipDataKey(item)
+          const itemConfig = config[dataKey]
+          const color =
+            item.color ??
+            item.stroke ??
+            item.fill ??
+            itemConfig?.color ??
+            "currentColor"
+
+          return (
+            <div className="flex items-center gap-2" key={`${dataKey}-${index}`}>
+              <span
+                aria-hidden="true"
+                className="size-2 shrink-0 rounded-[2px]"
+                style={{ backgroundColor: color }}
+              />
+              <span className="min-w-0 flex-1 truncate text-muted-foreground">
+                {itemConfig?.label ?? item.name ?? dataKey}
+              </span>
+              <span className="font-mono font-medium text-foreground tabular-nums">
+                {formatTooltipValue(item.value, itemConfig?.formatter)}
+              </span>
+            </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+function TrainingTelemetryChart({
+  accuracyPointCount,
+  config,
+  data,
+  lossAxisUpperBound,
+  lossPointCount,
+  mutationStepAxisUpperBound,
+  mutationStepPointCount,
+  showMutationStepAxis,
+  stepAxisUpperBound,
+  tooltipConfig,
+}: {
+  accuracyPointCount: number
+  config: ChartConfig
+  data: NumericChartDatum[]
+  lossAxisUpperBound: number
+  lossPointCount: number
+  mutationStepAxisUpperBound: number
+  mutationStepPointCount: number
+  showMutationStepAxis: boolean
+  stepAxisUpperBound: number
+  tooltipConfig: ChartTooltipConfig
+}) {
+  return (
+    <ChartContainer className="h-full w-full aspect-auto" config={config}>
+      <ComposedChart
+        accessibilityLayer
+        data={data}
+        margin={{ bottom: 0, left: 8, right: 8, top: 12 }}
+      >
+        <CartesianGrid vertical={false} />
+        <XAxis
+          axisLine={false}
+          dataKey="x"
+          domain={[0, stepAxisUpperBound]}
+          minTickGap={28}
+          tickFormatter={formatAxisInteger}
+          tickLine={false}
+          tickMargin={8}
+          type="number"
+        />
+        <YAxis domain={[0, lossAxisUpperBound]} hide yAxisId="loss" />
+        <YAxis domain={[0, 100]} hide yAxisId="accuracy" />
+        {showMutationStepAxis ? (
+          <YAxis
+            domain={[0, mutationStepAxisUpperBound]}
+            hide
+            yAxisId="mutationStep"
+          />
+        ) : null}
+        <ChartTooltip
+          content={
+            <FormattedChartTooltip
+              config={tooltipConfig}
+              labelFormatter={(value) => `Step ${formatAxisInteger(value)}`}
+            />
+          }
+        />
+        <ChartLegend
+          content={<ChartLegendContent className="flex-wrap gap-x-5 gap-y-1" />}
+          verticalAlign="top"
+        />
+        {lossPointCount > 0 ? (
+          <Line
+            connectNulls
+            dataKey="loss"
+            dot={lossPointCount <= MARKER_POINT_LIMIT}
+            isAnimationActive={false}
+            name="Loss"
+            stroke="var(--color-loss)"
+            strokeWidth={1.6}
+            type="monotone"
+            yAxisId="loss"
+          />
+        ) : null}
+        {accuracyPointCount > 0 ? (
+          <Line
+            connectNulls
+            dataKey="accuracy"
+            dot={accuracyPointCount <= MARKER_POINT_LIMIT}
+            isAnimationActive={false}
+            name="Accuracy"
+            stroke="var(--color-accuracy)"
+            strokeWidth={1.6}
+            type="monotone"
+            yAxisId="accuracy"
+          />
+        ) : null}
+        {showMutationStepAxis && mutationStepPointCount > 0 ? (
+          <Line
+            connectNulls
+            dataKey="mutationStep"
+            dot={false}
+            isAnimationActive={false}
+            name="Mutation step"
+            stroke="var(--color-mutationStep)"
+            strokeDasharray="4 4"
+            strokeWidth={1.6}
+            type="monotone"
+            yAxisId="mutationStep"
+          />
+        ) : null}
+      </ComposedChart>
+    </ChartContainer>
+  )
+}
+
+function TrainingHistoryChart({
+  report,
+  sideLabels,
+}: {
+  report: AnalysisComparisonReport
+  sideLabels: AnalysisSideLabels
+}) {
+  const series: (ChartSeries & {
+    points: NumericSeriesPoint[]
+    yAxisId: "accuracy" | "loss"
+  })[] = [
+    {
+      color: REPORT_LEFT_COLOR,
+      dataKey: "leftLoss",
+      label: `${sideShortLabel("left", sideLabels)} train loss`,
+      points: indexedNumberSeries(report.curves.left.training_loss),
+      yAxisId: "loss",
+    },
+    {
+      color: REPORT_RIGHT_COLOR,
+      dataKey: "rightLoss",
+      label: `${sideShortLabel("right", sideLabels)} train loss`,
+      points: indexedNumberSeries(report.curves.right.training_loss),
+      yAxisId: "loss",
+    },
+    {
+      color: REPORT_LEFT_ACCENT_COLOR,
+      dashed: true,
+      dataKey: "leftAccuracy",
+      label: `${sideShortLabel("left", sideLabels)} val acc.`,
+      points: accuracyPointSeries(report.curves.left.validation_accuracy),
+      yAxisId: "accuracy",
+    },
+    {
+      color: REPORT_RIGHT_ACCENT_COLOR,
+      dashed: true,
+      dataKey: "rightAccuracy",
+      label: `${sideShortLabel("right", sideLabels)} val acc.`,
+      points: accuracyPointSeries(report.curves.right.validation_accuracy),
+      yAxisId: "accuracy",
+    },
+  ]
+  const data = mergeNumericSeries(
+    series.map((item) => ({
+      dataKey: item.dataKey,
+      points: downsampleNumericSeries(item.points),
+    }))
+  )
+  const config = chartConfigFromSeries(series)
+  const tooltipConfig = chartTooltipConfigFromSeries(series, {
+    leftAccuracy: (value) => `${value.toFixed(2)}%`,
+    leftLoss: (value) => value.toFixed(4),
+    rightAccuracy: (value) => `${value.toFixed(2)}%`,
+    rightLoss: (value) => value.toFixed(4),
+  })
+  const maxStep = maxSeriesX(series.flatMap((item) => item.points))
+  const lossUpperBound = numericAxisUpperBoundFor(
+    [
+      ...report.curves.left.training_loss,
+      ...report.curves.right.training_loss,
+    ],
+    null
+  )
+
+  return (
+    <ChartPanel title="Training History">
+      <ChartContainer className="h-full w-full aspect-auto" config={config}>
+        <ComposedChart
+          accessibilityLayer
+          data={data}
+          margin={{ bottom: 0, left: 8, right: 8, top: 8 }}
+        >
+          <CartesianGrid vertical={false} />
+          <XAxis
+            axisLine={false}
+            dataKey="x"
+            domain={[0, nextStepAxisUpperBound(maxStep)]}
+            minTickGap={28}
+            tickFormatter={formatAxisInteger}
+            tickLine={false}
+            tickMargin={8}
+            type="number"
+          />
+          <YAxis domain={[0, lossUpperBound]} hide yAxisId="loss" />
+          <YAxis domain={[0, 100]} hide yAxisId="accuracy" />
+          <ChartTooltip
+            content={
+              <FormattedChartTooltip
+                config={tooltipConfig}
+                labelFormatter={(value) => `Step ${formatAxisInteger(value)}`}
+              />
+            }
+          />
+          <ChartLegend
+            content={
+              <ChartLegendContent className="flex-wrap gap-x-5 gap-y-1" />
+            }
+            verticalAlign="top"
+          />
+          {series.map((item) => (
+            <Line
+              connectNulls
+              dataKey={item.dataKey}
+              dot={item.points.length <= MARKER_POINT_LIMIT}
+              isAnimationActive={false}
+              key={item.dataKey}
+              name={item.label}
+              stroke={`var(--color-${item.dataKey})`}
+              strokeDasharray={item.dashed ? "4 4" : undefined}
+              strokeWidth={1.6}
+              type="monotone"
+              yAxisId={item.yAxisId}
+            />
+          ))}
+        </ComposedChart>
+      </ChartContainer>
+    </ChartPanel>
+  )
+}
+
+function OutcomeOverlapChart({
+  plotPalette,
+  report,
+  sideLabels,
+}: {
+  plotPalette: PlotPalette
+  report: AnalysisComparisonReport
+  sideLabels: AnalysisSideLabels
+}) {
+  const data = report.overlap.upset.map((row) => ({
+    count: row.count,
+    label: overlapSetLabel(row.set, sideLabels),
+  }))
+  const config: ChartConfig = {
+    count: { label: "Count", color: plotPalette.accuracy },
+  }
+  const tooltipConfig: ChartTooltipConfig = {
+    count: {
+      color: plotPalette.accuracy,
+      formatter: formatInteger,
+      label: "Count",
+    },
+  }
+
+  return (
+    <CategoryBarChart
+      config={config}
+      data={data}
+      dataKeys={["count"]}
+      title="Outcome Overlap"
+      tooltipConfig={tooltipConfig}
+    />
+  )
+}
+
+function CalibrationChart({
+  plotPalette,
+  report,
+  sideLabels,
+}: {
+  plotPalette: PlotPalette
+  report: AnalysisComparisonReport
+  sideLabels: AnalysisSideLabels
+}) {
+  const series: ChartSeries[] = [
+    {
+      color: REPORT_LEFT_COLOR,
+      dataKey: "left",
+      label: sideLabel("left", sideLabels),
+    },
+    {
+      color: REPORT_RIGHT_COLOR,
+      dataKey: "right",
+      label: sideLabel("right", sideLabels),
+    },
+    {
+      color: plotPalette.mutationStep,
+      dashed: true,
+      dataKey: "ideal",
+      label: "Ideal",
+    },
+  ]
+  const data = calibrationChartData(report)
+  const config = chartConfigFromSeries(series)
+  const tooltipConfig = chartTooltipConfigFromSeries(series, {
+    ideal: formatCompactNumber,
+    left: formatCompactNumber,
+    right: formatCompactNumber,
+  })
+
+  return (
+    <ChartPanel title="Calibration">
+      <ChartContainer className="h-full w-full aspect-auto" config={config}>
+        <ComposedChart
+          accessibilityLayer
+          data={data}
+          margin={{ bottom: 0, left: 8, right: 8, top: 8 }}
+        >
+          <CartesianGrid vertical={false} />
+          <XAxis
+            axisLine={false}
+            dataKey="x"
+            domain={[0, 1]}
+            ticks={[0, 0.25, 0.5, 0.75, 1]}
+            tickFormatter={formatCompactNumber}
+            tickLine={false}
+            tickMargin={8}
+            type="number"
+          />
+          <YAxis domain={[0, 1]} hide />
+          <ChartTooltip
+            content={
+              <FormattedChartTooltip
+                config={tooltipConfig}
+                labelFormatter={(value) =>
+                  `Confidence ${formatAxisCompact(value)}`
+                }
+              />
+            }
+          />
+          <ChartLegend
+            content={
+              <ChartLegendContent className="flex-wrap gap-x-5 gap-y-1" />
+            }
+            verticalAlign="top"
+          />
+          {series.map((item) => (
+            <Line
+              connectNulls
+              dataKey={item.dataKey}
+              dot={!item.dashed}
+              isAnimationActive={false}
+              key={item.dataKey}
+              name={item.label}
+              stroke={`var(--color-${item.dataKey})`}
+              strokeDasharray={item.dashed ? "4 4" : undefined}
+              strokeWidth={item.dashed ? 1.2 : 1.6}
+              type="monotone"
+            />
+          ))}
+        </ComposedChart>
+      </ChartContainer>
+    </ChartPanel>
+  )
+}
+
+function RobustnessChart({
+  report,
+  sideLabels,
+}: {
+  report: AnalysisComparisonReport
+  sideLabels: AnalysisSideLabels
+}) {
+  const { data, series } = robustnessChartData(report, sideLabels)
+  const config = chartConfigFromSeries(series)
+  const tooltipConfig = chartTooltipConfigFromSeries(
+    series,
+    Object.fromEntries(
+      series.map((item) => [
+        item.dataKey,
+        (value: number) => `${value.toFixed(2)}%`,
+      ])
+    )
+  )
+
+  return (
+    <ChartPanel title="Robustness">
+      <ChartContainer className="h-full w-full aspect-auto" config={config}>
+        <ComposedChart
+          accessibilityLayer
+          data={data}
+          margin={{ bottom: 0, left: 8, right: 8, top: 8 }}
+        >
+          <CartesianGrid vertical={false} />
+          <XAxis
+            axisLine={false}
+            dataKey="x"
+            minTickGap={28}
+            tickFormatter={formatCompactNumber}
+            tickLine={false}
+            tickMargin={8}
+            type="number"
+          />
+          <YAxis domain={[0, 100]} hide />
+          <ChartTooltip
+            content={
+              <FormattedChartTooltip
+                config={tooltipConfig}
+                labelFormatter={(value) => `Level ${formatAxisCompact(value)}`}
+              />
+            }
+          />
+          <ChartLegend
+            content={
+              <ChartLegendContent className="flex-wrap gap-x-5 gap-y-1" />
+            }
+            verticalAlign="top"
+          />
+          {series.map((item) => (
+            <Line
+              connectNulls
+              dataKey={item.dataKey}
+              dot
+              isAnimationActive={false}
+              key={item.dataKey}
+              name={item.label}
+              stroke={`var(--color-${item.dataKey})`}
+              strokeDasharray={item.dashed ? "4 4" : undefined}
+              strokeWidth={1.6}
+              type="monotone"
+            />
+          ))}
+        </ComposedChart>
+      </ChartContainer>
+    </ChartPanel>
+  )
+}
+
+function ActivationSparsityChart({
+  report,
+  sideLabels,
+}: {
+  report: AnalysisComparisonReport
+  sideLabels: AnalysisSideLabels
+}) {
+  const names = activationLayerNames(report)
+  const data = names.map((name) => ({
+    label: name,
+    left:
+      report.activations.left.find((layer) => layer.name === name)?.sparsity ??
+      0,
+    right:
+      report.activations.right.find((layer) => layer.name === name)?.sparsity ??
+      0,
+  }))
+  const config: ChartConfig = {
+    left: { label: sideLabel("left", sideLabels), color: REPORT_LEFT_COLOR },
+    right: { label: sideLabel("right", sideLabels), color: REPORT_RIGHT_COLOR },
+  }
+  const tooltipConfig: ChartTooltipConfig = {
+    left: {
+      color: REPORT_LEFT_COLOR,
+      formatter: formatCompactNumber,
+      label: sideLabel("left", sideLabels),
+    },
+    right: {
+      color: REPORT_RIGHT_COLOR,
+      formatter: formatCompactNumber,
+      label: sideLabel("right", sideLabels),
+    },
+  }
+
+  return (
+    <CategoryBarChart
+      config={config}
+      data={data}
+      dataKeys={["left", "right"]}
+      title="Activation Sparsity"
+      tooltipConfig={tooltipConfig}
+      tickFormatter={compactLayerName}
+      yUpperBound={Math.max(1, maxCategoryValue(data, ["left", "right"]))}
+    />
+  )
+}
+
+function WeightDistanceChart({
+  plotPalette,
+  report,
+}: {
+  plotPalette: PlotPalette
+  report: AnalysisComparisonReport
+}) {
+  const data = report.weights.map((weight) => ({
+    distance: weight.relative_distance,
+    label: weight.name,
+  }))
+  const config: ChartConfig = {
+    distance: { label: "Relative distance", color: plotPalette.accuracy },
+  }
+  const tooltipConfig: ChartTooltipConfig = {
+    distance: {
+      color: plotPalette.accuracy,
+      formatter: formatCompactNumber,
+      label: "Relative distance",
+    },
+  }
+
+  return (
+    <CategoryBarChart
+      config={config}
+      data={data}
+      dataKeys={["distance"]}
+      title="Relative Weight Distance"
+      tooltipConfig={tooltipConfig}
+      tickFormatter={compactLayerName}
+    />
+  )
+}
+
+function CategoryBarChart({
+  config,
+  data,
+  dataKeys,
+  tickFormatter = compactCategoryTick,
+  title,
+  tooltipConfig,
+  yUpperBound,
+}: {
+  config: ChartConfig
+  data: CategoryChartDatum[]
+  dataKeys: string[]
+  tickFormatter?: (value: string) => string
+  title: string
+  tooltipConfig: ChartTooltipConfig
+  yUpperBound?: number
+}) {
+  return (
+    <ChartPanel title={title}>
+      <ChartContainer className="h-full w-full aspect-auto" config={config}>
+        <BarChart
+          accessibilityLayer
+          data={data}
+          margin={{ bottom: 0, left: 8, right: 8, top: 8 }}
+        >
+          <CartesianGrid vertical={false} />
+          <XAxis
+            axisLine={false}
+            dataKey="label"
+            interval="preserveStartEnd"
+            minTickGap={16}
+            tickFormatter={(value) => tickFormatter(String(value))}
+            tickLine={false}
+            tickMargin={8}
+          />
+          <YAxis domain={[0, yUpperBound ?? "dataMax"]} hide />
+          <ChartTooltip
+            content={
+              <FormattedChartTooltip
+                config={tooltipConfig}
+                labelFormatter={(value) => String(value ?? "")}
+              />
+            }
+          />
+          {dataKeys.length > 1 ? (
+            <ChartLegend
+              content={
+                <ChartLegendContent className="flex-wrap gap-x-5 gap-y-1" />
+              }
+              verticalAlign="top"
+            />
+          ) : null}
+          {dataKeys.map((dataKey) => (
+            <Bar
+              dataKey={dataKey}
+              fill={`var(--color-${dataKey})`}
+              isAnimationActive={false}
+              key={dataKey}
+              name={config[dataKey]?.label?.toString() ?? dataKey}
+              radius={dataKeys.length === 1 ? [4, 4, 0, 0] : [3, 3, 0, 0]}
+            >
+              {dataKeys.length === 1
+                ? data.map((_, cellIndex) => (
+                    <Cell
+                      fill={`var(--color-${dataKey})`}
+                      key={`${dataKey}-${cellIndex}`}
+                    />
+                  ))
+                : null}
+            </Bar>
+          ))}
+        </BarChart>
+      </ChartContainer>
+    </ChartPanel>
+  )
+}
+
+function EmbeddingChartPanel({
+  bodyClassName = "h-[20rem]",
+  className,
+  dataset,
+  pointShape,
+  points,
+  sampleLimit,
+  sideLabels,
+  title,
+  xDomain,
+  yDomain,
+}: {
+  bodyClassName?: string
+  className?: string
+  dataset: CheckpointSummary["dataset"]
+  pointShape: "circle" | "side"
+  points: AnalysisEmbeddingPlotPoint[]
+  sampleLimit: number
+  sideLabels: AnalysisSideLabels
+  title: string
+  xDomain?: [number, number]
+  yDomain?: [number, number]
+}) {
+  const sampledPoints = useMemo(
+    () => sampleEmbeddingPoints(points, sampleLimit),
+    [points, sampleLimit]
+  )
+  const chartPoints = useMemo(
+    () =>
+      sampledPoints.map((point) => ({
+        ...point,
+        className: classLabelFor(dataset, point.label),
+        correctText: point.correct ? "correct" : "incorrect",
+        predictionName: classLabelFor(dataset, point.prediction),
+        sideName: sideLabel(point.side, sideLabels),
+      })),
+    [dataset, sampledPoints, sideLabels]
+  )
+  const legendItems = embeddingLegendItems(points, dataset)
+  const config = chartConfigFromLegendItems(legendItems)
+  const groupedPoints = groupedEmbeddingPoints(chartPoints)
+  const resolvedXDomain =
+    xDomain ?? paddedNumericDomain(chartPoints.map((point) => point.x))
+  const resolvedYDomain =
+    yDomain ?? paddedNumericDomain(chartPoints.map((point) => point.y))
+
+  return (
+    <ChartPanel
+      bodyClassName={bodyClassName}
+      className={className}
+      footer={
+        <span className="text-[0.7rem] text-muted-foreground/55 tabular-nums">
+          Sampled {formatInteger(sampledPoints.length)} /{" "}
+          {formatInteger(points.length)}
+        </span>
+      }
+      title={title}
+    >
+      <ChartContainer
+        className="h-full min-h-[18rem] w-full aspect-auto"
+        config={config}
+      >
+        <ScatterChart
+          accessibilityLayer
+          margin={{ bottom: 8, left: 8, right: 8, top: 8 }}
+        >
+          <XAxis dataKey="x" domain={resolvedXDomain} hide type="number" />
+          <YAxis dataKey="y" domain={resolvedYDomain} hide type="number" />
+          <ZAxis range={[18, 18]} />
+          <ChartTooltip content={<EmbeddingTooltip />} cursor={false} />
+          <ChartLegend
+            content={
+              <ChartLegendContent
+                className="flex-wrap gap-x-5 gap-y-1"
+                nameKey="value"
+              />
+            }
+            verticalAlign="top"
+          />
+          {groupedPoints.map((group) => (
+            <Scatter
+              data={group.points}
+              fill={group.color}
+              isAnimationActive={false}
+              key={group.label}
+              legendType="circle"
+              name={group.label}
+              shape={
+                pointShape === "circle"
+                  ? EmbeddingCircleShape
+                  : EmbeddingScatterShape
+              }
+            />
+          ))}
+        </ScatterChart>
+      </ChartContainer>
+    </ChartPanel>
+  )
+}
+
+function EmbeddingTooltip({
+  active,
+  payload,
+}: {
+  active?: boolean
+  payload?: readonly TooltipPayloadEntry<TooltipValueType, string | number>[]
+}) {
+  const point: unknown = payload?.[0]?.payload
+  if (!active || !isEmbeddingChartPoint(point)) {
+    return null
+  }
+
+  return (
+    <div className="grid min-w-40 items-start gap-1.5 rounded-lg border border-border/50 bg-background px-2.5 py-1.5 text-xs shadow-xl">
+      <div className="font-medium">{point.sideName}</div>
+      <div className="grid gap-1">
+        <div className="flex justify-between gap-4">
+          <span className="text-muted-foreground">Class</span>
+          <span className="font-medium">{point.className}</span>
+        </div>
+        <div className="flex justify-between gap-4">
+          <span className="text-muted-foreground">Prediction</span>
+          <span className="font-medium">{point.predictionName}</span>
+        </div>
+        <div className="flex justify-between gap-4">
+          <span className="text-muted-foreground">Result</span>
+          <span className="font-medium">{point.correctText}</span>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function EmbeddingScatterShape(props: ScatterShapeProps & { fill?: string }) {
+  const point: unknown = props.payload
+  const color = props.fill ?? "currentColor"
+  const cx = props.cx
+  const cy = props.cy
+
+  if (typeof cx !== "number" || typeof cy !== "number") {
+    return null
+  }
+
+  if (isEmbeddingChartPoint(point) && point.side === "right") {
+    return (
+      <path
+        d={`M ${cx - 2.5} ${cy - 2.5} L ${cx + 2.5} ${cy + 2.5} M ${
+          cx + 2.5
+        } ${cy - 2.5} L ${cx - 2.5} ${cy + 2.5}`}
+        fill="none"
+        opacity={0.72}
+        stroke={color}
+        strokeLinecap="round"
+        strokeWidth={1.2}
+      />
+    )
+  }
+
+  return <circle cx={cx} cy={cy} fill={color} fillOpacity={0.62} r={2.4} />
+}
+
+function EmbeddingCircleShape(props: ScatterShapeProps & { fill?: string }) {
+  const cx = props.cx
+  const cy = props.cy
+
+  if (typeof cx !== "number" || typeof cy !== "number") {
+    return null
+  }
+
+  return (
+    <circle
+      cx={cx}
+      cy={cy}
+      fill={props.fill ?? "currentColor"}
+      fillOpacity={0.62}
+      r={2.4}
+    />
+  )
+}
+
+function HeatmapPlot({
   className,
   data,
   layout,
-  legendItems,
+  title,
 }: {
   className?: string
-  data: Data[]
+  data: PlotlyData[]
   layout: Partial<Layout>
-  legendItems?: PlotLegendItem[]
+  title: string
 }) {
-  const plotLayout = legendItems ? { ...layout, showlegend: false } : layout
-
   return (
-    <div className={cn("flex h-[24rem] flex-col rounded-lg border p-2", className)}>
-      <div className="min-h-0 flex-1">
-        <Plot
-          className="h-full w-full"
-          config={{
-            displayModeBar: false,
-            displaylogo: false,
-            responsive: true,
-            scrollZoom: false,
-          }}
-          data={data}
-          layout={plotLayout}
-          style={{ height: "100%", width: "100%" }}
-          useResizeHandler
-        />
-      </div>
-      {legendItems ? (
-        <div className="flex shrink-0 flex-wrap items-center justify-center gap-x-5 gap-y-1 pb-1 pt-2 text-xs text-muted-foreground">
-          {legendItems.map((item) => (
-            <span className="inline-flex items-center gap-2" key={item.label}>
-              <span
-                className="size-1 rounded-full"
-                style={{ backgroundColor: item.color }}
-              />
-              {item.label}
-            </span>
-          ))}
-        </div>
-      ) : null}
-    </div>
+    <ChartPanel bodyClassName="h-[20rem]" className={className} title={title}>
+      <Plot
+        className="h-full w-full"
+        config={{
+          displayModeBar: false,
+          displaylogo: false,
+          responsive: true,
+          scrollZoom: false,
+        }}
+        data={data}
+        layout={layout}
+        style={{ height: "100%", width: "100%" }}
+        useResizeHandler
+      />
+    </ChartPanel>
   )
 }
 
@@ -3004,66 +3694,133 @@ function overlapSetLabel(set: string, sideLabels: AnalysisSideLabels): string {
   }
 }
 
-function trainingCurveData(
-  report: AnalysisComparisonReport,
-  sideLabels: AnalysisSideLabels
-): Data[] {
-  return [
+function trainingTelemetryChartData(
+  losses: number[],
+  accuracyPoints: { i: number; value: number }[],
+  mutationStepPoints: { i: number; value: number }[]
+): NumericChartDatum[] {
+  return mergeNumericSeries([
     {
-      type: "scatter",
-      mode: traceMode(report.curves.left.training_loss.length),
-      name: `${sideShortLabel("left", sideLabels)} train loss`,
-      x: report.curves.left.training_loss.map((_, index) => index + 1),
-      y: report.curves.left.training_loss,
-      line: { color: "#2563eb", width: 1.5 },
+      dataKey: "loss",
+      points: downsampleNumericSeries(indexedNumberSeries(losses)),
     },
     {
-      type: "scatter",
-      mode: traceMode(report.curves.right.training_loss.length),
-      name: `${sideShortLabel("right", sideLabels)} train loss`,
-      x: report.curves.right.training_loss.map((_, index) => index + 1),
-      y: report.curves.right.training_loss,
-      line: { color: "#dc2626", width: 1.5 },
+      dataKey: "accuracy",
+      points: downsampleNumericSeries(accuracyPointSeries(accuracyPoints)),
     },
     {
-      type: "scatter",
-      mode: accuracyTraceMode(report.curves.left.validation_accuracy.length),
-      name: `${sideShortLabel("left", sideLabels)} val acc.`,
-      x: report.curves.left.validation_accuracy.map((point) => point.i),
-      y: report.curves.left.validation_accuracy.map((point) => point.value),
-      yaxis: "y2",
-      line: { color: "#0891b2", width: 1.5, dash: "dot" },
+      dataKey: "mutationStep",
+      points: downsampleNumericSeries(accuracyPointSeries(mutationStepPoints)),
     },
-    {
-      type: "scatter",
-      mode: accuracyTraceMode(report.curves.right.validation_accuracy.length),
-      name: `${sideShortLabel("right", sideLabels)} val acc.`,
-      x: report.curves.right.validation_accuracy.map((point) => point.i),
-      y: report.curves.right.validation_accuracy.map((point) => point.value),
-      yaxis: "y2",
-      line: { color: "#ea580c", width: 1.5, dash: "dot" },
-    },
-  ]
+  ])
 }
 
-function overlapData(
-  report: AnalysisComparisonReport,
-  sideLabels: AnalysisSideLabels
-): Data[] {
-  return [
-    {
-      type: "bar",
-      orientation: "h",
-      x: report.overlap.upset.map((row) => row.count),
-      y: report.overlap.upset.map((row) =>
-        overlapSetLabel(row.set, sideLabels)
-      ),
-      marker: { color: "#2563eb" },
-    },
-  ]
+function indexedNumberSeries(values: number[]): NumericSeriesPoint[] {
+  return values.flatMap((value, index) =>
+    Number.isFinite(value) ? [{ x: index + 1, y: value }] : []
+  )
 }
 
-function confusionData(matrix: number[][], name: string): Data[] {
+function accuracyPointSeries(
+  points: { i: number; value: number }[]
+): NumericSeriesPoint[] {
+  return points.flatMap((point) =>
+    Number.isFinite(point.i) && Number.isFinite(point.value)
+      ? [{ x: point.i, y: point.value }]
+      : []
+  )
+}
+
+function downsampleNumericSeries(
+  points: NumericSeriesPoint[],
+  targetPointCount = LINE_RENDER_POINT_LIMIT
+): NumericSeriesPoint[] {
+  if (points.length <= targetPointCount) {
+    return points
+  }
+
+  const selectedIndexes = new Set<number>([0, points.length - 1])
+  const bucketCount = Math.max(1, Math.floor((targetPointCount - 2) / 2))
+  const interiorCount = points.length - 2
+
+  for (let bucketIndex = 0; bucketIndex < bucketCount; bucketIndex += 1) {
+    const start = 1 + Math.floor((bucketIndex * interiorCount) / bucketCount)
+    const end = 1 + Math.floor(((bucketIndex + 1) * interiorCount) / bucketCount)
+    if (start >= end) {
+      continue
+    }
+
+    let minIndex = start
+    let maxIndex = start
+    for (let index = start + 1; index < end; index += 1) {
+      if (points[index].y < points[minIndex].y) {
+        minIndex = index
+      }
+      if (points[index].y > points[maxIndex].y) {
+        maxIndex = index
+      }
+    }
+    selectedIndexes.add(minIndex)
+    selectedIndexes.add(maxIndex)
+  }
+
+  return [...selectedIndexes]
+    .sort((left, right) => left - right)
+    .map((index) => points[index])
+}
+
+function mergeNumericSeries(
+  series: { dataKey: string; points: NumericSeriesPoint[] }[]
+): NumericChartDatum[] {
+  const rows = new Map<number, NumericChartDatum>()
+
+  for (const item of series) {
+    for (const point of item.points) {
+      const row = rows.get(point.x) ?? { x: point.x }
+      row[item.dataKey] = point.y
+      rows.set(point.x, row)
+    }
+  }
+
+  return [...rows.values()].sort((left, right) => left.x - right.x)
+}
+
+function maxSeriesX(points: NumericSeriesPoint[]): number {
+  return Math.max(0, ...points.map((point) => point.x))
+}
+
+function chartConfigFromSeries(series: ChartSeries[]): ChartConfig {
+  return Object.fromEntries(
+    series.map((item) => [
+      item.dataKey,
+      { label: item.label, color: item.color },
+    ])
+  ) as ChartConfig
+}
+
+function chartTooltipConfigFromSeries(
+  series: ChartSeries[],
+  formatters: Partial<Record<string, ChartValueFormatter>> = {}
+): ChartTooltipConfig {
+  return Object.fromEntries(
+    series.map((item) => [
+      item.dataKey,
+      {
+        color: item.color,
+        formatter: formatters[item.dataKey],
+        label: item.label,
+      },
+    ])
+  )
+}
+
+function chartConfigFromLegendItems(items: ChartLegendItem[]): ChartConfig {
+  return Object.fromEntries(
+    items.map((item) => [item.label, { label: item.label, color: item.color }])
+  ) as ChartConfig
+}
+
+function confusionData(matrix: number[][], name: string): PlotlyData[] {
   return [
     {
       type: "heatmap",
@@ -3076,36 +3833,29 @@ function confusionData(matrix: number[][], name: string): Data[] {
   ]
 }
 
-function calibrationData(
-  report: AnalysisComparisonReport,
-  sideLabels: AnalysisSideLabels
-): Data[] {
-  return [
-    {
-      type: "scatter",
-      mode: "lines+markers",
-      name: sideLabel("left", sideLabels),
-      x: report.metrics.left.calibration.bins.map((bin) => bin.confidence),
-      y: report.metrics.left.calibration.bins.map((bin) => bin.accuracy),
-      line: { color: "#2563eb", width: 1.5 },
-    },
-    {
-      type: "scatter",
-      mode: "lines+markers",
-      name: sideLabel("right", sideLabels),
-      x: report.metrics.right.calibration.bins.map((bin) => bin.confidence),
-      y: report.metrics.right.calibration.bins.map((bin) => bin.accuracy),
-      line: { color: "#dc2626", width: 1.5 },
-    },
-    {
-      type: "scatter",
-      mode: "lines",
-      name: "Ideal",
-      x: [0, 1],
-      y: [0, 1],
-      line: { color: "#737373", width: 1, dash: "dot" },
-    },
-  ]
+function calibrationChartData(report: AnalysisComparisonReport): NumericChartDatum[] {
+  const rows = new Map<number, NumericChartDatum>()
+  const setValue = (x: number, dataKey: string, value: number) => {
+    if (!Number.isFinite(x) || !Number.isFinite(value)) {
+      return
+    }
+    const row = rows.get(x) ?? { x }
+    row[dataKey] = value
+    rows.set(x, row)
+  }
+
+  for (const bin of report.metrics.left.calibration.bins) {
+    setValue(bin.confidence, "left", bin.accuracy)
+  }
+  for (const bin of report.metrics.right.calibration.bins) {
+    setValue(bin.confidence, "right", bin.accuracy)
+  }
+  rows.set(0, { ...(rows.get(0) ?? { x: 0 }), ideal: 0 })
+  rows.set(1, { ...(rows.get(1) ?? { x: 1 }), ideal: 1 })
+
+  return [...rows.values()]
+    .map((row) => ({ ...row, ideal: row.x }))
+    .sort((left, right) => left.x - right.x)
 }
 
 type AnalysisEmbeddingPlotPoint =
@@ -3113,38 +3863,40 @@ type AnalysisEmbeddingPlotPoint =
     side: AnalysisSide
   }
 
-function embeddingSideData(
+function embeddingSidePoints(
   points: AnalysisEmbeddingProjection["left"],
-  side: AnalysisSide,
-  dataset: CheckpointSummary["dataset"],
-  sideLabels: AnalysisSideLabels
-): Data[] {
-  return embeddingClassData(
-    points.map((point) => ({ ...point, side })),
-    dataset,
-    sideLabels
-  )
+  side: AnalysisSide
+): AnalysisEmbeddingPlotPoint[] {
+  return points.map((point) => ({ ...point, side }))
 }
 
-function embeddingData(
-  projection: AnalysisEmbeddingProjection,
-  dataset: CheckpointSummary["dataset"],
-  sideLabels: AnalysisSideLabels
-): Data[] {
-  const points: AnalysisEmbeddingPlotPoint[] = [
+function embeddingProjectionPoints(
+  projection: AnalysisEmbeddingProjection
+): AnalysisEmbeddingPlotPoint[] {
+  return [
     ...projection.left.map((point) => ({ ...point, side: "left" as const })),
     ...projection.right.map((point) => ({ ...point, side: "right" as const })),
   ]
-
-  return embeddingClassData(points, dataset, sideLabels)
 }
 
-function embeddingClassData(
+function embeddingLegendItems(
   points: AnalysisEmbeddingPlotPoint[],
-  dataset: CheckpointSummary["dataset"],
-  sideLabels: AnalysisSideLabels
-): Data[] {
-  const grouped = new Map<number, AnalysisEmbeddingPlotPoint[]>()
+  dataset: CheckpointSummary["dataset"]
+): ChartLegendItem[] {
+  return Array.from(new Set(points.map((point) => point.label)))
+    .sort((leftLabel, rightLabel) => leftLabel - rightLabel)
+    .map((label) => ({
+      color: embeddingClassColor(label),
+      label: classLabelFor(dataset, label),
+    }))
+}
+
+function groupedEmbeddingPoints(points: EmbeddingChartPoint[]): {
+  color: string
+  label: string
+  points: EmbeddingChartPoint[]
+}[] {
+  const grouped = new Map<number, EmbeddingChartPoint[]>()
   for (const point of points) {
     const group = grouped.get(point.label)
     if (group) {
@@ -3154,59 +3906,13 @@ function embeddingClassData(
     }
   }
 
-  return Array.from(grouped.entries())
+  return [...grouped.entries()]
     .sort(([leftLabel], [rightLabel]) => leftLabel - rightLabel)
-    .map(([label, classPoints]) =>
-      embeddingTrace(
-        classPoints,
-        classLabelFor(dataset, label),
-        embeddingClassColor(label),
-        dataset,
-        sideLabels
-      )
-    )
-}
-
-function embeddingLegendItems(
-  points: AnalysisEmbeddingProjection["left"],
-  dataset: CheckpointSummary["dataset"]
-): PlotLegendItem[] {
-  return Array.from(new Set(points.map((point) => point.label)))
-    .sort((leftLabel, rightLabel) => leftLabel - rightLabel)
-    .map((label) => ({
+    .map(([label, groupPoints]) => ({
       color: embeddingClassColor(label),
-      label: classLabelFor(dataset, label),
+      label: groupPoints[0]?.className ?? String(label),
+      points: groupPoints,
     }))
-}
-
-function embeddingTrace(
-  points: AnalysisEmbeddingPlotPoint[],
-  name: string,
-  color: string,
-  dataset: CheckpointSummary["dataset"],
-  sideLabels: AnalysisSideLabels
-): Data {
-  return {
-    type: "scattergl",
-    mode: "markers",
-    name,
-    x: points.map((point) => point.x),
-    y: points.map((point) => point.y),
-    customdata: points.map((point) => [
-      sideLabel(point.side, sideLabels),
-      classLabelFor(dataset, point.label),
-      classLabelFor(dataset, point.prediction),
-      point.correct ? "correct" : "incorrect",
-    ]),
-    hovertemplate:
-      "<b>%{customdata[0]}</b><br>Class %{customdata[1]}<br>Prediction %{customdata[2]}<br>%{customdata[3]}<extra></extra>",
-    marker: {
-      color,
-      opacity: 0.58,
-      size: 2.5,
-      symbol: points.map((point) => (point.side === "left" ? "circle" : "x")),
-    },
-  }
 }
 
 function embeddingClassColor(label: number): string {
@@ -3215,122 +3921,294 @@ function embeddingClassColor(label: number): string {
   ]
 }
 
-function robustnessData(
-  report: AnalysisComparisonReport,
-  sideLabels: AnalysisSideLabels
-): Data[] {
-  return report.robustness.flatMap((curve) => [
-    {
-      type: "scatter",
-      mode: "lines+markers",
-      name: `${sideShortLabel("left", sideLabels)} ${curve.perturbation}`,
-      x: curve.points.map((point) => point.level),
-      y: curve.points.map((point) => point.left_accuracy),
-      line: { width: 1.5 },
-    } satisfies Data,
-    {
-      type: "scatter",
-      mode: "lines+markers",
-      name: `${sideShortLabel("right", sideLabels)} ${curve.perturbation}`,
-      x: curve.points.map((point) => point.level),
-      y: curve.points.map((point) => point.right_accuracy),
-      line: { width: 1.5, dash: "dot" },
-    } satisfies Data,
-  ])
+function sampleEmbeddingPoints(
+  points: AnalysisEmbeddingPlotPoint[],
+  limit: number
+): AnalysisEmbeddingPlotPoint[] {
+  if (points.length <= limit) {
+    return sortEmbeddingPoints(points)
+  }
+
+  const groups = new Map<string, AnalysisEmbeddingPlotPoint[]>()
+  for (const point of points) {
+    const key = embeddingSampleGroupKey(point)
+    const group = groups.get(key)
+    if (group) {
+      group.push(point)
+    } else {
+      groups.set(key, [point])
+    }
+  }
+
+  const sortedGroups = [...groups.entries()]
+    .map(([key, groupPoints]) => ({
+      key,
+      points: sortEmbeddingPoints(groupPoints),
+      quota: 0,
+    }))
+    .sort((left, right) => left.key.localeCompare(right.key))
+
+  if (sortedGroups.length === 0 || limit <= 0) {
+    return []
+  }
+
+  if (sortedGroups.length >= limit) {
+    return sortEmbeddingPoints(
+      sortedGroups
+        .slice(0, limit)
+        .flatMap((group) => evenlySpacedSample(group.points, 1))
+    )
+  }
+
+  for (const group of sortedGroups) {
+    group.quota = 1
+  }
+
+  let remaining = limit - sortedGroups.length
+  const totalCapacity = sortedGroups.reduce(
+    (sum, group) => sum + Math.max(0, group.points.length - 1),
+    0
+  )
+  const remainders = sortedGroups.map((group) => {
+    const capacity = Math.max(0, group.points.length - 1)
+    const exactShare = totalCapacity > 0 ? (capacity / totalCapacity) * remaining : 0
+    const extra = Math.min(capacity, Math.floor(exactShare))
+    group.quota += extra
+    return {
+      capacity: capacity - extra,
+      fraction: exactShare - Math.floor(exactShare),
+      group,
+    }
+  })
+
+  remaining = limit - sortedGroups.reduce((sum, group) => sum + group.quota, 0)
+  for (const item of remainders
+    .filter((item) => item.capacity > 0)
+    .sort((left, right) => right.fraction - left.fraction)) {
+    if (remaining <= 0) {
+      break
+    }
+    item.group.quota += 1
+    remaining -= 1
+  }
+
+  return sortEmbeddingPoints(
+    sortedGroups.flatMap((group) =>
+      evenlySpacedSample(group.points, group.quota)
+    )
+  )
 }
 
-function activationData(
+function embeddingSampleGroupKey(point: AnalysisEmbeddingPlotPoint): string {
+  return `${point.side}:${point.label}:${point.correct ? "1" : "0"}`
+}
+
+function sortEmbeddingPoints<T extends AnalysisEmbeddingPlotPoint>(points: T[]): T[] {
+  return [...points].sort(
+    (left, right) =>
+      left.side.localeCompare(right.side) ||
+      left.label - right.label ||
+      Number(left.correct) - Number(right.correct) ||
+      left.index - right.index
+  )
+}
+
+function evenlySpacedSample<T>(items: T[], count: number): T[] {
+  if (count <= 0) {
+    return []
+  }
+  if (items.length <= count) {
+    return items
+  }
+  if (count === 1) {
+    return [items[Math.floor((items.length - 1) / 2)]]
+  }
+
+  const selected: T[] = []
+  for (let index = 0; index < count; index += 1) {
+    const itemIndex = Math.round((index * (items.length - 1)) / (count - 1))
+    selected.push(items[itemIndex])
+  }
+  return selected
+}
+
+function paddedNumericDomain(values: number[]): [number, number] {
+  const finiteValues = values.filter((value) => Number.isFinite(value))
+  if (finiteValues.length === 0) {
+    return [0, 1]
+  }
+
+  const min = Math.min(...finiteValues)
+  const max = Math.max(...finiteValues)
+  if (min === max) {
+    const padding = Math.max(1, Math.abs(min) * 0.05)
+    return [min - padding, max + padding]
+  }
+
+  const padding = (max - min) * 0.05
+  return [min - padding, max + padding]
+}
+
+function robustnessChartData(
   report: AnalysisComparisonReport,
   sideLabels: AnalysisSideLabels
-): Data[] {
-  const names = [
+): { data: NumericChartDatum[]; series: ChartSeries[] } {
+  const series: (ChartSeries & { points: NumericSeriesPoint[] })[] =
+    report.robustness.flatMap((curve, index) => {
+      const color =
+        ROBUSTNESS_SERIES_COLORS[index % ROBUSTNESS_SERIES_COLORS.length]
+      return [
+        {
+          color,
+          dataKey: `robustness${index}Left`,
+          label: `${sideShortLabel("left", sideLabels)} ${curve.perturbation}`,
+          points: curve.points.map((point) => ({
+            x: point.level,
+            y: point.left_accuracy,
+          })),
+        },
+        {
+          color,
+          dashed: true,
+          dataKey: `robustness${index}Right`,
+          label: `${sideShortLabel("right", sideLabels)} ${curve.perturbation}`,
+          points: curve.points.map((point) => ({
+            x: point.level,
+            y: point.right_accuracy,
+          })),
+        },
+      ]
+    })
+
+  return {
+    data: mergeNumericSeries(series),
+    series,
+  }
+}
+
+function activationLayerNames(report: AnalysisComparisonReport): string[] {
+  return [
     ...new Set([
       ...report.activations.left.map((layer) => layer.name),
       ...report.activations.right.map((layer) => layer.name),
     ]),
   ]
-  return [
-    {
-      type: "bar",
-      name: sideLabel("left", sideLabels),
-      x: names,
-      y: names.map(
-        (name) =>
-          report.activations.left.find((layer) => layer.name === name)
-            ?.sparsity ?? 0
-      ),
-      marker: { color: "#2563eb" },
-    },
-    {
-      type: "bar",
-      name: sideLabel("right", sideLabels),
-      x: names,
-      y: names.map(
-        (name) =>
-          report.activations.right.find((layer) => layer.name === name)
-            ?.sparsity ?? 0
-      ),
-      marker: { color: "#dc2626" },
-    },
-  ]
 }
 
-function weightData(report: AnalysisComparisonReport): Data[] {
-  return [
-    {
-      type: "bar",
-      orientation: "h",
-      name: "Relative distance",
-      x: report.weights.map((weight) => weight.relative_distance),
-      y: report.weights.map((weight) => weight.name),
-      marker: { color: "#0891b2" },
-    },
-  ]
+function maxCategoryValue(data: CategoryChartDatum[], keys: string[]): number {
+  return Math.max(
+    0,
+    ...data.flatMap((row) =>
+      keys.flatMap((key) => {
+        const value = row[key]
+        return typeof value === "number" && Number.isFinite(value) ? [value] : []
+      })
+    )
+  )
 }
 
-function plotLayout(title: string, plotPalette: PlotPalette): Partial<Layout> {
+function tooltipDataKey(
+  item: TooltipPayloadEntry<TooltipValueType, string | number>
+): string {
+  if (typeof item.dataKey === "string" || typeof item.dataKey === "number") {
+    return String(item.dataKey)
+  }
+  if (typeof item.name === "string" || typeof item.name === "number") {
+    return String(item.name)
+  }
+  return "value"
+}
+
+function formatTooltipValue(
+  value: TooltipValueType | undefined,
+  formatter?: ChartValueFormatter
+): string {
+  const numericValue = tooltipValueNumber(value)
+  if (numericValue !== null) {
+    return formatter ? formatter(numericValue) : formatCompactNumber(numericValue)
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item)).join(", ")
+  }
+  return value === undefined ? MISSING_VALUE_LABEL : String(value)
+}
+
+function tooltipValueNumber(value: TooltipValueType | undefined): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value
+  }
+  if (typeof value === "string") {
+    const numericValue = Number(value)
+    return Number.isFinite(numericValue) ? numericValue : null
+  }
+  return null
+}
+
+function formatAxisInteger(value: unknown): string {
+  const numericValue = typeof value === "number" ? value : Number(value)
+  return Number.isFinite(numericValue) ? formatInteger(numericValue) : String(value)
+}
+
+function formatAxisCompact(value: unknown): string {
+  const numericValue = typeof value === "number" ? value : Number(value)
+  return Number.isFinite(numericValue)
+    ? formatCompactNumber(numericValue)
+    : String(value)
+}
+
+function compactCategoryTick(value: string): string {
+  if (value.length <= 14) {
+    return value
+  }
+
+  return `${value.slice(0, 12)}...`
+}
+
+function compactLayerName(value: string): string {
+  const normalized = value.replace(/^features\./, "").replace(/^classifier\./, "")
+  return compactCategoryTick(normalized)
+}
+
+function isEmbeddingChartPoint(value: unknown): value is EmbeddingChartPoint {
+  if (typeof value !== "object" || value === null) {
+    return false
+  }
+  const point = value as Partial<EmbeddingChartPoint>
+  return (
+    typeof point.x === "number" &&
+    typeof point.y === "number" &&
+    typeof point.label === "number" &&
+    typeof point.prediction === "number" &&
+    typeof point.className === "string" &&
+    typeof point.predictionName === "string" &&
+    typeof point.correctText === "string" &&
+    typeof point.sideName === "string" &&
+    (point.side === "left" || point.side === "right")
+  )
+}
+
+function heatmapBaseLayout(plotPalette: PlotPalette): Partial<Layout> {
   return {
     autosize: true,
     font: { color: plotPalette.text, family: "Geist Variable, sans-serif" },
-    height: 360,
     hoverlabel: {
       bgcolor: plotPalette.hoverBackground,
       bordercolor: plotPalette.hoverBorder,
       font: { color: plotPalette.hoverText },
     },
-    legend: { orientation: "h", font: { color: plotPalette.muted } },
-    margin: { b: 46, l: 48, r: 36, t: 42 },
+    margin: { b: 42, l: 42, r: 24, t: 8 },
     paper_bgcolor: "transparent",
     plot_bgcolor: "transparent",
-    title: { text: title, font: { size: 14 } },
     xaxis: { gridcolor: plotPalette.grid, zeroline: false },
     yaxis: { gridcolor: plotPalette.grid, zeroline: false },
-    yaxis2: {
-      overlaying: "y",
-      side: "right",
-      range: [0, 100],
-      showgrid: false,
-      zeroline: false,
-    },
   }
 }
 
-function heatmapLayout(title: string, plotPalette: PlotPalette): Partial<Layout> {
+function heatmapLayout(plotPalette: PlotPalette): Partial<Layout> {
   return {
-    ...plotLayout(title, plotPalette),
+    ...heatmapBaseLayout(plotPalette),
     xaxis: { title: { text: "Predicted" } },
     yaxis: { title: { text: "True" }, autorange: "reversed" },
-  }
-}
-
-function embeddingLayout(title: string, plotPalette: PlotPalette): Partial<Layout> {
-  return {
-    ...plotLayout(title, plotPalette),
-    dragmode: "pan",
-    height: undefined,
-    margin: { b: 24, l: 48, r: 36, t: 42 },
-    xaxis: { visible: false },
-    yaxis: { visible: false },
   }
 }
 
@@ -3587,15 +4465,19 @@ function optimizerParamEntries(
   const params = checkpoint.optimizer_params[checkpoint.optimizer] ?? {}
   const fields = schema.optimizers_schema[checkpoint.optimizer] ?? []
   const fieldKeys = new Set(fields.map((field) => field.key))
-  const schemaEntries: [string, string, OptimizerParamValue][] = fields.flatMap((field) => {
+  const schemaEntries: [string, string, OptimizerParamValue][] = []
+  for (const field of fields) {
     const value = params[field.key]
     if (field.type === "boolean") {
-      return typeof value === "boolean" ? [[field.key, field.label, value]] : []
+      if (typeof value === "boolean") {
+        schemaEntries.push([field.key, field.label, value])
+      }
+      continue
     }
-    return typeof value === "number" && Number.isFinite(value)
-      ? [[field.key, field.label, value]]
-      : []
-  })
+    if (typeof value === "number" && Number.isFinite(value)) {
+      schemaEntries.push([field.key, field.label, value])
+    }
+  }
   const extraEntries: [string, string, OptimizerParamValue][] = Object.entries(params)
     .filter(
       ([key, value]) =>
@@ -3669,22 +4551,6 @@ function formatReadableDateTime(
   }
 
   return date.toLocaleString(undefined, dateOptions)
-}
-
-function traceMode(pointCount: number): "lines" | "lines+markers" {
-  return pointCount > 0 && pointCount <= MARKER_POINT_LIMIT
-    ? "lines+markers"
-    : "lines"
-}
-
-function accuracyTraceMode(
-  pointCount: number
-): "lines" | "lines+markers" | "markers" {
-  if (pointCount === 1) {
-    return "markers"
-  }
-
-  return traceMode(pointCount)
 }
 
 function nextStepAxisUpperBound(step: number): number {
@@ -3770,86 +4636,6 @@ function niceAxisUpperBound(value: number): number {
   }
 
   return 10 * magnitude
-}
-
-function axisTickValues(upperBound: number, segments: number): number[] {
-  return Array.from({ length: segments + 1 }, (_, index) =>
-    Number(((upperBound * index) / segments).toPrecision(12))
-  )
-}
-
-function fixedPrecisionTickValues(
-  upperBound: number,
-  preferredSegments: number,
-  decimals: number
-): number[] {
-  const safeUpperBound =
-    Number.isFinite(upperBound) && upperBound > 0 ? upperBound : 1
-  const rawStep = safeUpperBound / preferredSegments
-  const minimumDistinctStep = 10 ** -decimals
-  const tickStep = Math.max(niceStepSize(rawStep), minimumDistinctStep)
-  const tickCount = Math.floor(safeUpperBound / tickStep)
-  const tickValues = Array.from({ length: tickCount + 1 }, (_, index) =>
-    Number((tickStep * index).toPrecision(12))
-  ).filter((value) => value <= safeUpperBound + Number.EPSILON)
-  const roundedUpperBound = Number(safeUpperBound.toPrecision(12))
-  const lastTick = tickValues[tickValues.length - 1] ?? 0
-
-  if (
-    formatFixedTick(lastTick, decimals) !==
-    formatFixedTick(roundedUpperBound, decimals)
-  ) {
-    tickValues.push(roundedUpperBound)
-  }
-
-  return uniqueFixedTickValues(tickValues, decimals)
-}
-
-function uniqueFixedTickValues(values: number[], decimals: number): number[] {
-  const labels = new Set<string>()
-
-  return values.filter((value) => {
-    const label = formatFixedTick(value, decimals)
-
-    if (labels.has(label)) {
-      return false
-    }
-
-    labels.add(label)
-    return true
-  })
-}
-
-function niceStepSize(value: number): number {
-  const magnitude = 10 ** Math.floor(Math.log10(value))
-  const normalized = value / magnitude
-
-  if (normalized <= 1) {
-    return magnitude
-  }
-
-  if (normalized <= 2) {
-    return 2 * magnitude
-  }
-
-  if (normalized <= 2.5) {
-    return 2.5 * magnitude
-  }
-
-  if (normalized <= 5) {
-    return 5 * magnitude
-  }
-
-  return 10 * magnitude
-}
-
-function fixedTickText(values: number[], decimals: number): string[] {
-  return values.map((value) => formatFixedTick(value, decimals))
-}
-
-function formatFixedTick(value: number, decimals: number): string {
-  const normalizedValue = Object.is(value, -0) ? 0 : value
-  return normalizedValue.toFixed(decimals)
 }
 
 function initialMutationStepFor(
