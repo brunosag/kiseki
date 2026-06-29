@@ -500,6 +500,7 @@ CONFIG_SCHEMA: dict[str, ConfigField] = {
         default="mnist",
         options=[
             SelectOption(label="MNIST", value="mnist"),
+            SelectOption(label="Fashion MNIST", value="fashion_mnist"),
             SelectOption(label="CIFAR-10", value="cifar10"),
         ],
     ),

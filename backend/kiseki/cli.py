@@ -2,6 +2,7 @@ import argparse
 import sys
 from collections.abc import Sequence
 
+from .dataset_types import REAL_DATASETS
 from .train import run_training, train_options_from_args
 
 
@@ -21,7 +22,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     train = subparsers.add_parser("train", help="Run headless training")
-    train.add_argument("--dataset", choices=("mnist", "cifar10"))
+    train.add_argument("--dataset", choices=REAL_DATASETS)
     train.add_argument("--device", choices=("cpu", "gpu"))
     train.add_argument("--optimizer", choices=("LEEA", "SGD", "CoSyNE"))
     train.add_argument("--iterations", type=positive_int)

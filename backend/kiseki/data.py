@@ -29,14 +29,12 @@ def load_mnist(
     pin_memory: bool = False,
 ) -> tuple[DataLoader, DataLoader]:
     raw_dataset = datasets.MNIST(root=Path(data_dir), train=True, download=download)
-    dataset = TensorDataset(
-        raw_dataset.data.unsqueeze(1).float().div(255.0),
-        torch.as_tensor(raw_dataset.targets, dtype=torch.long),
-    )
+    dataset = grayscale_tensor_dataset(raw_dataset)
     return make_regular_train_val_loaders(
         dataset,
         batch_size=batch_size,
         seed=seed,
+        dataset_name="MNIST",
         num_workers=num_workers,
         pin_memory=pin_memory,
     )
@@ -50,10 +48,56 @@ def load_mnist_test(
     pin_memory: bool = False,
 ) -> DataLoader:
     raw_dataset = datasets.MNIST(root=Path(data_dir), train=False, download=download)
-    dataset = TensorDataset(
+    dataset = grayscale_tensor_dataset(raw_dataset)
+    return grayscale_test_loader(dataset, num_workers=num_workers, pin_memory=pin_memory)
+
+
+def load_fashion_mnist(
+    data_dir: Path | str,
+    batch_size: int,
+    seed: int,
+    *,
+    download: bool = True,
+    num_workers: int = 0,
+    pin_memory: bool = False,
+) -> tuple[DataLoader, DataLoader]:
+    raw_dataset = datasets.FashionMNIST(root=Path(data_dir), train=True, download=download)
+    dataset = grayscale_tensor_dataset(raw_dataset)
+    return make_regular_train_val_loaders(
+        dataset,
+        batch_size=batch_size,
+        seed=seed,
+        dataset_name="Fashion MNIST",
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )
+
+
+def load_fashion_mnist_test(
+    data_dir: Path | str,
+    *,
+    download: bool = True,
+    num_workers: int = 0,
+    pin_memory: bool = False,
+) -> DataLoader:
+    raw_dataset = datasets.FashionMNIST(root=Path(data_dir), train=False, download=download)
+    dataset = grayscale_tensor_dataset(raw_dataset)
+    return grayscale_test_loader(dataset, num_workers=num_workers, pin_memory=pin_memory)
+
+
+def grayscale_tensor_dataset(raw_dataset: Any) -> TensorDataset:
+    return TensorDataset(
         raw_dataset.data.unsqueeze(1).float().div(255.0),
         torch.as_tensor(raw_dataset.targets, dtype=torch.long),
     )
+
+
+def grayscale_test_loader(
+    dataset: TensorDataset,
+    *,
+    num_workers: int = 0,
+    pin_memory: bool = False,
+) -> DataLoader:
     return DataLoader(
         dataset,
         batch_size=512,
@@ -175,11 +219,12 @@ def make_regular_train_val_loaders(
     batch_size: int,
     seed: int,
     *,
+    dataset_name: str = "MNIST",
     num_workers: int = 0,
     pin_memory: bool = False,
 ) -> tuple[DataLoader, DataLoader]:
     if len(dataset) < 60000:
-        raise ValueError("MNIST train split must contain at least 60000 examples")
+        raise ValueError(f"{dataset_name} train split must contain at least 60000 examples")
 
     split_generator = torch.Generator().manual_seed(seed)
     train_dataset, val_dataset = random_split(
@@ -308,6 +353,8 @@ def train_val_loaders(
 ) -> tuple[DataLoader, DataLoader]:
     if dataset == "mnist":
         return factory.mnist(batch_size=batch_size, seed=seed)
+    if dataset == "fashion_mnist":
+        return factory.fashion_mnist(batch_size=batch_size, seed=seed)
     if dataset == "cifar10":
         return factory.cifar10(batch_size=batch_size, seed=seed)
     raise ValueError(f"Unsupported dataset: {dataset}")
@@ -316,6 +363,8 @@ def train_val_loaders(
 def test_loader(factory: "DataLoaderFactory", dataset: DatasetName) -> DataLoader:
     if dataset == "mnist":
         return factory.mnist_test()
+    if dataset == "fashion_mnist":
+        return factory.fashion_mnist_test()
     if dataset == "cifar10":
         return factory.cifar10_test()
     raise ValueError(f"Unsupported dataset: {dataset}")
@@ -340,6 +389,24 @@ class DataLoaderFactory:
 
     def mnist_test(self) -> DataLoader:
         return load_mnist_test(
+            self.data_dir,
+            download=self.download,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+        )
+
+    def fashion_mnist(self, batch_size: int, seed: int) -> tuple[DataLoader, DataLoader]:
+        return load_fashion_mnist(
+            self.data_dir,
+            batch_size=batch_size,
+            seed=seed,
+            download=self.download,
+            num_workers=self.num_workers,
+            pin_memory=self.pin_memory,
+        )
+
+    def fashion_mnist_test(self) -> DataLoader:
+        return load_fashion_mnist_test(
             self.data_dir,
             download=self.download,
             num_workers=self.num_workers,

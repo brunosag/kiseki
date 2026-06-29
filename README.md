@@ -9,9 +9,9 @@ A PyTorch-based machine learning framework designed to investigate whether gradi
 
 ## Architecture and core modules
 
-* **Models:** Neural network architectures are implemented in PyTorch. The backend supports MNIST and CIFAR-10 models.
+* **Models:** Neural network architectures are implemented in PyTorch. The backend supports MNIST, Fashion MNIST, and CIFAR-10 models.
 * **Optimizers:** The framework exports `SGD` for standard gradient descent, `LEEA` for population-based evolutionary optimization with mutation, crossover, retention, and fitness decay controls, and `CoSyNE` for cooperative synapse neuroevolution with crossover, mutation, elitism, and permutation controls.
-* **Data handling:** The backend loads MNIST and CIFAR-10 through torchvision and creates deterministic streams when exact reproducibility is requested.
+* **Data handling:** The backend loads MNIST, Fashion MNIST, and CIFAR-10 through torchvision and creates deterministic streams when exact reproducibility is requested.
 * **Experiment management:** `ExperimentManager` coordinates model initialization, CPU/GPU device mapping, batch sizing, checkpointing, pause/resume, and early stopping based on target accuracy.
 * **Checkpoints:** Training checkpoints are stored under `backend/checkpoints/` with model state, optimizer state, status, config, runtime metadata, and JSON summaries.
 

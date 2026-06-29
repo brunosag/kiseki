@@ -156,6 +156,14 @@ def test_train_argument_parsing_builds_start_request() -> None:
     }
 
 
+def test_train_argument_parsing_accepts_fashion_mnist() -> None:
+    parser = cli.build_parser()
+    args = parser.parse_args(["train", "--dataset", "fashion_mnist"])
+    request = build_start_request(train_options_from_args(args))
+
+    assert request.config.dataset == "fashion_mnist"
+
+
 def test_train_cosyne_argument_parsing_builds_start_request() -> None:
     parser = cli.build_parser()
     args = parser.parse_args(

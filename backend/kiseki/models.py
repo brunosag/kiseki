@@ -59,6 +59,53 @@ class CNN2C2DMNIST(nn.Module):
         return activations
 
 
+class FashionMNISTCNN(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(1, 32, kernel_size=5, padding=2)
+        self.conv2 = nn.Conv2d(32, 64, kernel_size=5, padding=2)
+        self.relu1 = nn.ReLU()
+        self.relu2 = nn.ReLU()
+        self.pool1 = nn.MaxPool2d(2)
+        self.pool2 = nn.MaxPool2d(2)
+        self.fc = nn.Linear(3136, 10)
+        self.log_softmax = nn.LogSoftmax(dim=1)
+        self.reset_parameters()
+
+    def reset_parameters(self) -> None:
+        for module in self.modules():
+            if isinstance(module, nn.Conv2d):
+                nn.init.kaiming_normal_(module.weight, nonlinearity="relu")
+                if module.bias is not None:
+                    nn.init.zeros_(module.bias)
+            elif module is self.fc:
+                nn.init.kaiming_normal_(module.weight, nonlinearity="linear")
+                nn.init.zeros_(module.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.log_softmax(self.fc(self.final_hidden(x)))
+
+    def predict_proba(self, x: torch.Tensor) -> torch.Tensor:
+        return self.forward(x).exp()
+
+    def final_hidden(self, x: torch.Tensor) -> torch.Tensor:
+        x = self.pool1(self.relu1(self.conv1(x)))
+        x = self.pool2(self.relu2(self.conv2(x)))
+        return torch.flatten(x, 1)
+
+    def named_activations(
+        self,
+        x: torch.Tensor,
+        names: Iterable[ActivationName] = ("final_hidden",),
+    ) -> dict[ActivationName, torch.Tensor]:
+        requested = set(names)
+        activations: dict[ActivationName, torch.Tensor] = {}
+        hidden = self.final_hidden(x)
+        if "final_hidden" in requested:
+            activations["final_hidden"] = hidden
+        return activations
+
+
 class CIFAR10CNN(nn.Module):
     def __init__(self) -> None:
         super().__init__()
@@ -127,6 +174,8 @@ class CIFAR10CNN(nn.Module):
 def build_model(dataset: DatasetName) -> nn.Module:
     if dataset == "mnist":
         return CNN2C2DMNIST()
+    if dataset == "fashion_mnist":
+        return FashionMNISTCNN()
     if dataset == "cifar10":
         return CIFAR10CNN()
     raise ValueError(f"Unsupported dataset: {dataset}")

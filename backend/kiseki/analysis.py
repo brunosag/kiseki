@@ -64,6 +64,18 @@ EMBEDDING_TSNE_SIDE_LIMIT = 2000
 EMBEDDING_PCA_TOTAL_LIMIT = 2000
 
 MNIST_CLASS_LABELS = tuple(str(label) for label in range(CLASS_COUNT))
+FASHION_MNIST_CLASS_LABELS = (
+    "T-shirt/top",
+    "Trouser",
+    "Pullover",
+    "Dress",
+    "Coat",
+    "Sandal",
+    "Shirt",
+    "Sneaker",
+    "Bag",
+    "Ankle boot",
+)
 CIFAR10_CLASS_LABELS = (
     "airplane",
     "automobile",
@@ -1499,12 +1511,16 @@ def format_sse(event_type: str, payload: AnalysisComparisonJobStatus) -> str:
 
 
 def class_names(dataset: DatasetName) -> tuple[str, ...]:
+    if dataset == "fashion_mnist":
+        return FASHION_MNIST_CLASS_LABELS
     if dataset == "cifar10":
         return CIFAR10_CLASS_LABELS
     return MNIST_CLASS_LABELS
 
 
 def format_dataset(dataset: str) -> str:
+    if dataset == "fashion_mnist":
+        return "Fashion MNIST"
     if dataset == "cifar10":
         return "CIFAR-10"
     return dataset.upper()

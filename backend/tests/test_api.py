@@ -229,6 +229,7 @@ def test_api_schema_includes_supported_datasets(tmp_path) -> None:
     assert response.status_code == 200
     assert response.json()["config_schema"]["dataset"]["options"] == [
         {"label": "MNIST", "value": "mnist"},
+        {"label": "Fashion MNIST", "value": "fashion_mnist"},
         {"label": "CIFAR-10", "value": "cifar10"},
     ]
 

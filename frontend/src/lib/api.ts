@@ -25,7 +25,7 @@ export type SchemaResponse = {
   optimizers_schema: Record<string, OptimizerParamField[]>
 }
 
-export type DatasetName = "mnist" | "cifar10"
+export type DatasetName = "mnist" | "fashion_mnist" | "cifar10"
 export type OptimizerName = "LEEA" | "SGD" | "CoSyNE"
 
 export type ExperimentConfig = {
@@ -342,6 +342,7 @@ export const fallbackSchema: SchemaResponse = {
       default: "mnist",
       options: [
         { label: "MNIST", value: "mnist" },
+        { label: "Fashion MNIST", value: "fashion_mnist" },
         { label: "CIFAR-10", value: "cifar10" },
       ],
     },

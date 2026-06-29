@@ -361,6 +361,19 @@ const REPORT_RIGHT_COLOR = "#dc2626"
 const REPORT_LEFT_ACCENT_COLOR = "#0891b2"
 const REPORT_RIGHT_ACCENT_COLOR = "#ea580c"
 
+const FASHION_MNIST_CLASS_LABELS = [
+  "T-shirt/top",
+  "Trouser",
+  "Pullover",
+  "Dress",
+  "Coat",
+  "Sandal",
+  "Shirt",
+  "Sneaker",
+  "Bag",
+  "Ankle boot",
+]
+
 const CIFAR10_CLASS_LABELS = [
   "airplane",
   "automobile",
@@ -4757,6 +4770,10 @@ function bestAccuracyStepFor(
 }
 
 function formatDatasetName(dataset: string): string {
+  if (dataset === "fashion_mnist") {
+    return "Fashion MNIST"
+  }
+
   if (dataset === "cifar10") {
     return "CIFAR-10"
   }
@@ -4765,6 +4782,10 @@ function formatDatasetName(dataset: string): string {
 }
 
 function classLabelFor(dataset: CheckpointSummary["dataset"], label: number): string {
+  if (dataset === "fashion_mnist") {
+    return FASHION_MNIST_CLASS_LABELS[label] ?? String(label)
+  }
+
   if (dataset === "cifar10") {
     return CIFAR10_CLASS_LABELS[label] ?? String(label)
   }

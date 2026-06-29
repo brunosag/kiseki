@@ -1,6 +1,12 @@
 import torch
 
-from kiseki.models import CIFAR10CNN, CNN2C2DMNIST, count_parameters
+from kiseki.models import (
+    CIFAR10CNN,
+    CNN2C2DMNIST,
+    FashionMNISTCNN,
+    build_model,
+    count_parameters,
+)
 from kiseki.optimizers import LEEAConfig, LEEARunner
 
 
@@ -17,6 +23,25 @@ def test_model_named_final_hidden_activation_shape() -> None:
     activations = model.named_activations(torch.randn(4, 1, 28, 28), ("fc1_relu",))
 
     assert activations["fc1_relu"].shape == (4, 120)
+
+
+def test_fashion_mnist_cnn_architecture_output_and_parameter_count() -> None:
+    model = FashionMNISTCNN()
+    inputs = torch.randn(4, 1, 28, 28)
+    output = model(inputs)
+
+    assert isinstance(build_model("fashion_mnist"), FashionMNISTCNN)
+    assert output.shape == (4, 10)
+    assert model.conv1.kernel_size == (5, 5)
+    assert model.conv1.padding == (2, 2)
+    assert model.conv1.out_channels == 32
+    assert model.conv2.kernel_size == (5, 5)
+    assert model.conv2.padding == (2, 2)
+    assert model.conv2.out_channels == 64
+    assert model.final_hidden(inputs).shape == (4, 3136)
+    assert model.named_activations(inputs, ("final_hidden",))["final_hidden"].shape == (4, 3136)
+    assert torch.allclose(output.exp().sum(dim=1), torch.ones(4), atol=1e-6)
+    assert count_parameters(model) == 83466
 
 
 def test_cifar10_cnn_output_shape_hidden_activation_and_parameter_count() -> None:
