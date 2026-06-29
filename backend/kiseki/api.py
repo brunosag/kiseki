@@ -147,9 +147,9 @@ def create_app(manager: ExperimentManager | None = None) -> FastAPI:
         return experiment_manager.status()
 
     @app.get("/api/experiments/events")
-    def stream_events() -> StreamingResponse:
+    def stream_events(compact: bool = False) -> StreamingResponse:
         return StreamingResponse(
-            experiment_manager.events(),
+            experiment_manager.events(compact=compact),
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache"},
         )

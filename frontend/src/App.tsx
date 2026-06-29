@@ -155,10 +155,13 @@ import {
   type ConfigField,
   type ExperimentConfig,
   type ExperimentStatus,
+  type ExperimentStatusCompactEvent,
   type OptimizerParamValue,
   type OptimizerParams,
   type SchemaResponse,
   type SelectOption,
+  type TrainingHistory,
+  type TrainingHistoryDelta,
 } from "@/lib/api"
 import { cn } from "@/lib/utils"
 import {
@@ -235,6 +238,7 @@ type CheckpointDatasetFilter = ExperimentConfig["dataset"] | "all"
 type AppTab = "training" | "analysis"
 type AnalysisSide = "left" | "right"
 type AnalysisSideLabels = Record<AnalysisSide, string>
+type ExperimentStatusUpdater = (current: ExperimentStatus) => ExperimentStatus
 
 type PlotPalette = {
   accuracy: string
@@ -255,6 +259,33 @@ type NumericSeriesPoint = {
 type NumericChartDatum = {
   x: number
 } & Record<string, number | undefined>
+
+type TrainingTelemetryChartState = {
+  data: NumericChartDatum[]
+  lossAxisUpperBound: number
+  mutationStepAxisUpperBound: number
+}
+
+type TrainingTelemetryCache = {
+  currentStep: number
+  runId: string | null | undefined
+  series: Record<TrainingTelemetrySeriesKey, IncrementalSeriesCache>
+}
+
+type TrainingTelemetrySeriesKey = "loss" | "accuracy" | "mutationStep"
+
+type IncrementalSeriesCache = {
+  bucketSize: number
+  buckets: Map<number, NumericSeriesBucket>
+  maxY: number
+  processedLength: number
+}
+
+type NumericSeriesBucket = {
+  max: NumericSeriesPoint | null
+  min: NumericSeriesPoint | null
+  values: Map<number, number>
+}
 
 type CategoryChartDatum = {
   label: string
@@ -459,16 +490,25 @@ export function App() {
   }, [loadedCheckpoint, optParams])
 
   useEffect(() => {
-    const source = new EventSource(apiUrl("/api/experiments/events"))
-    let pendingStepStatus: ExperimentStatus | null = null
+    const source = new EventSource(apiUrl("/api/experiments/events?compact=true"))
+    let pendingStepUpdate: ExperimentStatusUpdater | null = null
     let pendingStepTimer: number | null = null
     let lastStatusUpdateAt = 0
 
-    const statusFromEvent = (event: MessageEvent<string>) => {
+    const statusUpdateFromEvent = (
+      event: MessageEvent<string>
+    ): ExperimentStatusUpdater => {
       const payload = JSON.parse(event.data) as
         | ExperimentStatus
+        | ExperimentStatusCompactEvent
         | { status: ExperimentStatus }
-      return "status" in payload ? payload.status : payload
+      if ("status" in payload) {
+        return () => payload.status
+      }
+      if (isExperimentStatusCompactEvent(payload)) {
+        return (current) => applyExperimentStatusCompactEvent(current, payload)
+      }
+      return () => payload
     }
 
     const clearPendingStep = () => {
@@ -476,32 +516,35 @@ export function App() {
         window.clearTimeout(pendingStepTimer)
       }
       pendingStepTimer = null
-      pendingStepStatus = null
+      pendingStepUpdate = null
     }
 
-    const commitStatus = (nextStatus: ExperimentStatus) => {
+    const commitStatusUpdate = (updateStatus: ExperimentStatusUpdater) => {
       lastStatusUpdateAt = performance.now()
-      setStatus(nextStatus)
+      setStatus((current) => updateStatus(current))
     }
 
     const commitPendingStep = () => {
-      if (pendingStepStatus !== null) {
-        commitStatus(pendingStepStatus)
+      if (pendingStepUpdate !== null) {
+        commitStatusUpdate(pendingStepUpdate)
       }
       pendingStepTimer = null
-      pendingStepStatus = null
+      pendingStepUpdate = null
     }
 
     const handleStepEvent = (event: MessageEvent<string>) => {
-      const nextStatus = statusFromEvent(event)
+      const updateStatus = statusUpdateFromEvent(event)
       const elapsed = performance.now() - lastStatusUpdateAt
       if (elapsed >= TRAINING_STATUS_UPDATE_INTERVAL_MS) {
         clearPendingStep()
-        commitStatus(nextStatus)
+        commitStatusUpdate(updateStatus)
         return
       }
 
-      pendingStepStatus = nextStatus
+      pendingStepUpdate =
+        pendingStepUpdate === null
+          ? updateStatus
+          : composeStatusUpdates(pendingStepUpdate, updateStatus)
       if (pendingStepTimer === null) {
         pendingStepTimer = window.setTimeout(
           commitPendingStep,
@@ -512,7 +555,7 @@ export function App() {
 
     const handleEvent = (event: MessageEvent<string>) => {
       clearPendingStep()
-      commitStatus(statusFromEvent(event))
+      commitStatusUpdate(statusUpdateFromEvent(event))
     }
 
     eventTypes.forEach((eventType) => {
@@ -653,15 +696,19 @@ export function App() {
     selectedInitialMutationStep ??
     0
   const stepAxisUpperBound = nextStepAxisUpperBound(status.current_step)
-  const lossAxisUpperBound = lossAxisUpperBoundFor(
-    status.history.loss,
-    status.current_loss
-  )
-  const mutationStepAxisUpperBound = mutationStepAxisUpperBoundFor(
-    mutationStepHistory.map((point) => point.value),
-    status.current_mutation_step,
-    shouldUseSelectedMutationStep ? selectedInitialMutationStep : undefined
-  )
+  const trainingTelemetryChart = useTrainingTelemetryChartState({
+    accuracyPoints: status.history.acc,
+    currentLoss: status.current_loss,
+    currentMutationStep: status.current_mutation_step,
+    currentStep: status.current_step,
+    losses: status.history.loss,
+    mutationStepPoints: mutationStepHistory,
+    runId: status.run_id,
+    selectedInitialMutationStep: shouldUseSelectedMutationStep
+      ? selectedInitialMutationStep
+      : undefined,
+    showMutationStepAxis,
+  })
   const comparisonError = useMemo(
     () => comparisonSelectionError(analysisCheckpoints),
     [analysisCheckpoints]
@@ -680,15 +727,6 @@ export function App() {
     analysisJob?.status === "queued" ||
     analysisJob?.status === "running"
 
-  const trainingTelemetryData = useMemo(
-    () =>
-      trainingTelemetryChartData(
-        status.history.loss,
-        status.history.acc,
-        mutationStepHistory
-      ),
-    [mutationStepHistory, status.history.acc, status.history.loss]
-  )
   const trainingTelemetryConfig = useMemo<ChartConfig>(
     () => ({
       loss: { label: "Loss", color: plotPalette.loss },
@@ -1096,10 +1134,12 @@ export function App() {
                 <TrainingTelemetryChart
                   accuracyPointCount={status.history.acc.length}
                   config={trainingTelemetryConfig}
-                  data={trainingTelemetryData}
-                  lossAxisUpperBound={lossAxisUpperBound}
+                  data={trainingTelemetryChart.data}
+                  lossAxisUpperBound={trainingTelemetryChart.lossAxisUpperBound}
                   lossPointCount={status.history.loss.length}
-                  mutationStepAxisUpperBound={mutationStepAxisUpperBound}
+                  mutationStepAxisUpperBound={
+                    trainingTelemetryChart.mutationStepAxisUpperBound
+                  }
                   mutationStepPointCount={mutationStepHistory.length}
                   showMutationStepAxis={showMutationStepAxis}
                   stepAxisUpperBound={stepAxisUpperBound}
@@ -4075,25 +4115,468 @@ function overlapSetLabel(set: string, sideLabels: AnalysisSideLabels): string {
   }
 }
 
-function trainingTelemetryChartData(
-  losses: number[],
-  accuracyPoints: { i: number; value: number }[],
+function composeStatusUpdates(
+  first: ExperimentStatusUpdater,
+  second: ExperimentStatusUpdater
+): ExperimentStatusUpdater {
+  return (current) => second(first(current))
+}
+
+function isExperimentStatusCompactEvent(
+  value: unknown
+): value is ExperimentStatusCompactEvent {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    ("status_patch" in value ||
+      "history_delta" in value ||
+      "replace_history" in value)
+  )
+}
+
+function applyExperimentStatusCompactEvent(
+  current: ExperimentStatus,
+  event: ExperimentStatusCompactEvent
+): ExperimentStatus {
+  const baseHistory = event.replace_history
+    ? emptyTrainingHistory()
+    : current.history
+
+  return {
+    ...current,
+    ...event.status_patch,
+    history: applyTrainingHistoryDelta(baseHistory, event.history_delta),
+  }
+}
+
+function emptyTrainingHistory(): TrainingHistory {
+  return {
+    loss: [],
+    acc: [],
+    train_acc: [],
+    val_loss: [],
+    memory_mb: [],
+    mutation_step: [],
+  }
+}
+
+function applyTrainingHistoryDelta(
+  history: TrainingHistory,
+  delta: TrainingHistoryDelta | null | undefined
+): TrainingHistory {
+  if (!delta) {
+    return history
+  }
+
+  return {
+    loss: mergeLossDelta(history.loss, delta.loss ?? []),
+    acc: mergePointDelta(history.acc, delta.acc ?? []),
+    train_acc: mergePointDelta(history.train_acc, delta.train_acc ?? []),
+    val_loss: mergePointDelta(history.val_loss, delta.val_loss ?? []),
+    memory_mb: mergePointDelta(history.memory_mb, delta.memory_mb ?? []),
+    mutation_step: mergePointDelta(
+      history.mutation_step,
+      delta.mutation_step ?? []
+    ),
+  }
+}
+
+function mergeLossDelta(
+  values: number[],
+  points: { i: number; value: number }[]
+): number[] {
+  let nextValues: number[] | null = null
+
+  for (const point of points) {
+    if (!Number.isInteger(point.i) || point.i < 1) {
+      continue
+    }
+
+    if (nextValues === null) {
+      nextValues = [...values]
+    }
+
+    const index = point.i - 1
+    if (index === nextValues.length) {
+      nextValues.push(point.value)
+    } else if (index < nextValues.length) {
+      nextValues[index] = point.value
+    } else {
+      while (nextValues.length < index) {
+        nextValues.push(Number.NaN)
+      }
+      nextValues.push(point.value)
+    }
+  }
+
+  return nextValues ?? values
+}
+
+function mergePointDelta<T extends { i: number; value: number }>(
+  values: T[],
+  points: T[]
+): T[] {
+  let nextValues: T[] | null = null
+
+  for (const point of points) {
+    if (!Number.isInteger(point.i) || point.i < 0) {
+      continue
+    }
+
+    if (nextValues === null) {
+      nextValues = [...values]
+    }
+
+    const lastPoint: T | undefined = nextValues[nextValues.length - 1]
+    if (!lastPoint || point.i > lastPoint.i) {
+      nextValues.push(point)
+    } else if (point.i === lastPoint.i) {
+      nextValues[nextValues.length - 1] = point
+    } else {
+      const index = pointSeriesIndex(nextValues, point.i)
+      if (index < nextValues.length && nextValues[index]?.i === point.i) {
+        nextValues[index] = point
+      } else {
+        nextValues.splice(index, 0, point)
+      }
+    }
+  }
+
+  return nextValues ?? values
+}
+
+function pointSeriesIndex<T extends { i: number }>(points: T[], step: number): number {
+  let low = 0
+  let high = points.length
+
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2)
+    if (points[mid].i < step) {
+      low = mid + 1
+    } else {
+      high = mid
+    }
+  }
+
+  return low
+}
+
+function useTrainingTelemetryChartState({
+  accuracyPoints,
+  currentLoss,
+  currentMutationStep,
+  currentStep,
+  losses,
+  mutationStepPoints,
+  runId,
+  selectedInitialMutationStep,
+  showMutationStepAxis,
+}: {
+  accuracyPoints: { i: number; value: number }[]
+  currentLoss: number
+  currentMutationStep: number | null | undefined
+  currentStep: number
+  losses: number[]
   mutationStepPoints: { i: number; value: number }[]
-): NumericChartDatum[] {
-  return mergeNumericSeries([
+  runId: string | null | undefined
+  selectedInitialMutationStep: number | null | undefined
+  showMutationStepAxis: boolean
+}): TrainingTelemetryChartState {
+  const cacheRef = useRef<TrainingTelemetryCache | null>(null)
+  const [chartState, setChartState] = useState<TrainingTelemetryChartState>(() =>
+    emptyTrainingTelemetryChartState()
+  )
+
+  useEffect(() => {
+    const cache =
+      cacheRef.current ?? createTrainingTelemetryCache(runId, currentStep)
+    if (cache.runId !== runId || currentStep < cache.currentStep) {
+      resetTrainingTelemetryCache(cache, runId, currentStep)
+    }
+    cacheRef.current = cache
+
+    setChartState(
+      updateTrainingTelemetryChartCache(cache, {
+        accuracyPoints,
+        currentLoss,
+        currentMutationStep,
+        currentStep,
+        losses,
+        mutationStepPoints,
+        selectedInitialMutationStep,
+        showMutationStepAxis,
+      })
+    )
+  }, [
+    accuracyPoints,
+    currentLoss,
+    currentMutationStep,
+    currentStep,
+    losses,
+    mutationStepPoints,
+    runId,
+    selectedInitialMutationStep,
+    showMutationStepAxis,
+  ])
+
+  return chartState
+}
+
+function emptyTrainingTelemetryChartState(): TrainingTelemetryChartState {
+  return {
+    data: [],
+    lossAxisUpperBound: 1,
+    mutationStepAxisUpperBound: MUTATION_STEP_AXIS_MIN_UPPER_BOUND,
+  }
+}
+
+function updateTrainingTelemetryChartCache(
+  cache: TrainingTelemetryCache,
+  {
+    accuracyPoints,
+    currentLoss,
+    currentMutationStep,
+    currentStep,
+    losses,
+    mutationStepPoints,
+    selectedInitialMutationStep,
+    showMutationStepAxis,
+  }: {
+    accuracyPoints: { i: number; value: number }[]
+    currentLoss: number
+    currentMutationStep: number | null | undefined
+    currentStep: number
+    losses: number[]
+    mutationStepPoints: { i: number; value: number }[]
+    selectedInitialMutationStep: number | null | undefined
+    showMutationStepAxis: boolean
+  }
+): TrainingTelemetryChartState {
+  const targetPointCount = trainingTelemetrySeriesPointLimit(showMutationStepAxis)
+  updateIncrementalSeriesCache({
+    cache: cache.series.loss,
+    length: losses.length,
+    maxX: Math.max(currentStep, losses.length),
+    pointAt: (index) => ({ x: index + 1, y: losses[index] }),
+    targetPointCount,
+  })
+  updateIncrementalSeriesCache({
+    cache: cache.series.accuracy,
+    length: accuracyPoints.length,
+    maxX: currentStep,
+    pointAt: (index) => accuracyPointToSeriesPoint(accuracyPoints[index]),
+    targetPointCount,
+  })
+  updateIncrementalSeriesCache({
+    cache: cache.series.mutationStep,
+    length: mutationStepPoints.length,
+    maxX: currentStep,
+    pointAt: (index) => accuracyPointToSeriesPoint(mutationStepPoints[index]),
+    targetPointCount,
+  })
+  cache.currentStep = currentStep
+
+  const series = [
     {
       dataKey: "loss",
-      points: downsampleNumericSeries(indexedNumberSeries(losses)),
+      points: sampledIncrementalSeriesPoints(cache.series.loss),
     },
     {
       dataKey: "accuracy",
-      points: downsampleNumericSeries(accuracyPointSeries(accuracyPoints)),
+      points: sampledIncrementalSeriesPoints(cache.series.accuracy),
     },
-    {
+  ]
+
+  if (showMutationStepAxis) {
+    series.push({
       dataKey: "mutationStep",
-      points: downsampleNumericSeries(accuracyPointSeries(mutationStepPoints)),
+      points: sampledIncrementalSeriesPoints(cache.series.mutationStep),
+    })
+  }
+
+  return {
+    data: mergeNumericSeries(series),
+    lossAxisUpperBound: numericAxisUpperBoundFor(
+      [cache.series.loss.maxY],
+      currentLoss
+    ),
+    mutationStepAxisUpperBound: mutationStepAxisUpperBoundFor(
+      [cache.series.mutationStep.maxY],
+      currentMutationStep,
+      selectedInitialMutationStep
+    ),
+  }
+}
+
+function createTrainingTelemetryCache(
+  runId: string | null | undefined,
+  currentStep: number
+): TrainingTelemetryCache {
+  return {
+    currentStep,
+    runId,
+    series: {
+      accuracy: createIncrementalSeriesCache(),
+      loss: createIncrementalSeriesCache(),
+      mutationStep: createIncrementalSeriesCache(),
     },
-  ])
+  }
+}
+
+function resetTrainingTelemetryCache(
+  cache: TrainingTelemetryCache,
+  runId: string | null | undefined,
+  currentStep: number
+) {
+  cache.currentStep = currentStep
+  cache.runId = runId
+  resetIncrementalSeriesCache(cache.series.accuracy, 1)
+  resetIncrementalSeriesCache(cache.series.loss, 1)
+  resetIncrementalSeriesCache(cache.series.mutationStep, 1)
+}
+
+function createIncrementalSeriesCache(): IncrementalSeriesCache {
+  return {
+    bucketSize: 1,
+    buckets: new Map(),
+    maxY: 0,
+    processedLength: 0,
+  }
+}
+
+function trainingTelemetrySeriesPointLimit(
+  showMutationStepAxis: boolean
+): number {
+  return Math.max(2, Math.floor(LINE_RENDER_POINT_LIMIT / (showMutationStepAxis ? 3 : 2)))
+}
+
+function updateIncrementalSeriesCache({
+  cache,
+  length,
+  maxX,
+  pointAt,
+  targetPointCount,
+}: {
+  cache: IncrementalSeriesCache
+  length: number
+  maxX: number
+  pointAt: (index: number) => NumericSeriesPoint | null
+  targetPointCount: number
+}) {
+  const nextBucketSize = incrementalSeriesBucketSize(maxX, targetPointCount)
+  if (length < cache.processedLength || nextBucketSize !== cache.bucketSize) {
+    resetIncrementalSeriesCache(cache, nextBucketSize)
+  }
+
+  const startIndex = cache.processedLength > 0 ? cache.processedLength - 1 : 0
+  for (let index = startIndex; index < length; index += 1) {
+    const point = pointAt(index)
+    if (point && Number.isFinite(point.x) && Number.isFinite(point.y)) {
+      upsertIncrementalSeriesPoint(cache, point)
+    }
+  }
+  cache.processedLength = length
+}
+
+function incrementalSeriesBucketSize(
+  maxX: number,
+  targetPointCount: number
+): number {
+  const bucketCount = Math.max(1, Math.floor((targetPointCount - 2) / 2))
+  const safeMaxX = Number.isFinite(maxX) && maxX > 0 ? maxX : 1
+  return Math.max(1, Math.ceil(safeMaxX / bucketCount))
+}
+
+function resetIncrementalSeriesCache(
+  cache: IncrementalSeriesCache,
+  bucketSize: number
+) {
+  cache.bucketSize = bucketSize
+  cache.buckets = new Map()
+  cache.maxY = 0
+  cache.processedLength = 0
+}
+
+function upsertIncrementalSeriesPoint(
+  cache: IncrementalSeriesCache,
+  point: NumericSeriesPoint
+) {
+  const bucketIndex = Math.floor(Math.max(0, point.x - 1) / cache.bucketSize)
+  const bucket = cache.buckets.get(bucketIndex) ?? createNumericSeriesBucket()
+  bucket.values.set(point.x, point.y)
+  recomputeNumericSeriesBucket(bucket)
+  cache.buckets.set(bucketIndex, bucket)
+  cache.maxY = Math.max(cache.maxY, point.y)
+}
+
+function createNumericSeriesBucket(): NumericSeriesBucket {
+  return {
+    max: null,
+    min: null,
+    values: new Map(),
+  }
+}
+
+function recomputeNumericSeriesBucket(bucket: NumericSeriesBucket) {
+  let min: NumericSeriesPoint | null = null
+  let max: NumericSeriesPoint | null = null
+
+  for (const [x, y] of bucket.values) {
+    if (!Number.isFinite(y)) {
+      continue
+    }
+    const point = { x, y }
+    if (
+      min === null ||
+      y < min.y ||
+      (y === min.y && x < min.x)
+    ) {
+      min = point
+    }
+    if (
+      max === null ||
+      y > max.y ||
+      (y === max.y && x > max.x)
+    ) {
+      max = point
+    }
+  }
+
+  bucket.min = min
+  bucket.max = max
+}
+
+function sampledIncrementalSeriesPoints(
+  cache: IncrementalSeriesCache
+): NumericSeriesPoint[] {
+  const points: NumericSeriesPoint[] = []
+  const bucketIndexes = [...cache.buckets.keys()].sort((left, right) => left - right)
+
+  for (const bucketIndex of bucketIndexes) {
+    const bucket = cache.buckets.get(bucketIndex)
+    if (!bucket?.min || !bucket.max) {
+      continue
+    }
+    if (bucket.min.x === bucket.max.x) {
+      points.push(bucket.min)
+    } else if (bucket.min.x < bucket.max.x) {
+      points.push(bucket.min, bucket.max)
+    } else {
+      points.push(bucket.max, bucket.min)
+    }
+  }
+
+  return points
+}
+
+function accuracyPointToSeriesPoint(
+  point: { i: number; value: number } | undefined
+): NumericSeriesPoint | null {
+  if (!point || !Number.isFinite(point.i) || !Number.isFinite(point.value)) {
+    return null
+  }
+
+  return { x: point.i, y: point.value }
 }
 
 function indexedNumberSeries(values: number[]): NumericSeriesPoint[] {
@@ -4908,10 +5391,6 @@ function formatReadableDateTime(
 function nextStepAxisUpperBound(step: number): number {
   const safeStep = Number.isFinite(step) && step > 0 ? step : 0
   return (Math.floor(safeStep / 10) + 1) * 10
-}
-
-function lossAxisUpperBoundFor(losses: number[], currentLoss: number): number {
-  return numericAxisUpperBoundFor(losses, currentLoss)
 }
 
 function mutationStepAxisUpperBoundFor(

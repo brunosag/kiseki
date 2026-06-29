@@ -4,6 +4,7 @@ import os
 import random
 import threading
 import time
+from dataclasses import dataclass, replace
 from collections.abc import Iterator, Sequence
 from datetime import datetime
 from pathlib import Path
@@ -39,8 +40,10 @@ from .schemas import (
     ExperimentConfig,
     ExperimentControlsUpdate,
     ExperimentStatus,
+    ExperimentStatusCompactEvent,
     MutationStepPoint,
     StartExperimentRequest,
+    TrainingHistoryDelta,
 )
 
 VAL_FREQ = 10
@@ -55,6 +58,14 @@ NIXOS_CUDA_HINT = (
 )
 
 
+@dataclass(frozen=True)
+class ExperimentStreamPayload:
+    status_patch: dict[str, Any]
+    history_delta: TrainingHistoryDelta
+    replace_history: bool = False
+    full_status: ExperimentStatus | None = None
+
+
 class ExperimentManager:
     def __init__(
         self,
@@ -67,11 +78,12 @@ class ExperimentManager:
         self.stop_event = threading.Event()
         self.pause_event = threading.Event()
         self.lock = threading.Lock()
-        self.subscribers: set[Queue[tuple[str, ExperimentStatus]]] = set()
+        self.subscribers: dict[Queue[tuple[str, ExperimentStreamPayload]], bool] = {}
         self.worker: threading.Thread | None = None
         self._status = ExperimentStatus()
         self._resume_checkpoint_kind: CheckpointKind = "latest"
         self._last_step_publish_at = 0.0
+        self._pending_step_delta = TrainingHistoryDelta()
         self.analysis_service = AnalysisService(
             data_loader_factory=self.data_loader_factory,
             checkpoint_saver=self.checkpoint_saver,
@@ -138,8 +150,9 @@ class ExperimentManager:
             restored.requested_device = config.device
             self._status = restored
             self._resume_checkpoint_kind = selection.kind
+            self._pending_step_delta = TrainingHistoryDelta()
             status = self._status.model_copy(deep=True)
-        self._publish("paused", status)
+        self._publish("paused", status, replace_history=True)
         return status
 
     def start(self, request: StartExperimentRequest) -> ExperimentStatus:
@@ -176,6 +189,7 @@ class ExperimentManager:
             self.pause_event.clear()
             self._resume_checkpoint_kind = "latest"
             self._last_step_publish_at = 0.0
+            self._pending_step_delta = TrainingHistoryDelta()
             self._status = ExperimentStatus(
                 is_running=True,
                 optimizer=effective_request.config.optimizer,
@@ -190,7 +204,7 @@ class ExperimentManager:
             )
             self.worker.start()
             status = self._status.model_copy(deep=True)
-        self._publish("started", status)
+        self._publish("started", status, replace_history=True)
         return status
 
     def pause(self) -> ExperimentStatus:
@@ -217,6 +231,7 @@ class ExperimentManager:
             self.stop_event.clear()
             self.pause_event.clear()
             self._last_step_publish_at = 0.0
+            self._pending_step_delta = TrainingHistoryDelta()
             self._status.is_running = True
             self._status.is_paused = False
             self._status.pause_requested = False
@@ -239,10 +254,11 @@ class ExperimentManager:
             self.pause_event.clear()
             self.stop_event.clear()
             self._resume_checkpoint_kind = "latest"
+            self._pending_step_delta = TrainingHistoryDelta()
             self._status = ExperimentStatus()
             status = self._status.model_copy(deep=True)
 
-        self._publish("stopped", status)
+        self._publish("stopped", status, replace_history=True)
         return status
 
     def stop(self) -> ExperimentStatus:
@@ -269,23 +285,23 @@ class ExperimentManager:
             self._publish("stopped", status)
         return status
 
-    def events(self) -> Iterator[str]:
-        queue: Queue[tuple[str, ExperimentStatus]] = Queue()
+    def events(self, *, compact: bool = False) -> Iterator[str]:
+        queue: Queue[tuple[str, ExperimentStreamPayload]] = Queue()
         with self.lock:
-            self.subscribers.add(queue)
+            self.subscribers[queue] = compact
             initial_status = self._status.model_copy(deep=True)
         yield format_sse("status", initial_status)
         try:
             while True:
                 try:
-                    event_type, status = queue.get(timeout=15)
+                    event_type, payload = queue.get(timeout=15)
                 except Empty:
                     yield ": heartbeat\n\n"
                     continue
-                yield format_sse(event_type, status)
+                yield format_sse(event_type, payload, compact=compact)
         finally:
             with self.lock:
-                self.subscribers.discard(queue)
+                self.subscribers.pop(queue, None)
 
     def _resume_run(
         self,
@@ -343,7 +359,7 @@ class ExperimentManager:
                     reproducibility_mode=reproducibility_mode(config.deterministic),
                     checkpoint_warnings=[],
                 )
-                self._publish("runtime", status)
+                self._publish("runtime", status, replace_history=True)
 
             if hasattr(self.data_loader_factory, "pin_memory"):
                 self.data_loader_factory.pin_memory = device.type == "cuda"
@@ -388,7 +404,7 @@ class ExperimentManager:
                     device=device,
                     compatibility_warnings=compatibility_warnings,
                 )
-                self._publish("runtime", status)
+                self._publish("runtime", status, replace_history=True)
                 first_step = saved_status.current_step + 1
 
             for step in range(first_step, config.iterations + 1):
@@ -409,7 +425,7 @@ class ExperimentManager:
                     interval_iteration_seconds,
                 )
                 elapsed_seconds = elapsed_offset + time.perf_counter() - started_at
-                status = self._update_step(
+                step_payload = self._update_step(
                     step,
                     loss,
                     elapsed_seconds=elapsed_seconds,
@@ -421,7 +437,7 @@ class ExperimentManager:
                     train_accuracy=train_accuracy,
                     peak_memory_mb=peak_memory_mb(device),
                 )
-                self._publish_step(status)
+                self._publish_step(step_payload)
 
                 checkpoint_accuracy = None
                 best_accuracy_surpassed = False
@@ -429,11 +445,13 @@ class ExperimentManager:
                 if step % VAL_FREQ == 0:
                     accuracy = evaluate(model, val_loader, device)
                     validation_loss = evaluate_mean_loss(model, val_loader, device)
-                    best_accuracy_surpassed = accuracy > status.best_acc
+                    best_accuracy_surpassed = accuracy > float(
+                        step_payload.status_patch["best_acc"]
+                    )
                     update_scheduler = getattr(runner, "update_scheduler", None)
                     if callable(update_scheduler):
                         update_scheduler(best_accuracy_surpassed)
-                    status = self._update_accuracy(
+                    validation_payload = self._update_accuracy(
                         step,
                         accuracy,
                         validation_loss=validation_loss,
@@ -441,7 +459,7 @@ class ExperimentManager:
                         mutation_step=current_mutation_step(runner),
                         peak_memory_mb=peak_memory_mb(device),
                     )
-                    self._publish("validation", status)
+                    self._publish("validation", validation_payload)
                     checkpoint_accuracy = accuracy
                     interval_losses = []
                     interval_iteration_seconds = []
@@ -455,7 +473,7 @@ class ExperimentManager:
                 if checkpoint_interval_passed or best_accuracy_surpassed:
                     if checkpoint_accuracy is None:
                         checkpoint_accuracy = evaluate(model, val_loader, device)
-                        status = self._update_accuracy(
+                        validation_payload = self._update_accuracy(
                             step,
                             checkpoint_accuracy,
                             validation_loss=evaluate_mean_loss(model, val_loader, device),
@@ -463,7 +481,7 @@ class ExperimentManager:
                             mutation_step=current_mutation_step(runner),
                             peak_memory_mb=peak_memory_mb(device),
                         )
-                        self._publish("validation", status)
+                        self._publish("validation", validation_payload)
 
                     status = self._save_checkpoint(
                         model=model,
@@ -490,11 +508,11 @@ class ExperimentManager:
                 if self.pause_event.is_set():
                     pause_accuracy = checkpoint_accuracy
                     if pause_accuracy is None:
-                        pause_accuracy = current_step_accuracy(status, step)
+                        pause_accuracy = current_step_accuracy(self.status(), step)
 
                     if pause_accuracy is None:
                         pause_accuracy = evaluate(model, val_loader, device)
-                        status = self._update_accuracy(
+                        validation_payload = self._update_accuracy(
                             step,
                             pause_accuracy,
                             validation_loss=evaluate_mean_loss(model, val_loader, device),
@@ -502,7 +520,7 @@ class ExperimentManager:
                             mutation_step=current_mutation_step(runner),
                             peak_memory_mb=peak_memory_mb(device),
                         )
-                        self._publish("validation", status)
+                        self._publish("validation", validation_payload)
 
                     status = self._save_checkpoint(
                         model=model,
@@ -618,7 +636,7 @@ class ExperimentManager:
         mutation_step: float | None,
         train_accuracy: float | None,
         peak_memory_mb: float | None,
-    ) -> ExperimentStatus:
+    ) -> ExperimentStreamPayload:
         with self.lock:
             self._status.current_step = step
             self._status.current_loss = loss
@@ -630,16 +648,22 @@ class ExperimentManager:
                 mean_iteration_seconds_since_validation
             )
             self._status.history.loss.append(loss)
+            delta = TrainingHistoryDelta(loss=[AccuracyPoint(i=step, value=loss)])
             if train_accuracy is not None:
-                self._status.history.train_acc.append(
-                    AccuracyPoint(i=step, value=train_accuracy)
-                )
+                train_accuracy_point = AccuracyPoint(i=step, value=train_accuracy)
+                self._status.history.train_acc.append(train_accuracy_point)
+                delta.train_acc.append(train_accuracy_point)
             if peak_memory_mb is not None:
-                self._status.history.memory_mb.append(
-                    AccuracyPoint(i=step, value=peak_memory_mb)
-                )
-            self._record_mutation_step(step, mutation_step)
-            return self._status.model_copy(deep=True)
+                memory_point = AccuracyPoint(i=step, value=peak_memory_mb)
+                self._status.history.memory_mb.append(memory_point)
+                delta.memory_mb.append(memory_point)
+            mutation_point = self._record_mutation_step(step, mutation_step)
+            if mutation_point is not None:
+                delta.mutation_step.append(mutation_point)
+            return ExperimentStreamPayload(
+                status_patch=self._status.model_dump(exclude={"history"}),
+                history_delta=delta,
+            )
 
     def _update_accuracy(
         self,
@@ -650,33 +674,45 @@ class ExperimentManager:
         elapsed_seconds: float,
         mutation_step: float | None,
         peak_memory_mb: float | None,
-    ) -> ExperimentStatus:
+    ) -> ExperimentStreamPayload:
         with self.lock:
             self._status.best_acc = max(self._status.best_acc, accuracy)
             self._status.total_elapsed_seconds = max(elapsed_seconds, 0.0)
-            self._status.history.acc.append(AccuracyPoint(i=step, value=accuracy))
+            accuracy_point = AccuracyPoint(i=step, value=accuracy)
+            self._status.history.acc.append(accuracy_point)
+            delta = TrainingHistoryDelta(acc=[accuracy_point])
             if validation_loss is not None:
-                self._status.history.val_loss.append(
-                    AccuracyPoint(i=step, value=validation_loss)
-                )
+                validation_loss_point = AccuracyPoint(i=step, value=validation_loss)
+                self._status.history.val_loss.append(validation_loss_point)
+                delta.val_loss.append(validation_loss_point)
             if peak_memory_mb is not None:
-                self._status.history.memory_mb.append(
-                    AccuracyPoint(i=step, value=peak_memory_mb)
-                )
-            self._record_mutation_step(step, mutation_step)
-            return self._status.model_copy(deep=True)
+                memory_point = AccuracyPoint(i=step, value=peak_memory_mb)
+                self._status.history.memory_mb.append(memory_point)
+                delta.memory_mb.append(memory_point)
+            mutation_point = self._record_mutation_step(step, mutation_step)
+            if mutation_point is not None:
+                delta.mutation_step.append(mutation_point)
+            return ExperimentStreamPayload(
+                status_patch=self._status.model_dump(exclude={"history"}),
+                history_delta=delta,
+            )
 
-    def _record_mutation_step(self, step: int, mutation_step: float | None) -> None:
+    def _record_mutation_step(
+        self,
+        step: int,
+        mutation_step: float | None,
+    ) -> MutationStepPoint | None:
         self._status.current_mutation_step = mutation_step
         if mutation_step is None:
-            return
+            return None
 
         point = MutationStepPoint(i=step, value=mutation_step)
         if self._status.history.mutation_step and self._status.history.mutation_step[-1].i == step:
             self._status.history.mutation_step[-1] = point
-            return
+            return point
 
         self._status.history.mutation_step.append(point)
+        return point
 
     def _update_runtime(
         self,
@@ -770,22 +806,85 @@ class ExperimentManager:
                 self._status.total_elapsed_seconds = max(elapsed_seconds, 0.0)
             return self._status.model_copy(deep=True)
 
-    def _publish(self, event_type: str, status: ExperimentStatus) -> None:
+    def _publish(
+        self,
+        event_type: str,
+        payload: ExperimentStatus | ExperimentStreamPayload,
+        *,
+        replace_history: bool = False,
+    ) -> None:
+        stream_payload = self._stream_payload(
+            payload,
+            include_pending_step_delta=event_type != "step",
+            replace_history=replace_history,
+        )
         with self.lock:
-            subscribers = tuple(self.subscribers)
-        for queue in subscribers:
-            queue.put((event_type, status))
+            subscribers = tuple(self.subscribers.items())
+        if stream_payload.full_status is None and any(
+            not compact for _, compact in subscribers
+        ):
+            stream_payload = replace(stream_payload, full_status=self.status())
+        for queue, _ in subscribers:
+            queue.put((event_type, stream_payload))
 
-    def _publish_step(self, status: ExperimentStatus) -> None:
+    def _publish_step(self, payload: ExperimentStreamPayload) -> None:
         now = time.monotonic()
         with self.lock:
             if (
                 now - self._last_step_publish_at
                 < FRONTEND_STEP_UPDATE_INTERVAL_SECONDS
             ):
+                self._pending_step_delta = merge_training_history_deltas(
+                    self._pending_step_delta,
+                    payload.history_delta,
+                )
                 return
+            history_delta = merge_training_history_deltas(
+                self._pending_step_delta,
+                payload.history_delta,
+            )
+            self._pending_step_delta = TrainingHistoryDelta()
             self._last_step_publish_at = now
-        self._publish("step", status)
+        self._publish("step", replace(payload, history_delta=history_delta))
+
+    def _stream_payload(
+        self,
+        payload: ExperimentStatus | ExperimentStreamPayload,
+        *,
+        include_pending_step_delta: bool,
+        replace_history: bool,
+    ) -> ExperimentStreamPayload:
+        with self.lock:
+            pending_delta = (
+                self._pending_step_delta
+                if include_pending_step_delta
+                else TrainingHistoryDelta()
+            )
+            if include_pending_step_delta:
+                self._pending_step_delta = TrainingHistoryDelta()
+            needs_full_status = any(not compact for compact in self.subscribers.values())
+
+        if isinstance(payload, ExperimentStatus):
+            history_delta = (
+                training_history_delta_from_status(payload)
+                if replace_history
+                else TrainingHistoryDelta()
+            )
+            history_delta = merge_training_history_deltas(pending_delta, history_delta)
+            return stream_payload_from_status(
+                payload,
+                history_delta=history_delta,
+                replace_history=replace_history,
+            )
+
+        history_delta = merge_training_history_deltas(
+            pending_delta,
+            payload.history_delta,
+        )
+        full_status = payload.full_status
+        if needs_full_status and full_status is None:
+            full_status = self.status()
+        return replace(payload, history_delta=history_delta, full_status=full_status)
 
     def _is_experiment_running(self) -> bool:
         with self.lock:
@@ -837,6 +936,72 @@ def current_step_accuracy(status: ExperimentStatus, step: int) -> float | None:
         if point.i == step:
             return point.value
     return None
+
+
+def stream_payload_from_status(
+    status: ExperimentStatus,
+    *,
+    history_delta: TrainingHistoryDelta | None = None,
+    replace_history: bool = False,
+) -> ExperimentStreamPayload:
+    return ExperimentStreamPayload(
+        status_patch=status.model_dump(exclude={"history"}),
+        history_delta=history_delta or TrainingHistoryDelta(),
+        replace_history=replace_history,
+        full_status=status,
+    )
+
+
+def training_history_delta_from_status(status: ExperimentStatus) -> TrainingHistoryDelta:
+    return TrainingHistoryDelta(
+        loss=[
+            AccuracyPoint(i=index + 1, value=value)
+            for index, value in enumerate(status.history.loss)
+        ],
+        acc=list(status.history.acc),
+        train_acc=list(status.history.train_acc),
+        val_loss=list(status.history.val_loss),
+        memory_mb=list(status.history.memory_mb),
+        mutation_step=list(status.history.mutation_step),
+    )
+
+
+def merge_training_history_deltas(
+    *deltas: TrainingHistoryDelta,
+) -> TrainingHistoryDelta:
+    if not deltas:
+        return TrainingHistoryDelta()
+
+    return TrainingHistoryDelta(
+        loss=merge_accuracy_point_series(*(delta.loss for delta in deltas)),
+        acc=merge_accuracy_point_series(*(delta.acc for delta in deltas)),
+        train_acc=merge_accuracy_point_series(*(delta.train_acc for delta in deltas)),
+        val_loss=merge_accuracy_point_series(*(delta.val_loss for delta in deltas)),
+        memory_mb=merge_accuracy_point_series(*(delta.memory_mb for delta in deltas)),
+        mutation_step=merge_mutation_step_series(
+            *(delta.mutation_step for delta in deltas)
+        ),
+    )
+
+
+def merge_accuracy_point_series(
+    *series_items: Sequence[AccuracyPoint],
+) -> list[AccuracyPoint]:
+    points_by_step: dict[int, AccuracyPoint] = {}
+    for series in series_items:
+        for point in series:
+            points_by_step[point.i] = point
+    return [points_by_step[step] for step in sorted(points_by_step)]
+
+
+def merge_mutation_step_series(
+    *series_items: Sequence[MutationStepPoint],
+) -> list[MutationStepPoint]:
+    points_by_step: dict[int, MutationStepPoint] = {}
+    for series in series_items:
+        for point in series:
+            points_by_step[point.i] = point
+    return [points_by_step[step] for step in sorted(points_by_step)]
 
 
 def resolve_device(requested: str) -> torch.device:
@@ -974,8 +1139,24 @@ def peak_memory_mb(device: torch.device) -> float | None:
     return torch.cuda.max_memory_allocated(device) / (1024 * 1024)
 
 
-def format_sse(event_type: str, payload: ExperimentStatus | dict[str, Any]) -> str:
-    if isinstance(payload, ExperimentStatus):
+def format_sse(
+    event_type: str,
+    payload: ExperimentStatus | ExperimentStreamPayload | dict[str, Any],
+    *,
+    compact: bool = False,
+) -> str:
+    if isinstance(payload, ExperimentStreamPayload):
+        if compact:
+            data = ExperimentStatusCompactEvent(
+                status_patch=payload.status_patch,
+                history_delta=payload.history_delta,
+                replace_history=payload.replace_history,
+            ).model_dump()
+        elif payload.full_status is not None:
+            data = payload.full_status.model_dump()
+        else:
+            raise ValueError("Full status is required for non-compact SSE payloads")
+    elif isinstance(payload, ExperimentStatus):
         data = payload.model_dump()
     else:
         data = payload

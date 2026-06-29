@@ -456,6 +456,21 @@ class TrainingHistory(BaseModel):
     mutation_step: list[MutationStepPoint] = Field(default_factory=list)
 
 
+class TrainingHistoryDelta(BaseModel):
+    loss: list[AccuracyPoint] = Field(default_factory=list)
+    acc: list[AccuracyPoint] = Field(default_factory=list)
+    train_acc: list[AccuracyPoint] = Field(default_factory=list)
+    val_loss: list[AccuracyPoint] = Field(default_factory=list)
+    memory_mb: list[AccuracyPoint] = Field(default_factory=list)
+    mutation_step: list[MutationStepPoint] = Field(default_factory=list)
+
+
+class ExperimentStatusCompactEvent(BaseModel):
+    status_patch: dict[str, Any] = Field(default_factory=dict)
+    history_delta: TrainingHistoryDelta = Field(default_factory=TrainingHistoryDelta)
+    replace_history: bool = False
+
+
 class ExperimentStatus(BaseModel):
     is_running: bool = False
     is_paused: bool = False

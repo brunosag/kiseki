@@ -88,6 +88,15 @@ export type TrainingHistory = {
   mutation_step: MutationStepPoint[]
 }
 
+export type TrainingHistoryDelta = {
+  loss?: AccuracyPoint[]
+  acc?: AccuracyPoint[]
+  train_acc?: AccuracyPoint[]
+  val_loss?: AccuracyPoint[]
+  memory_mb?: AccuracyPoint[]
+  mutation_step?: MutationStepPoint[]
+}
+
 export type ExperimentStatus = {
   is_running: boolean
   is_paused: boolean
@@ -118,6 +127,12 @@ export type ExperimentStatus = {
   best_checkpoint_path?: string | null
   reproducibility_mode: string
   checkpoint_warnings: string[]
+}
+
+export type ExperimentStatusCompactEvent = {
+  status_patch?: Partial<Omit<ExperimentStatus, "history">>
+  history_delta?: TrainingHistoryDelta
+  replace_history?: boolean
 }
 
 export type OptimizerParamValue = number | boolean

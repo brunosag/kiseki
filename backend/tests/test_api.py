@@ -1,3 +1,4 @@
+import json
 import os
 import time
 from datetime import UTC, datetime
@@ -20,7 +21,15 @@ from kiseki.experiment import (
 )
 from kiseki.dataset_types import DatasetName
 from kiseki.models import CIFAR10CNN, build_model
-from kiseki.schemas import ETA, ETA_0, AccuracyPoint, ExperimentConfig, ExperimentStatus
+from kiseki.schemas import (
+    ETA,
+    ETA_0,
+    AccuracyPoint,
+    ExperimentConfig,
+    ExperimentStatus,
+    MutationStepPoint,
+    TrainingHistoryDelta,
+)
 from kiseki.optimizers import SGDConfig, SGDRunner
 
 
@@ -1506,6 +1515,53 @@ def test_sse_event_serialization() -> None:
     failed_payload = format_sse("failed", ExperimentStatus(error="boom"))
     assert failed_payload.startswith("event: failed\n")
     assert '"error": "boom"' in failed_payload
+
+
+def test_compact_sse_event_serialization_uses_patch_payload() -> None:
+    payload = experiment.ExperimentStreamPayload(
+        status_patch={"is_running": True, "current_step": 2},
+        history_delta=TrainingHistoryDelta(
+            loss=[AccuracyPoint(i=1, value=0.9), AccuracyPoint(i=2, value=0.7)],
+            acc=[AccuracyPoint(i=2, value=25.0)],
+            mutation_step=[MutationStepPoint(i=2, value=0.1)],
+        ),
+    )
+
+    event = format_sse("step", payload, compact=True)
+    data = json.loads(event.split("data: ", 1)[1])
+
+    assert event.startswith("event: step\n")
+    assert data["status_patch"] == {"is_running": True, "current_step": 2}
+    assert data["history_delta"]["loss"] == [
+        {"i": 1, "value": 0.9},
+        {"i": 2, "value": 0.7},
+    ]
+    assert data["history_delta"]["acc"] == [{"i": 2, "value": 25.0}]
+    assert data["history_delta"]["mutation_step"] == [{"i": 2, "value": 0.1}]
+    assert data["replace_history"] is False
+    assert "current_loss" not in data
+
+
+def test_training_history_delta_merge_replaces_duplicate_steps() -> None:
+    first = TrainingHistoryDelta(
+        loss=[AccuracyPoint(i=1, value=0.9), AccuracyPoint(i=2, value=0.8)],
+        mutation_step=[MutationStepPoint(i=2, value=0.2)],
+    )
+    second = TrainingHistoryDelta(
+        loss=[AccuracyPoint(i=2, value=0.7), AccuracyPoint(i=3, value=0.6)],
+        mutation_step=[MutationStepPoint(i=2, value=0.1)],
+    )
+
+    merged = experiment.merge_training_history_deltas(first, second)
+
+    assert [point.model_dump() for point in merged.loss] == [
+        {"i": 1, "value": 0.9},
+        {"i": 2, "value": 0.7},
+        {"i": 3, "value": 0.6},
+    ]
+    assert [point.model_dump() for point in merged.mutation_step] == [
+        {"i": 2, "value": 0.1}
+    ]
 
 
 def test_gpu_request_errors_when_cuda_is_unavailable(monkeypatch) -> None:
