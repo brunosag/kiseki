@@ -223,6 +223,9 @@ const EMBEDDING_POINT_OPACITY = 0.88
 const EMBEDDING_POINT_RADIUS = 2.8
 const EMBEDDING_CROSS_HALF_SIZE = 3.1
 const TSNE_PLOT_ASPECT_RATIO = 5 / 3
+const EMBEDDING_TOOLTIP_OFFSET = 12
+const EMBEDDING_TOOLTIP_HIT_RADIUS = 12
+const EMBEDDING_CHART_MARGIN = { bottom: 20, left: 0, right: 0, top: 28 }
 
 type ResolvedTheme = "dark" | "light"
 type CheckpointSortKey = "saved_at" | "accuracy" | "step" | "elapsed"
@@ -284,6 +287,17 @@ type EmbeddingChartPoint = AnalysisEmbeddingProjection["left"][number] & {
 }
 
 type EmbeddingPlotLayout = "domain" | "rotated-equal-scale"
+type ChartPointerPosition = { x: number; y: number }
+type EmbeddingChartLayout = {
+  points: EmbeddingChartPoint[]
+  xDomain: [number, number]
+  yDomain: [number, number]
+}
+type EmbeddingPointGroup = {
+  color: string
+  label: string
+  points: EmbeddingChartPoint[]
+}
 
 type ConfusionHeatmapDatum = {
   count: number
@@ -2500,6 +2514,11 @@ function EmbeddingChartPanel({
   xDomain?: [number, number]
   yDomain?: [number, number]
 }) {
+  const [activeTooltipPoint, setActiveTooltipPoint] =
+    useState<EmbeddingChartPoint | null>(null)
+  const activeTooltipKeyRef = useRef<string | null>(null)
+  const tooltipElementRef = useRef<HTMLDivElement | null>(null)
+  const tooltipPositionRef = useRef<ChartPointerPosition>({ x: 0, y: 0 })
   const sampledPoints = useMemo(
     () => sampleEmbeddingPoints(points, sampleLimit),
     [points, sampleLimit]
@@ -2521,8 +2540,10 @@ function EmbeddingChartPanel({
         ? rotatedEqualScaleEmbeddingLayout(baseChartPoints, plotAspectRatio)
         : {
             points: baseChartPoints,
-            xDomain: xDomain ?? paddedNumericDomain(baseChartPoints.map((point) => point.x)),
-            yDomain: yDomain ?? paddedNumericDomain(baseChartPoints.map((point) => point.y)),
+            xDomain:
+              xDomain ?? paddedNumericDomain(baseChartPoints.map((point) => point.x)),
+            yDomain:
+              yDomain ?? paddedNumericDomain(baseChartPoints.map((point) => point.y)),
           },
     [baseChartPoints, layout, plotAspectRatio, xDomain, yDomain]
   )
@@ -2537,6 +2558,56 @@ function EmbeddingChartPanel({
     [chartPoints]
   )
   const resolvedTotalPointCount = totalPointCount ?? points.length
+  const moveTooltipOverlay = useCallback((position: ChartPointerPosition) => {
+    tooltipPositionRef.current = position
+    const element = tooltipElementRef.current
+    if (element) {
+      element.style.transform = `translate3d(${position.x}px, ${position.y}px, 0)`
+    }
+  }, [])
+  const setTooltipElement = useCallback((element: HTMLDivElement | null) => {
+    tooltipElementRef.current = element
+    if (!element) {
+      return
+    }
+
+    const position = tooltipPositionRef.current
+    element.style.transform = `translate3d(${position.x}px, ${position.y}px, 0)`
+  }, [])
+  const updateTooltipPosition = useCallback(
+    (event: PointerEvent<HTMLDivElement>) => {
+      const bounds = event.currentTarget.getBoundingClientRect()
+      const pointer = {
+        x: event.clientX - bounds.left,
+        y: event.clientY - bounds.top,
+      }
+      moveTooltipOverlay({
+        x: pointer.x + EMBEDDING_TOOLTIP_OFFSET,
+        y: pointer.y + EMBEDDING_TOOLTIP_OFFSET,
+      })
+
+      const nearestPoint = nearestEmbeddingPoint(
+        chartPoints,
+        chartLayout.xDomain,
+        chartLayout.yDomain,
+        bounds.width,
+        bounds.height,
+        pointer
+      )
+      const nearestKey = nearestPoint ? embeddingTooltipKey(nearestPoint) : null
+      if (nearestKey === activeTooltipKeyRef.current) {
+        return
+      }
+
+      activeTooltipKeyRef.current = nearestKey
+      setActiveTooltipPoint(nearestPoint)
+    },
+    [chartLayout.xDomain, chartLayout.yDomain, chartPoints, moveTooltipOverlay]
+  )
+  const clearTooltipPosition = useCallback(() => {
+    activeTooltipKeyRef.current = null
+    setActiveTooltipPoint(null)
+  }, [])
 
   return (
     <ChartPanel
@@ -2544,34 +2615,26 @@ function EmbeddingChartPanel({
       className={className}
       title={title}
     >
-      <div className="relative h-full min-h-[18rem] w-full">
-        <ChartContainer className="h-full w-full aspect-auto" config={config}>
-          <ScatterChart
-            accessibilityLayer
-            margin={{ bottom: 20, left: 0, right: 0, top: 28 }}
-          >
-            <XAxis dataKey="x" domain={chartLayout.xDomain} hide type="number" />
-            <YAxis dataKey="y" domain={chartLayout.yDomain} hide type="number" />
-            <ZAxis range={[24, 24]} />
-            <ChartTooltip content={<EmbeddingTooltip />} cursor={false} />
-            {groupedPoints.map((group) => (
-              <Scatter
-                data={group.points}
-                fill={group.color}
-                isAnimationActive={false}
-                key={group.label}
-                legendType="circle"
-                name={group.label}
-                shape={
-                  pointShape === "circle"
-                    ? EmbeddingCircleShape
-                    : EmbeddingScatterShape
-                }
-              />
-            ))}
-          </ScatterChart>
-        </ChartContainer>
+      <div
+        className="relative h-full min-h-[18rem] w-full"
+        onPointerLeave={clearTooltipPosition}
+        onPointerMove={updateTooltipPosition}
+      >
+        <EmbeddingScatterPlot
+          chartLayout={chartLayout}
+          config={config}
+          groupedPoints={groupedPoints}
+          pointShape={pointShape}
+        />
         <EmbeddingLegendOverlay items={legendItems} />
+        {activeTooltipPoint ? (
+          <div
+            className="pointer-events-none absolute top-0 left-0 z-20 will-change-transform"
+            ref={setTooltipElement}
+          >
+            <EmbeddingTooltipCard point={activeTooltipPoint} />
+          </div>
+        ) : null}
         <span className="pointer-events-none absolute bottom-0 left-0 text-[0.7rem] text-muted-foreground/60 tabular-nums">
           Sampled {formatInteger(sampledPoints.length)} /{" "}
           {formatInteger(resolvedTotalPointCount)}
@@ -2580,6 +2643,43 @@ function EmbeddingChartPanel({
     </ChartPanel>
   )
 }
+
+const EmbeddingScatterPlot = memo(function EmbeddingScatterPlot({
+  chartLayout,
+  config,
+  groupedPoints,
+  pointShape,
+}: {
+  chartLayout: EmbeddingChartLayout
+  config: ChartConfig
+  groupedPoints: EmbeddingPointGroup[]
+  pointShape: "circle" | "side"
+}) {
+  return (
+    <ChartContainer className="h-full w-full aspect-auto" config={config}>
+      <ScatterChart accessibilityLayer margin={EMBEDDING_CHART_MARGIN}>
+        <XAxis dataKey="x" domain={chartLayout.xDomain} hide type="number" />
+        <YAxis dataKey="y" domain={chartLayout.yDomain} hide type="number" />
+        <ZAxis range={[24, 24]} />
+        {groupedPoints.map((group) => (
+          <Scatter
+            data={group.points}
+            fill={group.color}
+            isAnimationActive={false}
+            key={group.label}
+            legendType="circle"
+            name={group.label}
+            shape={
+              pointShape === "circle"
+                ? EmbeddingCircleShape
+                : EmbeddingScatterShape
+            }
+          />
+        ))}
+      </ScatterChart>
+    </ChartContainer>
+  )
+})
 
 function EmbeddingLegendOverlay({ items }: { items: ChartLegendItem[] }) {
   return (
@@ -2697,18 +2797,7 @@ function aspectMatchedEmbeddingDomains(
   }
 }
 
-function EmbeddingTooltip({
-  active,
-  payload,
-}: {
-  active?: boolean
-  payload?: readonly TooltipPayloadEntry<TooltipValueType, string | number>[]
-}) {
-  const point: unknown = payload?.[0]?.payload
-  if (!active || !isEmbeddingChartPoint(point)) {
-    return null
-  }
-
+function EmbeddingTooltipCard({ point }: { point: EmbeddingChartPoint }) {
   return (
     <div className="grid min-w-40 items-start gap-1.5 rounded-lg border border-border/50 bg-background px-2.5 py-1.5 text-xs shadow-xl">
       <div className="font-medium">{point.sideName}</div>
@@ -2728,6 +2817,60 @@ function EmbeddingTooltip({
       </div>
     </div>
   )
+}
+
+function nearestEmbeddingPoint(
+  points: EmbeddingChartPoint[],
+  xDomain: [number, number],
+  yDomain: [number, number],
+  width: number,
+  height: number,
+  pointer: ChartPointerPosition
+): EmbeddingChartPoint | null {
+  const plotWidth =
+    width - EMBEDDING_CHART_MARGIN.left - EMBEDDING_CHART_MARGIN.right
+  const plotHeight =
+    height - EMBEDDING_CHART_MARGIN.top - EMBEDDING_CHART_MARGIN.bottom
+  const xSpan = xDomain[1] - xDomain[0]
+  const ySpan = yDomain[1] - yDomain[0]
+
+  if (
+    plotWidth <= 0 ||
+    plotHeight <= 0 ||
+    xSpan <= 0 ||
+    ySpan <= 0 ||
+    !Number.isFinite(xSpan) ||
+    !Number.isFinite(ySpan)
+  ) {
+    return null
+  }
+
+  const hitRadiusSquared = EMBEDDING_TOOLTIP_HIT_RADIUS ** 2
+  let nearestPoint: EmbeddingChartPoint | null = null
+  let nearestDistanceSquared = hitRadiusSquared
+
+  for (const point of points) {
+    const pointX =
+      EMBEDDING_CHART_MARGIN.left +
+      ((point.x - xDomain[0]) / xSpan) * plotWidth
+    const pointY =
+      EMBEDDING_CHART_MARGIN.top +
+      ((yDomain[1] - point.y) / ySpan) * plotHeight
+    const deltaX = pointX - pointer.x
+    const deltaY = pointY - pointer.y
+    const distanceSquared = deltaX * deltaX + deltaY * deltaY
+
+    if (distanceSquared <= nearestDistanceSquared) {
+      nearestPoint = point
+      nearestDistanceSquared = distanceSquared
+    }
+  }
+
+  return nearestPoint
+}
+
+function embeddingTooltipKey(point: EmbeddingChartPoint): string {
+  return `${point.side}:${point.index}`
 }
 
 function EmbeddingScatterShape(props: ScatterShapeProps & { fill?: string }) {
@@ -4160,11 +4303,7 @@ function embeddingLegendItems(
     }))
 }
 
-function groupedEmbeddingPoints(points: EmbeddingChartPoint[]): {
-  color: string
-  label: string
-  points: EmbeddingChartPoint[]
-}[] {
+function groupedEmbeddingPoints(points: EmbeddingChartPoint[]): EmbeddingPointGroup[] {
   const grouped = new Map<number, EmbeddingChartPoint[]>()
   for (const point of points) {
     const group = grouped.get(point.label)
