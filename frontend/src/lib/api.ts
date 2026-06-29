@@ -211,6 +211,10 @@ export type AnalysisEmbeddingPoint = {
 export type AnalysisEmbeddingProjection = {
   left: AnalysisEmbeddingPoint[]
   right: AnalysisEmbeddingPoint[]
+  left_total: number
+  right_total: number
+  x_domain: [number, number]
+  y_domain: [number, number]
 }
 
 export type AnalysisEmbeddings = {
@@ -324,7 +328,7 @@ export type AnalysisComparisonJobStatus = {
   message: string
   cache_state: AnalysisCacheState
   stale_sides: ("left" | "right")[]
-  report?: AnalysisComparisonReport | null
+  report_available: boolean
   error?: string | null
 }
 
@@ -670,6 +674,18 @@ export async function fetchAnalysisComparisonJob(
   )
   if (!response.ok) {
     throw new Error("Failed to load comparison")
+  }
+  return response.json()
+}
+
+export async function fetchAnalysisComparisonReport(
+  jobId: string
+): Promise<AnalysisComparisonReport> {
+  const response = await fetch(
+    apiUrl(`/api/analysis/comparisons/jobs/${encodeURIComponent(jobId)}/report`)
+  )
+  if (!response.ok) {
+    throw new Error("Failed to load comparison report")
   }
   return response.json()
 }

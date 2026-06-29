@@ -259,6 +259,10 @@ class AnalysisEmbeddingPoint(BaseModel):
 class AnalysisEmbeddingProjection(BaseModel):
     left: list[AnalysisEmbeddingPoint]
     right: list[AnalysisEmbeddingPoint]
+    left_total: int
+    right_total: int
+    x_domain: tuple[float, float]
+    y_domain: tuple[float, float]
 
 
 class AnalysisEmbeddings(BaseModel):
@@ -373,7 +377,7 @@ class AnalysisComparisonJobStatus(BaseModel):
     message: str
     cache_state: AnalysisCacheState
     stale_sides: list[Literal["left", "right"]] = Field(default_factory=list)
-    report: AnalysisComparisonReport | None = None
+    report_available: bool = False
     error: str | None = None
 
 

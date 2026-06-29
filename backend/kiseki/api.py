@@ -1,5 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import StreamingResponse
 
 from .analysis import AnalysisComparisonError, AnalysisParameterError
@@ -8,6 +9,7 @@ from .experiment import ExperimentManager
 from .schemas import (
     AnalysisComparisonJobRequest,
     AnalysisComparisonJobStatus,
+    AnalysisComparisonReport,
     CheckpointListMode,
     CheckpointSelection,
     CheckpointSummary,
@@ -23,6 +25,7 @@ def create_app(manager: ExperimentManager | None = None) -> FastAPI:
     app = FastAPI(title="Kiseki Backend")
     experiment_manager = manager or ExperimentManager()
 
+    app.add_middleware(GZipMiddleware, minimum_size=1024)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -80,6 +83,18 @@ def create_app(manager: ExperimentManager | None = None) -> FastAPI:
             return experiment_manager.get_analysis_comparison_job(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get(
+        "/api/analysis/comparisons/jobs/{job_id}/report",
+        response_model=AnalysisComparisonReport,
+    )
+    def get_analysis_comparison_report(job_id: str) -> AnalysisComparisonReport:
+        try:
+            return experiment_manager.get_analysis_comparison_report(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except AnalysisComparisonError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get("/api/analysis/comparisons/jobs/{job_id}/events")
     def stream_analysis_comparison_events(job_id: str) -> StreamingResponse:

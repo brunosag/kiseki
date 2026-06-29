@@ -73,14 +73,8 @@
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
     --plot-accuracy: #2563eb;
-    --plot-grid: rgba(23, 23, 23, 0.045);
-    --plot-hover-background: #ffffff;
-    --plot-hover-border: #e5e5e5;
-    --plot-hover-text: #171717;
     --plot-loss: #171717;
     --plot-mutation-step: #737373;
-    --plot-muted: rgba(82, 82, 82, 0.62);
-    --plot-text: #171717;
     --radius: 0.625rem;
     --sidebar: oklch(0.985 0 0);
     --sidebar-foreground: oklch(0.145 0 0);
@@ -117,14 +111,8 @@
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
     --plot-accuracy: #38bdf8;
-    --plot-grid: rgba(250, 250, 250, 0.05);
-    --plot-hover-background: #262626;
-    --plot-hover-border: #404040;
-    --plot-hover-text: #fafafa;
     --plot-loss: #fafafa;
     --plot-mutation-step: #a3a3a3;
-    --plot-muted: rgba(229, 229, 229, 0.52);
-    --plot-text: #e5e5e5;
     --sidebar: oklch(0.205 0 0);
     --sidebar-foreground: oklch(0.985 0 0);
     --sidebar-primary: oklch(0.488 0.243 264.376);
@@ -155,15 +143,4 @@
     -webkit-appearance: none;
     appearance: none;
     }
-}
-
-.js-plotly-plot .plotly .cursor-crosshair,
-.js-plotly-plot .plotly .cursor-ew-resize,
-.js-plotly-plot .plotly .cursor-ns-resize {
-  cursor: default !important;
-}
-
-.js-plotly-plot .hoverlayer .hovertext path {
-  filter: drop-shadow(0 6px 12px rgb(0 0 0 / 0.14));
-  stroke-width: 1px !important;
 }

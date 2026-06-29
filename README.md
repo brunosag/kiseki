@@ -39,7 +39,7 @@ backend Python process starts.
 The repository features a reactive web user interface built with GenieFramework and StippleLatex. The application (`scripts/app.jl`) allows users to:
 
 * Configure experiment hyperparameters, including dataset parameters, hardware device, and optimizer-specific variables (e.g., learning rate for SGD, population size and initial mutation step size for LEEA, or tournament and permutation settings for CoSyNE).
-* Visualize real-time training telemetry, plotting loss and accuracy metrics onto Plotly-based graphs.
+* Visualize real-time training telemetry, plotting loss and accuracy metrics onto Recharts-based graphs.
 * Start, interrupt, and monitor experiments asynchronously.
 
 ### Command-line interface

@@ -242,6 +242,12 @@ def wait_for_analysis_job(client: TestClient, job_id: str, timeout: float = 5.0)
     return status
 
 
+def fetch_analysis_report(client: TestClient, job_id: str) -> dict:
+    response = client.get(f"/api/analysis/comparisons/jobs/{job_id}/report")
+    assert response.status_code == 200
+    return response.json()
+
+
 def install_fast_analysis_fakes(monkeypatch) -> None:
     class FakePCA:
         def __init__(self, n_components: int, random_state: int) -> None:
@@ -385,7 +391,9 @@ def test_api_comparison_job_lifecycle_returns_report_and_removes_old_routes(
     job = wait_for_analysis_job(client, response.json()["job_id"])
     assert job["status"] == "completed"
     assert job["cache_state"] == "miss"
-    report = job["report"]
+    assert job["report_available"] is True
+    assert "report" not in job
+    report = fetch_analysis_report(client, job["job_id"])
     assert report["left"]["run_id"] == "left-analysis-run"
     assert report["right"]["run_id"] == "right-analysis-run"
     assert report["analysis_device"] in {"cpu", "cuda"}
@@ -402,6 +410,9 @@ def test_api_comparison_job_lifecycle_returns_report_and_removes_old_routes(
     ]
     assert len(report["embeddings"]["pca"]["left"]) == 12
     assert len(report["embeddings"]["tsne"]["right"]) == 12
+    assert report["embeddings"]["pca"]["left_total"] == 12
+    assert report["embeddings"]["pca"]["right_total"] == 12
+    assert len(report["embeddings"]["pca"]["x_domain"]) == 2
     assert len(report["lrp"]["samples"]) == 1
     assert len(report["lrp"]["class_averages"]) == 10
     assert report["robustness"][0]["points"][0]["level"] == 0.0
@@ -470,8 +481,9 @@ def test_api_comparison_uses_cifar_checkpoint_model_and_test_loader(
     assert response.status_code == 200
     job = wait_for_analysis_job(client, response.json()["job_id"])
     assert job["status"] == "completed"
-    assert job["report"]["left"]["dataset"] == "cifar10"
-    assert len(job["report"]["lrp"]["samples"][0]["image"]) == 32
+    report = fetch_analysis_report(client, job["job_id"])
+    assert report["left"]["dataset"] == "cifar10"
+    assert len(report["lrp"]["samples"][0]["image"]) == 32
     assert data_loader_factory.cifar10_test_calls == 1
 
 
@@ -508,7 +520,12 @@ def test_api_comparison_cache_fresh_stale_and_force_recompute(tmp_path, monkeypa
     assert fresh.status_code == 200
     assert fresh.json()["status"] == "completed"
     assert fresh.json()["cache_state"] == "fresh"
-    assert fresh.json()["report"]["left"]["run_id"] == "cache-left-run"
+    assert fresh.json()["report_available"] is True
+    assert "report" not in fresh.json()
+    assert (
+        fetch_analysis_report(client, fresh.json()["job_id"])["left"]["run_id"]
+        == "cache-left-run"
+    )
 
     save_api_checkpoint(
         saver,
@@ -520,6 +537,7 @@ def test_api_comparison_cache_fresh_stale_and_force_recompute(tmp_path, monkeypa
     assert stale.status_code == 200
     assert stale.json()["status"] == "completed"
     assert stale.json()["cache_state"] == "stale"
+    assert stale.json()["report_available"] is True
     assert stale.json()["stale_sides"] == ["right"]
 
     forced_payload = {**payload, "force_recompute": True}
@@ -528,6 +546,7 @@ def test_api_comparison_cache_fresh_stale_and_force_recompute(tmp_path, monkeypa
     forced_job = wait_for_analysis_job(client, forced.json()["job_id"])
     assert forced_job["status"] == "completed"
     assert forced_job["cache_state"] == "recomputed"
+    assert forced_job["report_available"] is True
 
 
 def test_api_comparison_rejects_mismatched_dataset(tmp_path, monkeypatch) -> None:

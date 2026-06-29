@@ -31,6 +31,7 @@ from .schemas import (
     AccuracyPoint,
     AnalysisComparisonJobRequest,
     AnalysisComparisonJobStatus,
+    AnalysisComparisonReport,
     CheckpointListMode,
     CheckpointKind,
     CheckpointSelection,
@@ -94,6 +95,9 @@ class ExperimentManager:
 
     def get_analysis_comparison_job(self, job_id: str) -> AnalysisComparisonJobStatus:
         return self.analysis_service.get_comparison_job(job_id)
+
+    def get_analysis_comparison_report(self, job_id: str) -> AnalysisComparisonReport:
+        return self.analysis_service.get_comparison_report(job_id)
 
     def analysis_comparison_events(self, job_id: str) -> Iterator[str]:
         return self.analysis_service.comparison_events(job_id)

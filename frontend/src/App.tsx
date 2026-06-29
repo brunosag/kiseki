@@ -1,5 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"
-import ReactPlotly from "react-plotly.js"
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import katex from "katex"
 import {
   Bar,
@@ -34,14 +33,12 @@ import {
 } from "lucide-react"
 import type {
   ChangeEvent,
-  ComponentType,
   KeyboardEvent,
+  PointerEvent,
   ReactElement,
   ReactNode,
   RefObject,
 } from "react"
-import type { PlotParams } from "react-plotly.js"
-import type { Data as PlotlyData, Layout } from "plotly.js"
 
 import "katex/dist/katex.min.css"
 
@@ -148,6 +145,7 @@ import {
   type CheckpointSummary,
   optimizerParamDefaults,
   resetExperimentStatus,
+  fetchAnalysisComparisonReport,
   type AnalysisComparisonJobStatus,
   type AnalysisComparisonParams,
   type AnalysisComparisonReport,
@@ -169,12 +167,6 @@ import {
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs"
-
-const Plot = (
-  ReactPlotly as unknown as {
-    default: ComponentType<PlotParams>
-  }
-).default
 
 const OPTIMIZER_PARAM_HELP: Record<string, string> = {
   eta_sbx: "0 uses one-point crossover; positive values use SBX.",
@@ -238,14 +230,8 @@ type AnalysisSideLabels = Record<AnalysisSide, string>
 
 type PlotPalette = {
   accuracy: string
-  grid: string
-  hoverBackground: string
-  hoverBorder: string
-  hoverText: string
   loss: string
   mutationStep: string
-  muted: string
-  text: string
 }
 
 type ChartLegendItem = {
@@ -292,33 +278,37 @@ type EmbeddingChartPoint = AnalysisEmbeddingProjection["left"][number] & {
   sideName: string
 }
 
+type ConfusionHeatmapDatum = {
+  count: number
+  fill: string
+  predictedClass: string
+  trueClass: string
+  x: number
+  y: number
+}
+
+type ConfusionHeatmapTooltipState = {
+  cell: ConfusionHeatmapDatum
+  x: number
+  y: number
+}
+
 const fallbackPlotPalettes: Record<ResolvedTheme, PlotPalette> = {
   light: {
     accuracy: "#2563eb",
-    grid: "rgba(23, 23, 23, 0.045)",
-    hoverBackground: "#ffffff",
-    hoverBorder: "#e5e5e5",
-    hoverText: "#171717",
     loss: "#171717",
     mutationStep: "#737373",
-    muted: "rgba(82, 82, 82, 0.62)",
-    text: "#171717",
   },
   dark: {
     accuracy: "#38bdf8",
-    grid: "rgba(250, 250, 250, 0.05)",
-    hoverBackground: "#262626",
-    hoverBorder: "#404040",
-    hoverText: "#fafafa",
     loss: "#fafafa",
     mutationStep: "#a3a3a3",
-    muted: "rgba(229, 229, 229, 0.52)",
-    text: "#e5e5e5",
   },
 }
 
 const LONG_CHECKPOINT_DELETE_SECONDS = 600
 const ANALYSIS_SIDES: AnalysisSide[] = ["left", "right"]
+const CLASS_COUNT = 10
 const EMBEDDING_CLASS_COLORS = [
   "#2563eb",
   "#dc2626",
@@ -391,6 +381,12 @@ export function App() {
   >({ left: null, right: null })
   const [analysisJob, setAnalysisJob] =
     useState<AnalysisComparisonJobStatus | null>(null)
+  const [analysisReport, setAnalysisReport] = useState<{
+    jobId: string
+    report: AnalysisComparisonReport
+  } | null>(null)
+  const [analysisReportFailedJobId, setAnalysisReportFailedJobId] =
+    useState<string | null>(null)
   const [analysisError, setAnalysisError] = useState<string | null>(null)
   const [analysisStarting, setAnalysisStarting] = useState(false)
 
@@ -548,6 +544,43 @@ export function App() {
     }
   }, [analysisJobId, analysisJobStatus])
 
+  useEffect(() => {
+    if (
+      analysisJobId === null ||
+      analysisJobStatus !== "completed" ||
+      !analysisJob?.report_available ||
+      analysisReport?.jobId === analysisJobId ||
+      analysisReportFailedJobId === analysisJobId
+    ) {
+      return
+    }
+
+    let ignore = false
+    fetchAnalysisComparisonReport(analysisJobId)
+      .then((report) => {
+        if (!ignore) {
+          setAnalysisReport({ jobId: analysisJobId, report })
+          setAnalysisReportFailedJobId(null)
+        }
+      })
+      .catch(() => {
+        if (!ignore) {
+          setAnalysisReportFailedJobId(analysisJobId)
+          setAnalysisError("Failed to load comparison report")
+        }
+      })
+
+    return () => {
+      ignore = true
+    }
+  }, [
+    analysisJob?.report_available,
+    analysisJobId,
+    analysisJobStatus,
+    analysisReportFailedJobId,
+    analysisReport?.jobId,
+  ])
+
   const isRunning = status.is_running
   const isPaused = status.is_paused
   const isRunActive = isRunning || isPaused
@@ -608,9 +641,16 @@ export function App() {
     [analysisCheckpoints]
   )
   const currentAnalysisReport =
-    analysisJob?.status === "completed" ? analysisJob.report ?? null : null
+    analysisReport?.jobId === analysisJobId ? analysisReport.report : null
+  const analysisReportPending =
+    analysisJobId !== null &&
+    analysisJob?.status === "completed" &&
+    analysisJob.report_available &&
+    currentAnalysisReport === null &&
+    analysisReportFailedJobId !== analysisJobId
   const analysisBusy =
     analysisStarting ||
+    analysisReportPending ||
     analysisJob?.status === "queued" ||
     analysisJob?.status === "running"
 
@@ -726,6 +766,8 @@ export function App() {
   ) {
     setAnalysisCheckpoints((current) => ({ ...current, [side]: checkpoint }))
     setAnalysisJob(null)
+    setAnalysisReport(null)
+    setAnalysisReportFailedJobId(null)
     setAnalysisError(null)
   }
 
@@ -742,6 +784,8 @@ export function App() {
     }
 
     setAnalysisStarting(true)
+    setAnalysisReport(null)
+    setAnalysisReportFailedJobId(null)
     setAnalysisError(null)
     try {
       const job = await createAnalysisComparisonJob(
@@ -774,6 +818,8 @@ export function App() {
   function newAnalysis() {
     setAnalysisCheckpoints({ left: null, right: null })
     setAnalysisJob(null)
+    setAnalysisReport(null)
+    setAnalysisReportFailedJobId(null)
     setAnalysisError(null)
     setAnalysisStarting(false)
   }
@@ -1176,6 +1222,7 @@ function AnalysisTab({
           viewportRef={scrollRootRef}
         >
           <AnalysisReport
+            key={job?.job_id ?? report.generated_at}
             plotPalette={plotPalette}
             report={report}
             scrollRootRef={scrollRootRef}
@@ -1296,6 +1343,15 @@ const ANALYSIS_REPORT_SECTIONS = [
 ] as const
 
 type AnalysisReportSectionId = (typeof ANALYSIS_REPORT_SECTIONS)[number]["id"]
+type AnalysisMountedSections = Record<AnalysisReportSectionId, boolean>
+
+const INITIAL_ANALYSIS_MOUNTED_SECTIONS: AnalysisMountedSections = {
+  overview: true,
+  metrics: false,
+  embeddings: false,
+  lrp: false,
+  robustness: false,
+}
 
 function AnalysisReport({
   plotPalette,
@@ -1308,7 +1364,8 @@ function AnalysisReport({
 }) {
   const [activeSection, setActiveSection] =
     useState<AnalysisReportSectionId>("overview")
-  const sideLabels = analysisSideLabels(report)
+  const [mountedSections, setMountedSections] =
+    useState<AnalysisMountedSections>(INITIAL_ANALYSIS_MOUNTED_SECTIONS)
   const sectionRefs = useRef<Record<AnalysisReportSectionId, HTMLElement | null>>({
     overview: null,
     metrics: null,
@@ -1316,6 +1373,43 @@ function AnalysisReport({
     lrp: null,
     robustness: null,
   })
+  const setSectionRef = useCallback(
+    (sectionId: AnalysisReportSectionId, element: HTMLElement | null) => {
+      sectionRefs.current[sectionId] = element
+    },
+    []
+  )
+
+  useEffect(() => {
+    let cancelled = false
+    const sectionQueue: AnalysisReportSectionId[] = [
+      "metrics",
+      "embeddings",
+      "lrp",
+      "robustness",
+    ]
+    const timers: number[] = []
+
+    const mountNextSection = (index: number) => {
+      if (cancelled || index >= sectionQueue.length) {
+        return
+      }
+      const sectionId = sectionQueue[index]
+      setMountedSections((current) =>
+        current[sectionId] ? current : { ...current, [sectionId]: true }
+      )
+      timers.push(window.setTimeout(() => mountNextSection(index + 1), 120))
+    }
+
+    timers.push(window.setTimeout(() => mountNextSection(0), 0))
+
+    return () => {
+      cancelled = true
+      for (const timer of timers) {
+        window.clearTimeout(timer)
+      }
+    }
+  }, [report])
 
   useEffect(() => {
     let frame = 0
@@ -1361,15 +1455,20 @@ function AnalysisReport({
       scrollTarget.removeEventListener("scroll", requestUpdate)
       window.removeEventListener("resize", requestUpdate)
     }
-  }, [report, scrollRootRef])
+  }, [scrollRootRef])
 
-  function selectSection(sectionId: AnalysisReportSectionId) {
+  const selectSection = useCallback((sectionId: AnalysisReportSectionId) => {
     setActiveSection(sectionId)
-    sectionRefs.current[sectionId]?.scrollIntoView({
-      block: "start",
-      behavior: "smooth",
+    setMountedSections((current) =>
+      current[sectionId] ? current : { ...current, [sectionId]: true }
+    )
+    window.requestAnimationFrame(() => {
+      sectionRefs.current[sectionId]?.scrollIntoView({
+        block: "start",
+        behavior: "smooth",
+      })
     })
-  }
+  }, [])
 
   return (
     <div className="grid min-h-0 flex-1 gap-4 pb-6 lg:grid-cols-[10rem_minmax(0,1fr)] xl:grid-cols-[12rem_minmax(0,1fr)]">
@@ -1377,24 +1476,52 @@ function AnalysisReport({
         activeSection={activeSection}
         onSelect={selectSection}
       />
-      <div className="grid min-w-0 gap-8">
-        <AnalysisReportSection
-          id="overview"
-          sectionRef={(element) => {
-            sectionRefs.current.overview = element
-          }}
-          title="Overview"
-        >
-          <AnalysisOverview
-            plotPalette={plotPalette}
-            report={report}
-            sideLabels={sideLabels}
-          />
-        </AnalysisReportSection>
+      <AnalysisReportSections
+        mountedSections={mountedSections}
+        plotPalette={plotPalette}
+        report={report}
+        setSectionRef={setSectionRef}
+      />
+    </div>
+  )
+}
+
+const AnalysisReportSections = memo(function AnalysisReportSections({
+  mountedSections,
+  plotPalette,
+  report,
+  setSectionRef,
+}: {
+  mountedSections: AnalysisMountedSections
+  plotPalette: PlotPalette
+  report: AnalysisComparisonReport
+  setSectionRef: (
+    sectionId: AnalysisReportSectionId,
+    element: HTMLElement | null
+  ) => void
+}) {
+  const sideLabels = useMemo(() => analysisSideLabels(report), [report])
+
+  return (
+    <div className="grid min-w-0 gap-8">
+      <AnalysisReportSection
+        id="overview"
+        sectionRef={(element) => {
+          setSectionRef("overview", element)
+        }}
+        title="Overview"
+      >
+        <AnalysisOverview
+          plotPalette={plotPalette}
+          report={report}
+          sideLabels={sideLabels}
+        />
+      </AnalysisReportSection>
+      {mountedSections.metrics ? (
         <AnalysisReportSection
           id="metrics"
           sectionRef={(element) => {
-            sectionRefs.current.metrics = element
+            setSectionRef("metrics", element)
           }}
           title="Metrics"
         >
@@ -1404,31 +1531,34 @@ function AnalysisReport({
             sideLabels={sideLabels}
           />
         </AnalysisReportSection>
+      ) : null}
+      {mountedSections.embeddings ? (
         <AnalysisReportSection
           id="embeddings"
           sectionRef={(element) => {
-            sectionRefs.current.embeddings = element
+            setSectionRef("embeddings", element)
           }}
           title="Embeddings"
         >
-          <AnalysisEmbeddingsView
-            report={report}
-            sideLabels={sideLabels}
-          />
+          <AnalysisEmbeddingsView report={report} sideLabels={sideLabels} />
         </AnalysisReportSection>
+      ) : null}
+      {mountedSections.lrp ? (
         <AnalysisReportSection
           id="lrp"
           sectionRef={(element) => {
-            sectionRefs.current.lrp = element
+            setSectionRef("lrp", element)
           }}
           title="LRP"
         >
           <AnalysisLrpView report={report} sideLabels={sideLabels} />
         </AnalysisReportSection>
+      ) : null}
+      {mountedSections.robustness ? (
         <AnalysisReportSection
           id="robustness"
           sectionRef={(element) => {
-            sectionRefs.current.robustness = element
+            setSectionRef("robustness", element)
           }}
           title="Robustness"
         >
@@ -1438,10 +1568,10 @@ function AnalysisReport({
             sideLabels={sideLabels}
           />
         </AnalysisReportSection>
-      </div>
+      ) : null}
     </div>
   )
-}
+})
 
 function AnalysisReportToc({
   activeSection,
@@ -1527,6 +1657,11 @@ function AnalysisOverview({
   report: AnalysisComparisonReport
   sideLabels: AnalysisSideLabels
 }) {
+  const runtimeRows = useMemo(
+    () => report.runtime.rows.filter((row) => row.label !== "Steps"),
+    [report.runtime.rows]
+  )
+
   return (
     <div className="grid gap-4">
       <div className="grid gap-3 md:grid-cols-4">
@@ -1554,7 +1689,7 @@ function AnalysisOverview({
           title="Checkpoints"
         />
         <AnalysisRowsTable
-          rows={report.runtime.rows.filter((row) => row.label !== "Steps")}
+          rows={runtimeRows}
           sideLabels={sideLabels}
           title="Runtime"
         />
@@ -1591,25 +1726,20 @@ function AnalysisMetrics({
   return (
     <div className="grid gap-4">
       <div className="grid gap-4 xl:grid-cols-3">
-        <HeatmapPlot
-          data={confusionData(
-            report.metrics.left.confusion_matrix,
-            sideLabel("left", sideLabels)
-          )}
-          layout={heatmapLayout(plotPalette)}
+        <ConfusionHeatmapChart
+          dataset={report.left.dataset}
+          matrix={report.metrics.left.confusion_matrix}
           title={`${sideLabel("left", sideLabels)} Confusion`}
         />
-        <HeatmapPlot
-          data={confusionData(
-            report.metrics.right.confusion_matrix,
-            sideLabel("right", sideLabels)
-          )}
-          layout={heatmapLayout(plotPalette)}
+        <ConfusionHeatmapChart
+          dataset={report.left.dataset}
+          matrix={report.metrics.right.confusion_matrix}
           title={`${sideLabel("right", sideLabels)} Confusion`}
         />
-        <HeatmapPlot
-          data={confusionData(report.confusion_difference, confusionDeltaLabel)}
-          layout={heatmapLayout(plotPalette)}
+        <ConfusionHeatmapChart
+          deltaLabel={confusionDeltaLabel}
+          dataset={report.left.dataset}
+          matrix={report.confusion_difference}
           title={`Confusion Delta (${confusionDeltaLabel})`}
         />
       </div>
@@ -1632,15 +1762,18 @@ function AnalysisEmbeddingsView({
   report: AnalysisComparisonReport
   sideLabels: AnalysisSideLabels
 }) {
-  const tsneLeftPoints = embeddingSidePoints(
-    report.embeddings.tsne.left,
-    "left"
+  const tsneLeftPoints = useMemo(
+    () => embeddingSidePoints(report.embeddings.tsne.left, "left"),
+    [report.embeddings.tsne.left]
   )
-  const tsneRightPoints = embeddingSidePoints(
-    report.embeddings.tsne.right,
-    "right"
+  const tsneRightPoints = useMemo(
+    () => embeddingSidePoints(report.embeddings.tsne.right, "right"),
+    [report.embeddings.tsne.right]
   )
-  const pcaPoints = embeddingProjectionPoints(report.embeddings.pca)
+  const pcaPoints = useMemo(
+    () => embeddingProjectionPoints(report.embeddings.pca),
+    [report.embeddings.pca]
+  )
 
   return (
     <div className="grid gap-4 xl:grid-cols-2">
@@ -1653,6 +1786,9 @@ function AnalysisEmbeddingsView({
         sampleLimit={TSNE_SIDE_SAMPLE_LIMIT}
         sideLabels={sideLabels}
         title={`t-SNE ${sideLabel("left", sideLabels)}`}
+        totalPointCount={report.embeddings.tsne.left_total}
+        xDomain={report.embeddings.tsne.x_domain}
+        yDomain={report.embeddings.tsne.y_domain}
       />
       <EmbeddingChartPanel
         bodyClassName="h-[20rem] xl:h-auto xl:flex-1"
@@ -1663,6 +1799,9 @@ function AnalysisEmbeddingsView({
         sampleLimit={TSNE_SIDE_SAMPLE_LIMIT}
         sideLabels={sideLabels}
         title={`t-SNE ${sideLabel("right", sideLabels)}`}
+        totalPointCount={report.embeddings.tsne.right_total}
+        xDomain={report.embeddings.tsne.x_domain}
+        yDomain={report.embeddings.tsne.y_domain}
       />
       <div className="xl:col-span-2">
         <EmbeddingChartPanel
@@ -1672,6 +1811,11 @@ function AnalysisEmbeddingsView({
           sampleLimit={PCA_TOTAL_SAMPLE_LIMIT}
           sideLabels={sideLabels}
           title="Joint PCA"
+          totalPointCount={
+            report.embeddings.pca.left_total + report.embeddings.pca.right_total
+          }
+          xDomain={report.embeddings.pca.x_domain}
+          yDomain={report.embeddings.pca.y_domain}
         />
       </div>
     </div>
@@ -2035,61 +2179,87 @@ function TrainingHistoryChart({
   report: AnalysisComparisonReport
   sideLabels: AnalysisSideLabels
 }) {
-  const series: (ChartSeries & {
-    points: NumericSeriesPoint[]
-    yAxisId: "accuracy" | "loss"
-  })[] = [
-    {
-      color: REPORT_LEFT_COLOR,
-      dataKey: "leftLoss",
-      label: `${sideShortLabel("left", sideLabels)} train loss`,
-      points: indexedNumberSeries(report.curves.left.training_loss),
-      yAxisId: "loss",
-    },
-    {
-      color: REPORT_RIGHT_COLOR,
-      dataKey: "rightLoss",
-      label: `${sideShortLabel("right", sideLabels)} train loss`,
-      points: indexedNumberSeries(report.curves.right.training_loss),
-      yAxisId: "loss",
-    },
-    {
-      color: REPORT_LEFT_ACCENT_COLOR,
-      dashed: true,
-      dataKey: "leftAccuracy",
-      label: `${sideShortLabel("left", sideLabels)} val acc.`,
-      points: accuracyPointSeries(report.curves.left.validation_accuracy),
-      yAxisId: "accuracy",
-    },
-    {
-      color: REPORT_RIGHT_ACCENT_COLOR,
-      dashed: true,
-      dataKey: "rightAccuracy",
-      label: `${sideShortLabel("right", sideLabels)} val acc.`,
-      points: accuracyPointSeries(report.curves.right.validation_accuracy),
-      yAxisId: "accuracy",
-    },
-  ]
-  const data = mergeNumericSeries(
-    series.map((item) => ({
-      dataKey: item.dataKey,
-      points: downsampleNumericSeries(item.points),
-    }))
-  )
-  const config = chartConfigFromSeries(series)
-  const tooltipConfig = chartTooltipConfigFromSeries(series, {
-    leftAccuracy: (value) => `${value.toFixed(2)}%`,
-    leftLoss: (value) => value.toFixed(4),
-    rightAccuracy: (value) => `${value.toFixed(2)}%`,
-    rightLoss: (value) => value.toFixed(4),
-  })
-  const maxStep = maxSeriesX(series.flatMap((item) => item.points))
-  const lossUpperBound = numericAxisUpperBoundFor(
-    [
-      ...report.curves.left.training_loss,
-      ...report.curves.right.training_loss,
+  const series = useMemo<
+    (ChartSeries & {
+      points: NumericSeriesPoint[]
+      yAxisId: "accuracy" | "loss"
+    })[]
+  >(
+    () => [
+      {
+        color: REPORT_LEFT_COLOR,
+        dataKey: "leftLoss",
+        label: `${sideShortLabel("left", sideLabels)} train loss`,
+        points: indexedNumberSeries(report.curves.left.training_loss),
+        yAxisId: "loss",
+      },
+      {
+        color: REPORT_RIGHT_COLOR,
+        dataKey: "rightLoss",
+        label: `${sideShortLabel("right", sideLabels)} train loss`,
+        points: indexedNumberSeries(report.curves.right.training_loss),
+        yAxisId: "loss",
+      },
+      {
+        color: REPORT_LEFT_ACCENT_COLOR,
+        dashed: true,
+        dataKey: "leftAccuracy",
+        label: `${sideShortLabel("left", sideLabels)} val acc.`,
+        points: accuracyPointSeries(report.curves.left.validation_accuracy),
+        yAxisId: "accuracy",
+      },
+      {
+        color: REPORT_RIGHT_ACCENT_COLOR,
+        dashed: true,
+        dataKey: "rightAccuracy",
+        label: `${sideShortLabel("right", sideLabels)} val acc.`,
+        points: accuracyPointSeries(report.curves.right.validation_accuracy),
+        yAxisId: "accuracy",
+      },
     ],
-    null
+    [
+      report.curves.left.training_loss,
+      report.curves.left.validation_accuracy,
+      report.curves.right.training_loss,
+      report.curves.right.validation_accuracy,
+      sideLabels,
+    ]
+  )
+  const data = useMemo(
+    () =>
+      mergeNumericSeries(
+        series.map((item) => ({
+          dataKey: item.dataKey,
+          points: downsampleNumericSeries(item.points),
+        }))
+      ),
+    [series]
+  )
+  const config = useMemo(() => chartConfigFromSeries(series), [series])
+  const tooltipConfig = useMemo(
+    () =>
+      chartTooltipConfigFromSeries(series, {
+        leftAccuracy: (value) => `${value.toFixed(2)}%`,
+        leftLoss: (value) => value.toFixed(4),
+        rightAccuracy: (value) => `${value.toFixed(2)}%`,
+        rightLoss: (value) => value.toFixed(4),
+      }),
+    [series]
+  )
+  const maxStep = useMemo(
+    () => maxSeriesX(series.flatMap((item) => item.points)),
+    [series]
+  )
+  const lossUpperBound = useMemo(
+    () =>
+      numericAxisUpperBoundFor(
+        [
+          ...report.curves.left.training_loss,
+          ...report.curves.right.training_loss,
+        ],
+        null
+      ),
+    [report.curves.left.training_loss, report.curves.right.training_loss]
   )
 
   return (
@@ -2157,20 +2327,30 @@ function OutcomeOverlapChart({
   report: AnalysisComparisonReport
   sideLabels: AnalysisSideLabels
 }) {
-  const data = report.overlap.upset.map((row) => ({
-    count: row.count,
-    label: overlapSetLabel(row.set, sideLabels),
-  }))
-  const config: ChartConfig = {
-    count: { label: "Count", color: plotPalette.accuracy },
-  }
-  const tooltipConfig: ChartTooltipConfig = {
-    count: {
-      color: plotPalette.accuracy,
-      formatter: formatInteger,
-      label: "Count",
-    },
-  }
+  const data = useMemo(
+    () =>
+      report.overlap.upset.map((row) => ({
+        count: row.count,
+        label: overlapSetLabel(row.set, sideLabels),
+      })),
+    [report.overlap.upset, sideLabels]
+  )
+  const config = useMemo<ChartConfig>(
+    () => ({
+      count: { label: "Count", color: plotPalette.accuracy },
+    }),
+    [plotPalette.accuracy]
+  )
+  const tooltipConfig = useMemo<ChartTooltipConfig>(
+    () => ({
+      count: {
+        color: plotPalette.accuracy,
+        formatter: formatInteger,
+        label: "Count",
+      },
+    }),
+    [plotPalette.accuracy]
+  )
 
   return (
     <CategoryBarChart
@@ -2192,31 +2372,38 @@ function CalibrationChart({
   report: AnalysisComparisonReport
   sideLabels: AnalysisSideLabels
 }) {
-  const series: ChartSeries[] = [
-    {
-      color: REPORT_LEFT_COLOR,
-      dataKey: "left",
-      label: sideLabel("left", sideLabels),
-    },
-    {
-      color: REPORT_RIGHT_COLOR,
-      dataKey: "right",
-      label: sideLabel("right", sideLabels),
-    },
-    {
-      color: plotPalette.mutationStep,
-      dashed: true,
-      dataKey: "ideal",
-      label: "Ideal",
-    },
-  ]
-  const data = calibrationChartData(report)
-  const config = chartConfigFromSeries(series)
-  const tooltipConfig = chartTooltipConfigFromSeries(series, {
-    ideal: formatCompactNumber,
-    left: formatCompactNumber,
-    right: formatCompactNumber,
-  })
+  const series = useMemo<ChartSeries[]>(
+    () => [
+      {
+        color: REPORT_LEFT_COLOR,
+        dataKey: "left",
+        label: sideLabel("left", sideLabels),
+      },
+      {
+        color: REPORT_RIGHT_COLOR,
+        dataKey: "right",
+        label: sideLabel("right", sideLabels),
+      },
+      {
+        color: plotPalette.mutationStep,
+        dashed: true,
+        dataKey: "ideal",
+        label: "Ideal",
+      },
+    ],
+    [plotPalette.mutationStep, sideLabels]
+  )
+  const data = useMemo(() => calibrationChartData(report), [report])
+  const config = useMemo(() => chartConfigFromSeries(series), [series])
+  const tooltipConfig = useMemo(
+    () =>
+      chartTooltipConfigFromSeries(series, {
+        ideal: formatCompactNumber,
+        left: formatCompactNumber,
+        right: formatCompactNumber,
+      }),
+    [series]
+  )
 
   return (
     <ChartPanel title="Calibration">
@@ -2281,16 +2468,23 @@ function RobustnessChart({
   report: AnalysisComparisonReport
   sideLabels: AnalysisSideLabels
 }) {
-  const { data, series } = robustnessChartData(report, sideLabels)
-  const config = chartConfigFromSeries(series)
-  const tooltipConfig = chartTooltipConfigFromSeries(
-    series,
-    Object.fromEntries(
-      series.map((item) => [
-        item.dataKey,
-        (value: number) => `${value.toFixed(2)}%`,
-      ])
-    )
+  const { data, series } = useMemo(
+    () => robustnessChartData(report, sideLabels),
+    [report, sideLabels]
+  )
+  const config = useMemo(() => chartConfigFromSeries(series), [series])
+  const tooltipConfig = useMemo(
+    () =>
+      chartTooltipConfigFromSeries(
+        series,
+        Object.fromEntries(
+          series.map((item) => [
+            item.dataKey,
+            (value: number) => `${value.toFixed(2)}%`,
+          ])
+        )
+      ),
+    [series]
   )
 
   return (
@@ -2353,32 +2547,42 @@ function ActivationSparsityChart({
   report: AnalysisComparisonReport
   sideLabels: AnalysisSideLabels
 }) {
-  const names = activationLayerNames(report)
-  const data = names.map((name) => ({
-    label: name,
-    left:
-      report.activations.left.find((layer) => layer.name === name)?.sparsity ??
-      0,
-    right:
-      report.activations.right.find((layer) => layer.name === name)?.sparsity ??
-      0,
-  }))
-  const config: ChartConfig = {
-    left: { label: sideLabel("left", sideLabels), color: REPORT_LEFT_COLOR },
-    right: { label: sideLabel("right", sideLabels), color: REPORT_RIGHT_COLOR },
-  }
-  const tooltipConfig: ChartTooltipConfig = {
-    left: {
-      color: REPORT_LEFT_COLOR,
-      formatter: formatCompactNumber,
-      label: sideLabel("left", sideLabels),
-    },
-    right: {
-      color: REPORT_RIGHT_COLOR,
-      formatter: formatCompactNumber,
-      label: sideLabel("right", sideLabels),
-    },
-  }
+  const names = useMemo(() => activationLayerNames(report), [report])
+  const data = useMemo(
+    () =>
+      names.map((name) => ({
+        label: name,
+        left:
+          report.activations.left.find((layer) => layer.name === name)
+            ?.sparsity ?? 0,
+        right:
+          report.activations.right.find((layer) => layer.name === name)
+            ?.sparsity ?? 0,
+      })),
+    [names, report.activations.left, report.activations.right]
+  )
+  const config = useMemo<ChartConfig>(
+    () => ({
+      left: { label: sideLabel("left", sideLabels), color: REPORT_LEFT_COLOR },
+      right: { label: sideLabel("right", sideLabels), color: REPORT_RIGHT_COLOR },
+    }),
+    [sideLabels]
+  )
+  const tooltipConfig = useMemo<ChartTooltipConfig>(
+    () => ({
+      left: {
+        color: REPORT_LEFT_COLOR,
+        formatter: formatCompactNumber,
+        label: sideLabel("left", sideLabels),
+      },
+      right: {
+        color: REPORT_RIGHT_COLOR,
+        formatter: formatCompactNumber,
+        label: sideLabel("right", sideLabels),
+      },
+    }),
+    [sideLabels]
+  )
 
   return (
     <CategoryBarChart
@@ -2400,20 +2604,30 @@ function WeightDistanceChart({
   plotPalette: PlotPalette
   report: AnalysisComparisonReport
 }) {
-  const data = report.weights.map((weight) => ({
-    distance: weight.relative_distance,
-    label: weight.name,
-  }))
-  const config: ChartConfig = {
-    distance: { label: "Relative distance", color: plotPalette.accuracy },
-  }
-  const tooltipConfig: ChartTooltipConfig = {
-    distance: {
-      color: plotPalette.accuracy,
-      formatter: formatCompactNumber,
-      label: "Relative distance",
-    },
-  }
+  const data = useMemo(
+    () =>
+      report.weights.map((weight) => ({
+        distance: weight.relative_distance,
+        label: weight.name,
+      })),
+    [report.weights]
+  )
+  const config = useMemo<ChartConfig>(
+    () => ({
+      distance: { label: "Relative distance", color: plotPalette.accuracy },
+    }),
+    [plotPalette.accuracy]
+  )
+  const tooltipConfig = useMemo<ChartTooltipConfig>(
+    () => ({
+      distance: {
+        color: plotPalette.accuracy,
+        formatter: formatCompactNumber,
+        label: "Relative distance",
+      },
+    }),
+    [plotPalette.accuracy]
+  )
 
   return (
     <CategoryBarChart
@@ -2513,6 +2727,7 @@ function EmbeddingChartPanel({
   sampleLimit,
   sideLabels,
   title,
+  totalPointCount,
   xDomain,
   yDomain,
 }: {
@@ -2524,6 +2739,7 @@ function EmbeddingChartPanel({
   sampleLimit: number
   sideLabels: AnalysisSideLabels
   title: string
+  totalPointCount?: number
   xDomain?: [number, number]
   yDomain?: [number, number]
 }) {
@@ -2542,13 +2758,24 @@ function EmbeddingChartPanel({
       })),
     [dataset, sampledPoints, sideLabels]
   )
-  const legendItems = embeddingLegendItems(points, dataset)
-  const config = chartConfigFromLegendItems(legendItems)
-  const groupedPoints = groupedEmbeddingPoints(chartPoints)
-  const resolvedXDomain =
-    xDomain ?? paddedNumericDomain(chartPoints.map((point) => point.x))
-  const resolvedYDomain =
-    yDomain ?? paddedNumericDomain(chartPoints.map((point) => point.y))
+  const legendItems = useMemo(
+    () => embeddingLegendItems(points, dataset),
+    [dataset, points]
+  )
+  const config = useMemo(() => chartConfigFromLegendItems(legendItems), [legendItems])
+  const groupedPoints = useMemo(
+    () => groupedEmbeddingPoints(chartPoints),
+    [chartPoints]
+  )
+  const resolvedXDomain = useMemo(
+    () => xDomain ?? paddedNumericDomain(chartPoints.map((point) => point.x)),
+    [chartPoints, xDomain]
+  )
+  const resolvedYDomain = useMemo(
+    () => yDomain ?? paddedNumericDomain(chartPoints.map((point) => point.y)),
+    [chartPoints, yDomain]
+  )
+  const resolvedTotalPointCount = totalPointCount ?? points.length
 
   return (
     <ChartPanel
@@ -2557,7 +2784,7 @@ function EmbeddingChartPanel({
       footer={
         <span className="text-[0.7rem] text-muted-foreground/55 tabular-nums">
           Sampled {formatInteger(sampledPoints.length)} /{" "}
-          {formatInteger(points.length)}
+          {formatInteger(resolvedTotalPointCount)}
         </span>
       }
       title={title}
@@ -2684,33 +2911,139 @@ function EmbeddingCircleShape(props: ScatterShapeProps & { fill?: string }) {
   )
 }
 
-function HeatmapPlot({
+function ConfusionHeatmapChart({
   className,
-  data,
-  layout,
+  dataset,
+  deltaLabel,
+  matrix,
   title,
 }: {
   className?: string
-  data: PlotlyData[]
-  layout: Partial<Layout>
+  dataset: CheckpointSummary["dataset"]
+  deltaLabel?: string
+  matrix: number[][]
   title: string
 }) {
+  const data = useMemo(
+    () => confusionHeatmapData(matrix, dataset, Boolean(deltaLabel)),
+    [dataset, deltaLabel, matrix]
+  )
+  const [tooltip, setTooltip] = useState<ConfusionHeatmapTooltipState | null>(
+    null
+  )
+  const classCount = Math.max(
+    CLASS_COUNT,
+    matrix.length,
+    ...matrix.map((row) => row.length)
+  )
+  const isDelta = Boolean(deltaLabel)
+
+  const updateTooltip = useCallback(
+    (event: PointerEvent<HTMLDivElement>, cell: ConfusionHeatmapDatum) => {
+      setTooltip({
+        cell,
+        x: event.clientX,
+        y: event.clientY,
+      })
+    },
+    []
+  )
+
   return (
-    <ChartPanel bodyClassName="h-[20rem]" className={className} title={title}>
-      <Plot
-        className="h-full w-full"
-        config={{
-          displayModeBar: false,
-          displaylogo: false,
-          responsive: true,
-          scrollZoom: false,
-        }}
-        data={data}
-        layout={layout}
-        style={{ height: "100%", width: "100%" }}
-        useResizeHandler
-      />
+    <ChartPanel
+      bodyClassName="aspect-square h-auto w-full"
+      className={cn("overflow-visible", className)}
+      title={title}
+    >
+      <div className="relative h-full w-full">
+        <div
+          aria-label={title}
+          className="grid h-full w-full overflow-hidden rounded-sm"
+          role="img"
+          style={{
+            gridTemplateColumns: `repeat(${classCount}, minmax(0, 1fr))`,
+            gridTemplateRows: `repeat(${classCount}, minmax(0, 1fr))`,
+          }}
+        >
+          {data.map((cell) => (
+            <div
+              aria-label={`${cell.trueClass} predicted ${cell.predictedClass}: ${heatmapCellLabel(cell.count, isDelta)}`}
+              className="grid min-h-0 min-w-0 place-items-center overflow-hidden"
+              key={`${cell.y}-${cell.x}`}
+              role="img"
+              style={{ backgroundColor: cell.fill }}
+              onPointerEnter={(event) => updateTooltip(event, cell)}
+              onPointerMove={(event) => updateTooltip(event, cell)}
+              onPointerLeave={() => setTooltip(null)}
+            >
+              <span
+                className="select-none truncate px-0.5 text-[0.64rem] leading-none font-semibold whitespace-nowrap text-white tabular-nums"
+                style={{
+                  fontVariantNumeric: "tabular-nums",
+                }}
+              >
+                {heatmapCellLabel(cell.count, isDelta)}
+              </span>
+            </div>
+          ))}
+        </div>
+        {tooltip ? (
+          <div
+            className="pointer-events-none fixed z-50"
+            style={{
+              left: tooltip.x,
+              top: tooltip.y,
+              transform: "translate(12px, 12px)",
+            }}
+          >
+            <ConfusionHeatmapTooltip
+              cell={tooltip.cell}
+              deltaLabel={deltaLabel}
+            />
+          </div>
+        ) : null}
+      </div>
     </ChartPanel>
+  )
+}
+
+function ConfusionHeatmapTooltip({
+  cell,
+  deltaLabel,
+}: {
+  cell: ConfusionHeatmapDatum
+  deltaLabel?: string
+}) {
+  const isDelta = Boolean(deltaLabel)
+  const valueClassName = isDelta
+    ? cell.count > 0
+      ? "text-blue-600 dark:text-blue-300"
+      : cell.count < 0
+        ? "text-red-600 dark:text-red-300"
+        : "text-foreground"
+    : "text-foreground"
+
+  return (
+    <div className="grid min-w-44 items-start gap-1 rounded-lg border border-border/50 bg-background px-2.5 py-1.5 text-xs shadow-xl">
+      <div className="grid gap-1">
+        <div className="flex justify-between gap-4">
+          <span className="text-muted-foreground">True</span>
+          <span className="font-medium">{cell.trueClass}</span>
+        </div>
+        <div className="flex justify-between gap-4">
+          <span className="text-muted-foreground">Predicted</span>
+          <span className="font-medium">{cell.predictedClass}</span>
+        </div>
+        <div className="flex justify-between gap-4">
+          <span className="text-muted-foreground">
+            {isDelta ? "Difference" : "Count"}
+          </span>
+          <span className={cn("font-mono font-medium tabular-nums", valueClassName)}>
+            {isDelta ? formatSignedInteger(cell.count) : formatInteger(cell.count)}
+          </span>
+        </div>
+      </div>
+    </div>
   )
 }
 
@@ -3533,26 +3866,12 @@ function readPlotPalette(resolvedTheme: ResolvedTheme): PlotPalette {
 
   return {
     accuracy: readCssColor(styles, "--plot-accuracy", fallback.accuracy),
-    grid: readCssColor(styles, "--plot-grid", fallback.grid),
-    hoverBackground: readCssColor(
-      styles,
-      "--plot-hover-background",
-      fallback.hoverBackground
-    ),
-    hoverBorder: readCssColor(
-      styles,
-      "--plot-hover-border",
-      fallback.hoverBorder
-    ),
-    hoverText: readCssColor(styles, "--plot-hover-text", fallback.hoverText),
     loss: readCssColor(styles, "--plot-loss", fallback.loss),
     mutationStep: readCssColor(
       styles,
       "--plot-mutation-step",
       fallback.mutationStep
     ),
-    muted: readCssColor(styles, "--plot-muted", fallback.muted),
-    text: readCssColor(styles, "--plot-text", fallback.text),
   }
 }
 
@@ -3820,17 +4139,61 @@ function chartConfigFromLegendItems(items: ChartLegendItem[]): ChartConfig {
   ) as ChartConfig
 }
 
-function confusionData(matrix: number[][], name: string): PlotlyData[] {
-  return [
-    {
-      type: "heatmap",
-      name,
-      z: matrix,
-      colorscale: "RdBu",
-      reversescale: true,
-      showscale: false,
-    },
-  ]
+function confusionHeatmapData(
+  matrix: number[][],
+  dataset: CheckpointSummary["dataset"],
+  isDelta: boolean
+): ConfusionHeatmapDatum[] {
+  const maxMagnitude = Math.max(
+    1,
+    ...matrix.flatMap((row) =>
+      row.map((value) => Math.abs(Number.isFinite(value) ? value : 0))
+    )
+  )
+
+  return matrix.flatMap((row, trueIndex) =>
+    row.map((value, predictedIndex) => {
+      const count = Number.isFinite(value) ? value : 0
+      return {
+        count,
+        fill: confusionHeatmapFill(count, maxMagnitude, isDelta),
+        predictedClass: classLabelFor(dataset, predictedIndex),
+        trueClass: classLabelFor(dataset, trueIndex),
+        x: predictedIndex,
+        y: trueIndex,
+      }
+    })
+  )
+}
+
+function confusionHeatmapFill(
+  value: number,
+  maxMagnitude: number,
+  isDelta: boolean
+): string {
+  if (isDelta) {
+    if (value === 0) {
+      return "rgba(115, 115, 115, 0.16)"
+    }
+    const alpha = 0.16 + 0.72 * Math.sqrt(Math.abs(value) / maxMagnitude)
+    return value > 0
+      ? `rgba(37, 99, 235, ${alpha})`
+      : `rgba(220, 38, 38, ${alpha})`
+  }
+
+  const alpha = value <= 0 ? 0.08 : 0.16 + 0.72 * Math.sqrt(value / maxMagnitude)
+  return `rgba(8, 145, 178, ${alpha})`
+}
+
+function heatmapCellLabel(value: number, isDelta: boolean): string {
+  const integer = Math.trunc(value)
+  if (!isDelta) {
+    return String(integer)
+  }
+  if (integer > 0) {
+    return `+${integer}`
+  }
+  return String(integer)
 }
 
 function calibrationChartData(report: AnalysisComparisonReport): NumericChartDatum[] {
@@ -4187,31 +4550,6 @@ function isEmbeddingChartPoint(value: unknown): value is EmbeddingChartPoint {
   )
 }
 
-function heatmapBaseLayout(plotPalette: PlotPalette): Partial<Layout> {
-  return {
-    autosize: true,
-    font: { color: plotPalette.text, family: "Geist Variable, sans-serif" },
-    hoverlabel: {
-      bgcolor: plotPalette.hoverBackground,
-      bordercolor: plotPalette.hoverBorder,
-      font: { color: plotPalette.hoverText },
-    },
-    margin: { b: 42, l: 42, r: 24, t: 8 },
-    paper_bgcolor: "transparent",
-    plot_bgcolor: "transparent",
-    xaxis: { gridcolor: plotPalette.grid, zeroline: false },
-    yaxis: { gridcolor: plotPalette.grid, zeroline: false },
-  }
-}
-
-function heatmapLayout(plotPalette: PlotPalette): Partial<Layout> {
-  return {
-    ...heatmapBaseLayout(plotPalette),
-    xaxis: { title: { text: "Predicted" } },
-    yaxis: { title: { text: "True" }, autorange: "reversed" },
-  }
-}
-
 function selectionFromCheckpoint(
   checkpoint: CheckpointSummary | null
 ): CheckpointSelection | null {
@@ -4456,6 +4794,17 @@ function formatInteger(value: number): string {
   return new Intl.NumberFormat(undefined, {
     maximumFractionDigits: 0,
   }).format(value)
+}
+
+function formatSignedInteger(value: number): string {
+  const formatted = formatInteger(Math.abs(value))
+  if (value > 0) {
+    return `+${formatted}`
+  }
+  if (value < 0) {
+    return `-${formatted}`
+  }
+  return formatted
 }
 
 function optimizerParamEntries(

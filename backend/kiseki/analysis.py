@@ -55,11 +55,13 @@ from .schemas import (
 )
 
 
-ANALYSIS_VERSION = "comparison-v1"
+ANALYSIS_VERSION = "comparison-v2"
 CLASS_COUNT = 10
 LRP_BATCH_SIZE = 16
 EVAL_BATCH_SIZE = 512
 HISTOGRAM_BINS = 20
+EMBEDDING_TSNE_SIDE_LIMIT = 1000
+EMBEDDING_PCA_TOTAL_LIMIT = 2000
 
 MNIST_CLASS_LABELS = tuple(str(label) for label in range(CLASS_COUNT))
 CIFAR10_CLASS_LABELS = (
@@ -97,6 +99,7 @@ class ModelEvaluation:
 @dataclass(slots=True)
 class AnalysisJob:
     status: AnalysisComparisonJobStatus
+    report: AnalysisComparisonReport | None = None
     subscribers: set[Queue[AnalysisComparisonJobStatus]] = field(default_factory=set)
 
 
@@ -195,6 +198,15 @@ class AnalysisService:
                 raise KeyError(job_id)
             return job.status.model_copy(deep=True)
 
+    def get_comparison_report(self, job_id: str) -> AnalysisComparisonReport:
+        with self.lock:
+            job = self.jobs.get(job_id)
+            if job is None:
+                raise KeyError(job_id)
+            if job.report is None:
+                raise AnalysisComparisonError("comparison report is not available")
+            return job.report.model_copy(deep=True)
+
     def comparison_events(self, job_id: str) -> Iterator[str]:
         queue: Queue[AnalysisComparisonJobStatus] = Queue()
         with self.lock:
@@ -250,10 +262,10 @@ class AnalysisService:
             message=message,
             cache_state=cache_state,
             stale_sides=stale_sides,
-            report=report,
+            report_available=True,
         )
         with self.lock:
-            self.jobs[job_id] = AnalysisJob(status=status)
+            self.jobs[job_id] = AnalysisJob(status=status, report=report)
         return status
 
     def _run_comparison_job(
@@ -330,7 +342,8 @@ class AnalysisService:
             job.status.stage = stage
             job.status.message = message
             if report is not None:
-                job.status.report = report
+                job.report = report
+                job.status.report_available = True
             if error is not None:
                 job.status.error = error
             snapshot = job.status.model_copy(deep=True)
@@ -700,14 +713,22 @@ def embedding_report(
     pca_coordinates = pca_embedding(features)
     tsne_coordinates = tsne_embedding(features, params)
     split = left_eval.embeddings.shape[0]
+    pca_left = embedding_points(pca_coordinates[:split], left_eval)
+    pca_right = embedding_points(pca_coordinates[split:], right_eval)
+    tsne_left = embedding_points(tsne_coordinates[:split], left_eval)
+    tsne_right = embedding_points(tsne_coordinates[split:], right_eval)
     return AnalysisEmbeddings(
-        pca=AnalysisEmbeddingProjection(
-            left=embedding_points(pca_coordinates[:split], left_eval),
-            right=embedding_points(pca_coordinates[split:], right_eval),
+        pca=sample_embedding_projection(
+            pca_left,
+            pca_right,
+            coordinates=pca_coordinates,
+            total_limit=EMBEDDING_PCA_TOTAL_LIMIT,
         ),
-        tsne=AnalysisEmbeddingProjection(
-            left=embedding_points(tsne_coordinates[:split], left_eval),
-            right=embedding_points(tsne_coordinates[split:], right_eval),
+        tsne=sample_embedding_projection(
+            tsne_left,
+            tsne_right,
+            coordinates=tsne_coordinates,
+            side_limit=EMBEDDING_TSNE_SIDE_LIMIT,
         ),
     )
 
@@ -781,6 +802,165 @@ def embedding_points(
             zip(coordinates, evaluation.labels, evaluation.predictions, strict=True)
         )
     ]
+
+
+def sample_embedding_projection(
+    left: list[AnalysisEmbeddingPoint],
+    right: list[AnalysisEmbeddingPoint],
+    *,
+    coordinates: np.ndarray,
+    side_limit: int | None = None,
+    total_limit: int | None = None,
+) -> AnalysisEmbeddingProjection:
+    if side_limit is not None:
+        sampled_left = sample_embedding_points(left, side_limit)
+        sampled_right = sample_embedding_points(right, side_limit)
+    elif total_limit is not None:
+        sampled_left, sampled_right = sample_embedding_points_by_total(
+            left,
+            right,
+            total_limit,
+        )
+    else:
+        sampled_left = sort_embedding_points(left)
+        sampled_right = sort_embedding_points(right)
+
+    return AnalysisEmbeddingProjection(
+        left=sampled_left,
+        right=sampled_right,
+        left_total=len(left),
+        right_total=len(right),
+        x_domain=padded_embedding_domain(coordinates[:, 0]),
+        y_domain=padded_embedding_domain(coordinates[:, 1]),
+    )
+
+
+def sample_embedding_points(
+    points: list[AnalysisEmbeddingPoint],
+    limit: int,
+) -> list[AnalysisEmbeddingPoint]:
+    if len(points) <= limit:
+        return sort_embedding_points(points)
+    return sample_grouped_embedding_items(
+        points,
+        limit,
+        key=lambda point: f"{point.label}:{int(point.correct)}",
+    )
+
+
+def sample_embedding_points_by_total(
+    left: list[AnalysisEmbeddingPoint],
+    right: list[AnalysisEmbeddingPoint],
+    limit: int,
+) -> tuple[list[AnalysisEmbeddingPoint], list[AnalysisEmbeddingPoint]]:
+    combined: list[tuple[Literal["left", "right"], AnalysisEmbeddingPoint]] = [
+        ("left", point) for point in left
+    ] + [("right", point) for point in right]
+    if len(combined) <= limit:
+        return sort_embedding_points(left), sort_embedding_points(right)
+
+    sampled = sample_grouped_embedding_items(
+        combined,
+        limit,
+        key=lambda item: f"{item[0]}:{item[1].label}:{int(item[1].correct)}",
+    )
+    sampled_left = [point for side, point in sampled if side == "left"]
+    sampled_right = [point for side, point in sampled if side == "right"]
+    return sort_embedding_points(sampled_left), sort_embedding_points(sampled_right)
+
+
+def sample_grouped_embedding_items[T](
+    items: list[T],
+    limit: int,
+    *,
+    key: Callable[[T], str],
+) -> list[T]:
+    if limit <= 0 or not items:
+        return []
+
+    groups: dict[str, list[T]] = defaultdict(list)
+    for item in items:
+        groups[key(item)].append(item)
+
+    sorted_groups = [
+        {"key": group_key, "items": group_items, "quota": 0}
+        for group_key, group_items in sorted(groups.items())
+    ]
+    if len(sorted_groups) >= limit:
+        return [
+            item
+            for group in sorted_groups[:limit]
+            for item in evenly_spaced_sample(group["items"], 1)
+        ]
+
+    for group in sorted_groups:
+        group["quota"] = 1
+
+    remaining = limit - len(sorted_groups)
+    total_capacity = sum(max(0, len(group["items"]) - 1) for group in sorted_groups)
+    remainders = []
+    for group in sorted_groups:
+        capacity = max(0, len(group["items"]) - 1)
+        exact_share = (capacity / total_capacity) * remaining if total_capacity else 0.0
+        extra = min(capacity, int(np.floor(exact_share)))
+        group["quota"] += extra
+        remainders.append(
+            {
+                "capacity": capacity - extra,
+                "fraction": exact_share - np.floor(exact_share),
+                "group": group,
+            }
+        )
+
+    remaining = limit - sum(int(group["quota"]) for group in sorted_groups)
+    for item in sorted(
+        (item for item in remainders if item["capacity"] > 0),
+        key=lambda value: (-float(value["fraction"]), str(value["group"]["key"])),
+    ):
+        if remaining <= 0:
+            break
+        item["group"]["quota"] += 1
+        remaining -= 1
+
+    return [
+        item
+        for group in sorted_groups
+        for item in evenly_spaced_sample(group["items"], int(group["quota"]))
+    ]
+
+
+def evenly_spaced_sample[T](items: list[T], count: int) -> list[T]:
+    if count <= 0:
+        return []
+    if len(items) <= count:
+        return items
+    if count == 1:
+        return [items[(len(items) - 1) // 2]]
+    return [
+        items[round((index * (len(items) - 1)) / (count - 1))]
+        for index in range(count)
+    ]
+
+
+def sort_embedding_points(
+    points: list[AnalysisEmbeddingPoint],
+) -> list[AnalysisEmbeddingPoint]:
+    return sorted(points, key=lambda point: (point.label, int(point.correct), point.index))
+
+
+def padded_embedding_domain(values: np.ndarray) -> tuple[float, float]:
+    finite_values = np.asarray(values, dtype=np.float32)
+    finite_values = finite_values[np.isfinite(finite_values)]
+    if finite_values.shape[0] == 0:
+        return (0.0, 1.0)
+
+    minimum = float(finite_values.min())
+    maximum = float(finite_values.max())
+    if minimum == maximum:
+        padding = max(1.0, abs(minimum) * 0.05)
+    else:
+        padding = (maximum - minimum) * 0.05
+    return (safe_float(minimum - padding), safe_float(maximum + padding))
 
 
 def lrp_report(
