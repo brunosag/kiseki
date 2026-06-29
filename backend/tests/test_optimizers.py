@@ -176,21 +176,38 @@ def test_cosyne_elites_are_included_before_children_and_permuted_population(monk
         dtype=runner.population.dtype,
     ).reshape(runner.population_size, runner.num_parameters)
     runner.population = population
-    runner.population_losses = torch.tensor(
+    stale_losses = torch.tensor(
+        [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0],
+        device=runner.device,
+    )
+    refreshed_losses = torch.tensor(
         [7.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0.0],
         device=runner.device,
     )
+    runner.population_losses = stale_losses
     runner.is_first_generation = False
     children = torch.full((4, runner.num_parameters), -1.0)
     captured: list[torch.Tensor] = []
+    evaluate_calls = 0
 
+    def fake_evaluate_population(inputs: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        nonlocal evaluate_calls
+        del inputs, targets
+        evaluate_calls += 1
+        return refreshed_losses
+
+    monkeypatch.setattr(runner, "_evaluate_population", fake_evaluate_population)
     monkeypatch.setattr(runner, "_crossover", lambda parents, losses: children)
     monkeypatch.setattr(runner, "_mutate", lambda child_batch: child_batch)
-    monkeypatch.setattr(
-        runner,
-        "_cosyne_permutation",
-        lambda current_population, losses: current_population + 100,
-    )
+
+    def fake_cosyne_permutation(
+        current_population: torch.Tensor,
+        losses: torch.Tensor,
+    ) -> torch.Tensor:
+        assert torch.equal(losses, refreshed_losses)
+        return current_population + 100
+
+    monkeypatch.setattr(runner, "_cosyne_permutation", fake_cosyne_permutation)
 
     def fake_evaluate_vectors(
         vectors: torch.Tensor,
@@ -205,6 +222,7 @@ def test_cosyne_elites_are_included_before_children_and_permuted_population(monk
 
     runner.step(*tiny_batch())
 
+    assert evaluate_calls == 1
     merged = captured[0]
     assert torch.equal(merged[:2], population[[7, 6]])
     assert torch.equal(merged[2:6], children)

@@ -745,9 +745,8 @@ class CosyneRunner(PopulationEvaluatorMixin):
 
     def step(self, inputs: torch.Tensor, targets: torch.Tensor) -> float:
         self.model.eval()
-        if self.is_first_generation:
-            self.population_losses = self._evaluate_population(inputs, targets)
-            self.is_first_generation = False
+        self.population_losses = self._evaluate_population(inputs, targets)
+        self.is_first_generation = False
 
         parent_losses = torch.nan_to_num(
             self.population_losses,
