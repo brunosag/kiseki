@@ -216,8 +216,13 @@ const MUTATION_STEP_AXIS_PADDING = 1.05
 const TRAINING_STATUS_UPDATE_INTERVAL_MS = 200
 const MISSING_VALUE_LABEL = "—"
 const LINE_RENDER_POINT_LIMIT = 2500
-const TSNE_SIDE_SAMPLE_LIMIT = 1000
+const TSNE_SIDE_SAMPLE_LIMIT = 2000
 const PCA_TOTAL_SAMPLE_LIMIT = 2000
+const EMBEDDING_DOMAIN_PADDING_RATIO = 0.04
+const EMBEDDING_POINT_OPACITY = 0.88
+const EMBEDDING_POINT_RADIUS = 2.8
+const EMBEDDING_CROSS_HALF_SIZE = 3.1
+const TSNE_PLOT_ASPECT_RATIO = 5 / 3
 
 type ResolvedTheme = "dark" | "light"
 type CheckpointSortKey = "saved_at" | "accuracy" | "step" | "elapsed"
@@ -277,6 +282,8 @@ type EmbeddingChartPoint = AnalysisEmbeddingProjection["left"][number] & {
   side: AnalysisSide
   sideName: string
 }
+
+type EmbeddingPlotLayout = "domain" | "rotated-equal-scale"
 
 type ConfusionHeatmapDatum = {
   count: number
@@ -339,14 +346,6 @@ const REPORT_LEFT_COLOR = "#2563eb"
 const REPORT_RIGHT_COLOR = "#dc2626"
 const REPORT_LEFT_ACCENT_COLOR = "#0891b2"
 const REPORT_RIGHT_ACCENT_COLOR = "#ea580c"
-const ROBUSTNESS_SERIES_COLORS = [
-  "#2563eb",
-  "#dc2626",
-  "#16a34a",
-  "#d97706",
-  "#7c3aed",
-  "#0891b2",
-]
 
 const CIFAR10_CLASS_LABELS = [
   "airplane",
@@ -1167,7 +1166,7 @@ function AnalysisTab({
           <div className="flex flex-col justify-between gap-3 rounded-lg border p-4 md:col-span-2 xl:flex-row xl:items-center">
             <div className="text-sm text-muted-foreground">
               Reports use the full test set with cached defaults for metrics,
-              embeddings, LRP, activations, weights, and robustness.
+              embeddings, and LRP.
             </div>
             <Button
               className="w-full xl:w-auto"
@@ -1343,7 +1342,6 @@ const ANALYSIS_REPORT_SECTIONS = [
   { id: "metrics", label: "Metrics" },
   { id: "embeddings", label: "Embeddings" },
   { id: "lrp", label: "LRP" },
-  { id: "robustness", label: "Robustness" },
 ] as const
 
 type AnalysisReportSectionId = (typeof ANALYSIS_REPORT_SECTIONS)[number]["id"]
@@ -1354,7 +1352,6 @@ const INITIAL_ANALYSIS_MOUNTED_SECTIONS: AnalysisMountedSections = {
   metrics: false,
   embeddings: false,
   lrp: false,
-  robustness: false,
 }
 
 function AnalysisReport({
@@ -1375,7 +1372,6 @@ function AnalysisReport({
     metrics: null,
     embeddings: null,
     lrp: null,
-    robustness: null,
   })
   const setSectionRef = useCallback(
     (sectionId: AnalysisReportSectionId, element: HTMLElement | null) => {
@@ -1390,7 +1386,6 @@ function AnalysisReport({
       "metrics",
       "embeddings",
       "lrp",
-      "robustness",
     ]
     const timers: number[] = []
 
@@ -1558,21 +1553,6 @@ const AnalysisReportSections = memo(function AnalysisReportSections({
           <AnalysisLrpView report={report} sideLabels={sideLabels} />
         </AnalysisReportSection>
       ) : null}
-      {mountedSections.robustness ? (
-        <AnalysisReportSection
-          id="robustness"
-          sectionRef={(element) => {
-            setSectionRef("robustness", element)
-          }}
-          title="Robustness"
-        >
-          <AnalysisRobustnessView
-            plotPalette={plotPalette}
-            report={report}
-            sideLabels={sideLabels}
-          />
-        </AnalysisReportSection>
-      ) : null}
     </div>
   )
 })
@@ -1665,34 +1645,21 @@ function AnalysisOverview({
     () => report.runtime.rows.filter((row) => row.label !== "Steps"),
     [report.runtime.rows]
   )
+  const checkpointRows = useMemo(() => analysisCheckpointRows(report), [report])
+  const rowHeaderLabel =
+    report.left.optimizer === report.right.optimizer ? "Model" : "Optimizer"
 
   return (
     <div className="grid gap-4">
-      <div className="grid gap-3 md:grid-cols-4">
-        <ReportMetric
-          label={`${sideLabel("left", sideLabels)} accuracy`}
-          value={formatOptionalPercent(report.metrics.left.accuracy)}
-        />
-        <ReportMetric
-          label={`${sideLabel("right", sideLabels)} accuracy`}
-          value={formatOptionalPercent(report.metrics.right.accuracy)}
-        />
-        <ReportMetric
-          label="Disagreements"
-          value={formatInteger(report.overlap.disagreements)}
-        />
-        <ReportMetric
-          label="Device"
-          value={report.analysis_device.toUpperCase()}
-        />
-      </div>
       <div className="grid gap-4 xl:grid-cols-2">
         <AnalysisRowsTable
-          rows={report.metadata}
+          rowHeaderLabel={rowHeaderLabel}
+          rows={checkpointRows}
           sideLabels={sideLabels}
           title="Checkpoints"
         />
         <AnalysisRowsTable
+          rowHeaderLabel={rowHeaderLabel}
           rows={runtimeRows}
           sideLabels={sideLabels}
           title="Runtime"
@@ -1785,27 +1752,27 @@ function AnalysisEmbeddingsView({
         bodyClassName="h-[20rem] xl:h-auto xl:flex-1"
         className="xl:aspect-[5/3]"
         dataset={report.left.dataset}
+        layout="rotated-equal-scale"
         pointShape="circle"
         points={tsneLeftPoints}
+        plotAspectRatio={TSNE_PLOT_ASPECT_RATIO}
         sampleLimit={TSNE_SIDE_SAMPLE_LIMIT}
         sideLabels={sideLabels}
         title={`t-SNE ${sideLabel("left", sideLabels)}`}
         totalPointCount={report.embeddings.tsne.left_total}
-        xDomain={report.embeddings.tsne.x_domain}
-        yDomain={report.embeddings.tsne.y_domain}
       />
       <EmbeddingChartPanel
         bodyClassName="h-[20rem] xl:h-auto xl:flex-1"
         className="xl:aspect-[5/3]"
         dataset={report.left.dataset}
+        layout="rotated-equal-scale"
         pointShape="circle"
         points={tsneRightPoints}
+        plotAspectRatio={TSNE_PLOT_ASPECT_RATIO}
         sampleLimit={TSNE_SIDE_SAMPLE_LIMIT}
         sideLabels={sideLabels}
         title={`t-SNE ${sideLabel("right", sideLabels)}`}
         totalPointCount={report.embeddings.tsne.right_total}
-        xDomain={report.embeddings.tsne.x_domain}
-        yDomain={report.embeddings.tsne.y_domain}
       />
       <div className="xl:col-span-2">
         <EmbeddingChartPanel
@@ -1856,60 +1823,17 @@ function AnalysisLrpView({
           />
         ))}
       </div>
-      <div className="grid grid-cols-[repeat(auto-fill,minmax(10rem,1fr))] gap-3">
-        {report.lrp.class_averages.map((average) => (
-          <div className="rounded-lg border p-2" key={average.label}>
-            <div className="mb-2 flex items-center justify-between gap-2 text-sm">
-              <span className="font-medium">{average.name}</span>
-              <Badge variant="outline">avg</Badge>
-            </div>
-            <div className="aspect-square overflow-hidden rounded-md border bg-muted">
-              <RelevanceCanvas relevance={average.difference_relevance} />
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function AnalysisRobustnessView({
-  plotPalette,
-  report,
-  sideLabels,
-}: {
-  plotPalette: PlotPalette
-  report: AnalysisComparisonReport
-  sideLabels: AnalysisSideLabels
-}) {
-  return (
-    <div className="grid gap-4">
-      <RobustnessChart report={report} sideLabels={sideLabels} />
-      <div className="grid gap-4 xl:grid-cols-2">
-        <ActivationSparsityChart
-          report={report}
-          sideLabels={sideLabels}
-        />
-        <WeightDistanceChart plotPalette={plotPalette} report={report} />
-      </div>
-    </div>
-  )
-}
-
-function ReportMetric({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="rounded-lg border p-4">
-      <div className="text-lg leading-tight font-medium">{value}</div>
-      <div className="mt-1 text-xs text-muted-foreground">{label}</div>
     </div>
   )
 }
 
 function AnalysisRowsTable({
+  rowHeaderLabel,
   rows,
   sideLabels,
   title,
 }: {
+  rowHeaderLabel: string
   rows: AnalysisTableRow[]
   sideLabels: AnalysisSideLabels
   title: string
@@ -1920,7 +1844,7 @@ function AnalysisRowsTable({
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>Field</TableHead>
+            <TableHead>{rowHeaderLabel}</TableHead>
             <TableHead>{sideLabel("left", sideLabels)}</TableHead>
             <TableHead>{sideLabel("right", sideLabels)}</TableHead>
           </TableRow>
@@ -2470,186 +2394,6 @@ function CalibrationChart({
   )
 }
 
-function RobustnessChart({
-  report,
-  sideLabels,
-}: {
-  report: AnalysisComparisonReport
-  sideLabels: AnalysisSideLabels
-}) {
-  const { data, series } = useMemo(
-    () => robustnessChartData(report, sideLabels),
-    [report, sideLabels]
-  )
-  const config = useMemo(() => chartConfigFromSeries(series), [series])
-  const tooltipConfig = useMemo(
-    () =>
-      chartTooltipConfigFromSeries(
-        series,
-        Object.fromEntries(
-          series.map((item) => [
-            item.dataKey,
-            (value: number) => `${value.toFixed(2)}%`,
-          ])
-        )
-      ),
-    [series]
-  )
-
-  return (
-    <ChartPanel title="Robustness">
-      <ChartContainer className="h-full w-full aspect-auto" config={config}>
-        <ComposedChart
-          accessibilityLayer
-          data={data}
-          margin={{ bottom: 0, left: 8, right: 8, top: 8 }}
-        >
-          <CartesianGrid vertical={false} />
-          <XAxis
-            axisLine={false}
-            dataKey="x"
-            minTickGap={28}
-            tickFormatter={formatCompactNumber}
-            tickLine={false}
-            tickMargin={8}
-            type="number"
-          />
-          <YAxis domain={[0, 100]} hide />
-          <ChartTooltip
-            content={
-              <FormattedChartTooltip
-                config={tooltipConfig}
-                labelFormatter={(value) => `Level ${formatAxisCompact(value)}`}
-              />
-            }
-          />
-          <ChartLegend
-            content={
-              <ChartLegendContent className="flex-wrap gap-x-5 gap-y-1" />
-            }
-            verticalAlign="top"
-          />
-          {series.map((item) => (
-            <Line
-              connectNulls
-              dataKey={item.dataKey}
-              dot
-              isAnimationActive={false}
-              key={item.dataKey}
-              name={item.label}
-              stroke={`var(--color-${item.dataKey})`}
-              strokeDasharray={item.dashed ? "4 4" : undefined}
-              strokeWidth={1.6}
-              type="monotone"
-            />
-          ))}
-        </ComposedChart>
-      </ChartContainer>
-    </ChartPanel>
-  )
-}
-
-function ActivationSparsityChart({
-  report,
-  sideLabels,
-}: {
-  report: AnalysisComparisonReport
-  sideLabels: AnalysisSideLabels
-}) {
-  const names = useMemo(() => activationLayerNames(report), [report])
-  const data = useMemo(
-    () =>
-      names.map((name) => ({
-        label: name,
-        left:
-          report.activations.left.find((layer) => layer.name === name)
-            ?.sparsity ?? 0,
-        right:
-          report.activations.right.find((layer) => layer.name === name)
-            ?.sparsity ?? 0,
-      })),
-    [names, report.activations.left, report.activations.right]
-  )
-  const config = useMemo<ChartConfig>(
-    () => ({
-      left: { label: sideLabel("left", sideLabels), color: REPORT_LEFT_COLOR },
-      right: { label: sideLabel("right", sideLabels), color: REPORT_RIGHT_COLOR },
-    }),
-    [sideLabels]
-  )
-  const tooltipConfig = useMemo<ChartTooltipConfig>(
-    () => ({
-      left: {
-        color: REPORT_LEFT_COLOR,
-        formatter: formatCompactNumber,
-        label: sideLabel("left", sideLabels),
-      },
-      right: {
-        color: REPORT_RIGHT_COLOR,
-        formatter: formatCompactNumber,
-        label: sideLabel("right", sideLabels),
-      },
-    }),
-    [sideLabels]
-  )
-
-  return (
-    <CategoryBarChart
-      config={config}
-      data={data}
-      dataKeys={["left", "right"]}
-      title="Activation Sparsity"
-      tooltipConfig={tooltipConfig}
-      tickFormatter={compactLayerName}
-      yUpperBound={Math.max(1, maxCategoryValue(data, ["left", "right"]))}
-    />
-  )
-}
-
-function WeightDistanceChart({
-  plotPalette,
-  report,
-}: {
-  plotPalette: PlotPalette
-  report: AnalysisComparisonReport
-}) {
-  const data = useMemo(
-    () =>
-      report.weights.map((weight) => ({
-        distance: weight.relative_distance,
-        label: weight.name,
-      })),
-    [report.weights]
-  )
-  const config = useMemo<ChartConfig>(
-    () => ({
-      distance: { label: "Relative distance", color: plotPalette.accuracy },
-    }),
-    [plotPalette.accuracy]
-  )
-  const tooltipConfig = useMemo<ChartTooltipConfig>(
-    () => ({
-      distance: {
-        color: plotPalette.accuracy,
-        formatter: formatCompactNumber,
-        label: "Relative distance",
-      },
-    }),
-    [plotPalette.accuracy]
-  )
-
-  return (
-    <CategoryBarChart
-      config={config}
-      data={data}
-      dataKeys={["distance"]}
-      title="Relative Weight Distance"
-      tooltipConfig={tooltipConfig}
-      tickFormatter={compactLayerName}
-    />
-  )
-}
-
 function CategoryBarChart({
   config,
   data,
@@ -2731,8 +2475,10 @@ function EmbeddingChartPanel({
   bodyClassName = "h-[20rem]",
   className,
   dataset,
+  layout = "domain",
   pointShape,
   points,
+  plotAspectRatio = 1,
   sampleLimit,
   sideLabels,
   title,
@@ -2743,8 +2489,10 @@ function EmbeddingChartPanel({
   bodyClassName?: string
   className?: string
   dataset: CheckpointSummary["dataset"]
+  layout?: EmbeddingPlotLayout
   pointShape: "circle" | "side"
   points: AnalysisEmbeddingPlotPoint[]
+  plotAspectRatio?: number
   sampleLimit: number
   sideLabels: AnalysisSideLabels
   title: string
@@ -2756,7 +2504,7 @@ function EmbeddingChartPanel({
     () => sampleEmbeddingPoints(points, sampleLimit),
     [points, sampleLimit]
   )
-  const chartPoints = useMemo(
+  const baseChartPoints = useMemo(
     () =>
       sampledPoints.map((point) => ({
         ...point,
@@ -2767,6 +2515,18 @@ function EmbeddingChartPanel({
       })),
     [dataset, sampledPoints, sideLabels]
   )
+  const chartLayout = useMemo(
+    () =>
+      layout === "rotated-equal-scale"
+        ? rotatedEqualScaleEmbeddingLayout(baseChartPoints, plotAspectRatio)
+        : {
+            points: baseChartPoints,
+            xDomain: xDomain ?? paddedNumericDomain(baseChartPoints.map((point) => point.x)),
+            yDomain: yDomain ?? paddedNumericDomain(baseChartPoints.map((point) => point.y)),
+          },
+    [baseChartPoints, layout, plotAspectRatio, xDomain, yDomain]
+  )
+  const chartPoints = chartLayout.points
   const legendItems = useMemo(
     () => embeddingLegendItems(points, dataset),
     [dataset, points]
@@ -2776,68 +2536,165 @@ function EmbeddingChartPanel({
     () => groupedEmbeddingPoints(chartPoints),
     [chartPoints]
   )
-  const resolvedXDomain = useMemo(
-    () => xDomain ?? paddedNumericDomain(chartPoints.map((point) => point.x)),
-    [chartPoints, xDomain]
-  )
-  const resolvedYDomain = useMemo(
-    () => yDomain ?? paddedNumericDomain(chartPoints.map((point) => point.y)),
-    [chartPoints, yDomain]
-  )
   const resolvedTotalPointCount = totalPointCount ?? points.length
 
   return (
     <ChartPanel
       bodyClassName={bodyClassName}
       className={className}
-      footer={
-        <span className="text-[0.7rem] text-muted-foreground/55 tabular-nums">
+      title={title}
+    >
+      <div className="relative h-full min-h-[18rem] w-full">
+        <ChartContainer className="h-full w-full aspect-auto" config={config}>
+          <ScatterChart
+            accessibilityLayer
+            margin={{ bottom: 20, left: 0, right: 0, top: 28 }}
+          >
+            <XAxis dataKey="x" domain={chartLayout.xDomain} hide type="number" />
+            <YAxis dataKey="y" domain={chartLayout.yDomain} hide type="number" />
+            <ZAxis range={[24, 24]} />
+            <ChartTooltip content={<EmbeddingTooltip />} cursor={false} />
+            {groupedPoints.map((group) => (
+              <Scatter
+                data={group.points}
+                fill={group.color}
+                isAnimationActive={false}
+                key={group.label}
+                legendType="circle"
+                name={group.label}
+                shape={
+                  pointShape === "circle"
+                    ? EmbeddingCircleShape
+                    : EmbeddingScatterShape
+                }
+              />
+            ))}
+          </ScatterChart>
+        </ChartContainer>
+        <EmbeddingLegendOverlay items={legendItems} />
+        <span className="pointer-events-none absolute bottom-0 left-0 text-[0.7rem] text-muted-foreground/60 tabular-nums">
           Sampled {formatInteger(sampledPoints.length)} /{" "}
           {formatInteger(resolvedTotalPointCount)}
         </span>
-      }
-      title={title}
-    >
-      <ChartContainer
-        className="h-full min-h-[18rem] w-full aspect-auto"
-        config={config}
-      >
-        <ScatterChart
-          accessibilityLayer
-          margin={{ bottom: 8, left: 8, right: 8, top: 8 }}
-        >
-          <XAxis dataKey="x" domain={resolvedXDomain} hide type="number" />
-          <YAxis dataKey="y" domain={resolvedYDomain} hide type="number" />
-          <ZAxis range={[18, 18]} />
-          <ChartTooltip content={<EmbeddingTooltip />} cursor={false} />
-          <ChartLegend
-            content={
-              <ChartLegendContent
-                className="flex-wrap gap-x-5 gap-y-1"
-                nameKey="value"
-              />
-            }
-            verticalAlign="top"
-          />
-          {groupedPoints.map((group) => (
-            <Scatter
-              data={group.points}
-              fill={group.color}
-              isAnimationActive={false}
-              key={group.label}
-              legendType="circle"
-              name={group.label}
-              shape={
-                pointShape === "circle"
-                  ? EmbeddingCircleShape
-                  : EmbeddingScatterShape
-              }
-            />
-          ))}
-        </ScatterChart>
-      </ChartContainer>
+      </div>
     </ChartPanel>
   )
+}
+
+function EmbeddingLegendOverlay({ items }: { items: ChartLegendItem[] }) {
+  return (
+    <div className="pointer-events-none absolute top-0 left-1/2 z-10 flex max-w-[calc(100%-2rem)] -translate-x-1/2 flex-wrap justify-center gap-x-4 gap-y-1 text-xs">
+      {items.map((item) => (
+        <div className="flex items-center gap-1.5" key={item.label}>
+          <span
+            aria-hidden="true"
+            className="size-2 rounded-[2px]"
+            style={{ backgroundColor: item.color }}
+          />
+          <span className="text-foreground">{item.label}</span>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function rotatedEqualScaleEmbeddingLayout(
+  points: EmbeddingChartPoint[],
+  aspectRatio: number
+): {
+  points: EmbeddingChartPoint[]
+  xDomain: [number, number]
+  yDomain: [number, number]
+} {
+  if (points.length === 0) {
+    return { points, xDomain: [0, 1], yDomain: [0, 1] }
+  }
+
+  const center = meanEmbeddingPoint(points)
+  const angle = principalAxisAngle(points, center)
+  const cos = Math.cos(-angle)
+  const sin = Math.sin(-angle)
+  const rotatedPoints = points.map((point) => {
+    const x = point.x - center.x
+    const y = point.y - center.y
+    return {
+      ...point,
+      x: x * cos - y * sin,
+      y: x * sin + y * cos,
+    }
+  })
+  const { xDomain, yDomain } = aspectMatchedEmbeddingDomains(
+    rotatedPoints,
+    aspectRatio
+  )
+
+  return { points: rotatedPoints, xDomain, yDomain }
+}
+
+function meanEmbeddingPoint(points: Pick<EmbeddingChartPoint, "x" | "y">[]): {
+  x: number
+  y: number
+} {
+  const sum = points.reduce(
+    (total, point) => ({
+      x: total.x + point.x,
+      y: total.y + point.y,
+    }),
+    { x: 0, y: 0 }
+  )
+
+  return {
+    x: sum.x / points.length,
+    y: sum.y / points.length,
+  }
+}
+
+function principalAxisAngle(
+  points: Pick<EmbeddingChartPoint, "x" | "y">[],
+  center: { x: number; y: number }
+): number {
+  let covarianceXx = 0
+  let covarianceXy = 0
+  let covarianceYy = 0
+
+  for (const point of points) {
+    const x = point.x - center.x
+    const y = point.y - center.y
+    covarianceXx += x * x
+    covarianceXy += x * y
+    covarianceYy += y * y
+  }
+
+  if (covarianceXx === 0 && covarianceXy === 0 && covarianceYy === 0) {
+    return 0
+  }
+
+  return 0.5 * Math.atan2(2 * covarianceXy, covarianceXx - covarianceYy)
+}
+
+function aspectMatchedEmbeddingDomains(
+  points: Pick<EmbeddingChartPoint, "x" | "y">[],
+  aspectRatio: number
+): { xDomain: [number, number]; yDomain: [number, number] } {
+  const xDomain = paddedNumericDomain(points.map((point) => point.x))
+  const yDomain = paddedNumericDomain(points.map((point) => point.y))
+  const centerX = (xDomain[0] + xDomain[1]) / 2
+  const centerY = (yDomain[0] + yDomain[1]) / 2
+  const safeAspectRatio =
+    Number.isFinite(aspectRatio) && aspectRatio > 0 ? aspectRatio : 1
+  let width = xDomain[1] - xDomain[0]
+  let height = yDomain[1] - yDomain[0]
+
+  if (width / height > safeAspectRatio) {
+    height = width / safeAspectRatio
+  } else {
+    width = height * safeAspectRatio
+  }
+
+  return {
+    xDomain: [centerX - width / 2, centerX + width / 2],
+    yDomain: [centerY - height / 2, centerY + height / 2],
+  }
 }
 
 function EmbeddingTooltip({
@@ -2884,21 +2741,32 @@ function EmbeddingScatterShape(props: ScatterShapeProps & { fill?: string }) {
   }
 
   if (isEmbeddingChartPoint(point) && point.side === "right") {
+    const halfSize = EMBEDDING_CROSS_HALF_SIZE
     return (
       <path
-        d={`M ${cx - 2.5} ${cy - 2.5} L ${cx + 2.5} ${cy + 2.5} M ${
-          cx + 2.5
-        } ${cy - 2.5} L ${cx - 2.5} ${cy + 2.5}`}
+        d={`M ${cx - halfSize} ${cy - halfSize} L ${cx + halfSize} ${
+          cy + halfSize
+        } M ${cx + halfSize} ${cy - halfSize} L ${cx - halfSize} ${
+          cy + halfSize
+        }`}
         fill="none"
-        opacity={0.72}
+        opacity={EMBEDDING_POINT_OPACITY}
         stroke={color}
         strokeLinecap="round"
-        strokeWidth={1.2}
+        strokeWidth={1.5}
       />
     )
   }
 
-  return <circle cx={cx} cy={cy} fill={color} fillOpacity={0.62} r={2.4} />
+  return (
+    <circle
+      cx={cx}
+      cy={cy}
+      fill={color}
+      fillOpacity={EMBEDDING_POINT_OPACITY}
+      r={EMBEDDING_POINT_RADIUS}
+    />
+  )
 }
 
 function EmbeddingCircleShape(props: ScatterShapeProps & { fill?: string }) {
@@ -2914,8 +2782,8 @@ function EmbeddingCircleShape(props: ScatterShapeProps & { fill?: string }) {
       cx={cx}
       cy={cy}
       fill={props.fill ?? "currentColor"}
-      fillOpacity={0.62}
-      r={2.4}
+      fillOpacity={EMBEDDING_POINT_OPACITY}
+      r={EMBEDDING_POINT_RADIUS}
     />
   )
 }
@@ -3970,6 +3838,35 @@ function analysisSideLabels(report: AnalysisComparisonReport): AnalysisSideLabel
   return checkpointSideLabels(report.left, report.right)
 }
 
+function analysisCheckpointRows(report: AnalysisComparisonReport): AnalysisTableRow[] {
+  const rows = [...report.metadata]
+  const existingLabels = new Set(rows.map((row) => row.label))
+  const accuracyRows = [
+    {
+      label: "Validation accuracy",
+      left: formatOptionalPercent(report.left.accuracy),
+      right: formatOptionalPercent(report.right.accuracy),
+    },
+    {
+      label: "Test accuracy",
+      left: formatOptionalPercent(report.metrics.left.accuracy),
+      right: formatOptionalPercent(report.metrics.right.accuracy),
+    },
+  ].filter((row) => !existingLabels.has(row.label))
+
+  if (accuracyRows.length === 0) {
+    return rows
+  }
+
+  const stepIndex = rows.findIndex((row) => row.label === "Step")
+  if (stepIndex === -1) {
+    return [...rows, ...accuracyRows]
+  }
+
+  rows.splice(stepIndex + 1, 0, ...accuracyRows)
+  return rows
+}
+
 function checkpointSideLabels(
   left: CheckpointSummary,
   right: CheckpointSummary
@@ -4413,70 +4310,12 @@ function paddedNumericDomain(values: number[]): [number, number] {
   const min = Math.min(...finiteValues)
   const max = Math.max(...finiteValues)
   if (min === max) {
-    const padding = Math.max(1, Math.abs(min) * 0.05)
+    const padding = Math.max(1, Math.abs(min) * EMBEDDING_DOMAIN_PADDING_RATIO)
     return [min - padding, max + padding]
   }
 
-  const padding = (max - min) * 0.05
+  const padding = (max - min) * EMBEDDING_DOMAIN_PADDING_RATIO
   return [min - padding, max + padding]
-}
-
-function robustnessChartData(
-  report: AnalysisComparisonReport,
-  sideLabels: AnalysisSideLabels
-): { data: NumericChartDatum[]; series: ChartSeries[] } {
-  const series: (ChartSeries & { points: NumericSeriesPoint[] })[] =
-    report.robustness.flatMap((curve, index) => {
-      const color =
-        ROBUSTNESS_SERIES_COLORS[index % ROBUSTNESS_SERIES_COLORS.length]
-      return [
-        {
-          color,
-          dataKey: `robustness${index}Left`,
-          label: `${sideShortLabel("left", sideLabels)} ${curve.perturbation}`,
-          points: curve.points.map((point) => ({
-            x: point.level,
-            y: point.left_accuracy,
-          })),
-        },
-        {
-          color,
-          dashed: true,
-          dataKey: `robustness${index}Right`,
-          label: `${sideShortLabel("right", sideLabels)} ${curve.perturbation}`,
-          points: curve.points.map((point) => ({
-            x: point.level,
-            y: point.right_accuracy,
-          })),
-        },
-      ]
-    })
-
-  return {
-    data: mergeNumericSeries(series),
-    series,
-  }
-}
-
-function activationLayerNames(report: AnalysisComparisonReport): string[] {
-  return [
-    ...new Set([
-      ...report.activations.left.map((layer) => layer.name),
-      ...report.activations.right.map((layer) => layer.name),
-    ]),
-  ]
-}
-
-function maxCategoryValue(data: CategoryChartDatum[], keys: string[]): number {
-  return Math.max(
-    0,
-    ...data.flatMap((row) =>
-      keys.flatMap((key) => {
-        const value = row[key]
-        return typeof value === "number" && Number.isFinite(value) ? [value] : []
-      })
-    )
-  )
 }
 
 function tooltipDataKey(
@@ -4534,11 +4373,6 @@ function compactCategoryTick(value: string): string {
   }
 
   return `${value.slice(0, 12)}...`
-}
-
-function compactLayerName(value: string): string {
-  const normalized = value.replace(/^features\./, "").replace(/^classifier\./, "")
-  return compactCategoryTick(normalized)
 }
 
 function isEmbeddingChartPoint(value: unknown): value is EmbeddingChartPoint {
