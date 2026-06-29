@@ -1990,7 +1990,12 @@ function ChartPanel({
   title: string
 }) {
   return (
-    <Card className={cn("min-h-0", className)}>
+    <Card
+      className={cn(
+        "min-h-0 rounded-lg border bg-transparent ring-0",
+        className
+      )}
+    >
       <CardHeader className="pb-2">
         <CardTitle className="text-sm">{title}</CardTitle>
         {description ? <CardDescription>{description}</CardDescription> : null}
