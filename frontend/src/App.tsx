@@ -1219,36 +1219,32 @@ function AnalysisTab({
       )}
     >
       {showSetup ? (
-        <div className="grid gap-4 md:grid-cols-2">
-          {ANALYSIS_SIDES.map((side) => (
-            <AnalysisModelSelector
-              checkpoint={checkpoints[side]}
-              key={side}
-              pausedRunId={pausedRunId}
-              schema={schema}
-              side={side}
-              onLoadCheckpoint={onLoadCheckpoint}
-            />
-          ))}
-          <div className="flex flex-col justify-between gap-3 rounded-lg border p-4 md:col-span-2 xl:flex-row xl:items-center">
-            <div className="text-sm text-muted-foreground">
-              Reports use the full test set with cached defaults for metrics,
-              embeddings, and LRP.
+        <div className="mx-auto mt-8 grid w-full max-w-4xl gap-3">
+          <div className="rounded-lg border bg-card/40 p-3">
+            <div className="grid gap-3 md:grid-cols-2">
+              {ANALYSIS_SIDES.map((side) => (
+                <AnalysisCheckpointSlot
+                  checkpoint={checkpoints[side]}
+                  key={side}
+                  pausedRunId={pausedRunId}
+                  schema={schema}
+                  side={side}
+                  onLoadCheckpoint={onLoadCheckpoint}
+                />
+              ))}
             </div>
-            <Button
-              className="w-full xl:w-auto"
-              disabled={!canRun}
-              onClick={() => onRun(false)}
-            >
+          </div>
+          <div className="flex justify-center">
+            <Button disabled={!canRun} onClick={() => onRun(false)}>
               {busy ? <LoaderCircle className="size-4 animate-spin" /> : null}
-              Generate Report
+              Generate report
             </Button>
           </div>
         </div>
       ) : null}
 
       {error ?? comparisonError ? (
-        <Alert variant="destructive">
+        <Alert className="mx-auto w-full max-w-4xl" variant="destructive">
           <AlertTriangle className="size-4" />
           <AlertTitle>Comparison unavailable</AlertTitle>
           <AlertDescription>{error ?? comparisonError}</AlertDescription>
@@ -1279,7 +1275,7 @@ function AnalysisTab({
 
       {busy ? <AnalysisProgress job={job} /> : null}
       {job?.status === "failed" ? (
-        <Alert variant="destructive">
+        <Alert className="mx-auto w-full max-w-4xl" variant="destructive">
           <AlertTriangle className="size-4" />
           <AlertTitle>Comparison failed</AlertTitle>
           <AlertDescription>{job.error ?? job.message}</AlertDescription>
@@ -1298,24 +1294,12 @@ function AnalysisTab({
             scrollRootRef={scrollRootRef}
           />
         </ScrollArea>
-      ) : !busy ? (
-        <Empty className="min-h-96 border">
-          <EmptyHeader>
-            <EmptyMedia variant="icon">
-              <FolderOpen className="size-6" />
-            </EmptyMedia>
-            <EmptyTitle>Select two checkpoints</EmptyTitle>
-            <EmptyDescription>
-              Reports are generated for two checkpoints from the same dataset.
-            </EmptyDescription>
-          </EmptyHeader>
-        </Empty>
       ) : null}
     </div>
   )
 }
 
-function AnalysisModelSelector({
+function AnalysisCheckpointSlot({
   checkpoint,
   pausedRunId,
   schema,
@@ -1331,77 +1315,122 @@ function AnalysisModelSelector({
     checkpoint: CheckpointSummary
   ) => Promise<void>
 }) {
+  if (!checkpoint) {
+    return (
+      <CheckpointPicker
+        closeOnLoadStart
+        currentSelection={null}
+        disabled={false}
+        mode="analysis"
+        pausedRunId={pausedRunId}
+        schema={schema}
+        trigger={
+          <Button
+            className="h-full min-h-[22rem] w-full flex-col gap-2 rounded-lg border border-dashed border-border bg-transparent px-4 text-muted-foreground hover:border-foreground/30 hover:bg-muted/40 hover:text-foreground"
+            variant="ghost"
+          >
+            <Plus className="size-4" />
+            <span>Add {sideLabel(side)}</span>
+          </Button>
+        }
+        onLoad={(nextCheckpoint) => onLoadCheckpoint(side, nextCheckpoint)}
+      />
+    )
+  }
+
   return (
-    <Card>
-      <CardHeader className="gap-3">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <CardTitle className="text-base">{sideLabel(side)}</CardTitle>
-            <div className="mt-1 text-xs text-muted-foreground">
-              {checkpoint
-                ? `${checkpoint.optimizer} · ${formatDatasetName(checkpoint.dataset)}`
-                : "Required"}
-            </div>
-          </div>
-          <CheckpointPicker
-            closeOnLoadStart
-            currentSelection={selectionFromCheckpoint(checkpoint)}
-            disabled={false}
-            mode="analysis"
-            pausedRunId={pausedRunId}
-            schema={schema}
-            onLoad={(nextCheckpoint) => onLoadCheckpoint(side, nextCheckpoint)}
-          />
-        </div>
-      </CardHeader>
-      <CardContent>
-        {checkpoint ? (
-          <div className="grid grid-cols-3 gap-3">
-            <CheckpointMetric
-              label="Accuracy"
-              value={formatOptionalPercent(checkpoint.accuracy)}
-            />
-            <CheckpointMetric label="Step" value={formatInteger(checkpoint.step)} />
-            <CheckpointMetric
-              label="Elapsed"
-              value={formatOptionalDuration(checkpoint.total_elapsed_seconds)}
-            />
-          </div>
-        ) : (
-          <div className="grid h-24 place-items-center rounded-lg border border-dashed text-sm text-muted-foreground">
-            No checkpoint selected
-          </div>
-        )}
-      </CardContent>
-    </Card>
+    <div className="rounded-lg border bg-background p-2">
+      <Table>
+        <TableHeader>
+          <TableRow className="hover:bg-transparent">
+            <TableHead>{sideLabel(side)}</TableHead>
+            <TableHead className="text-right">
+              <CheckpointPicker
+                closeOnLoadStart
+                currentSelection={selectionFromCheckpoint(checkpoint)}
+                disabled={false}
+                mode="analysis"
+                pausedRunId={pausedRunId}
+                schema={schema}
+                trigger={
+                  <Button size="sm" variant="outline">
+                    <FolderOpen className="size-3.5" />
+                    Change
+                  </Button>
+                }
+                onLoad={(nextCheckpoint) =>
+                  onLoadCheckpoint(side, nextCheckpoint)
+                }
+              />
+            </TableHead>
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {analysisCheckpointSummaryRows(checkpoint).map(([label, value]) => (
+            <TableRow className="hover:bg-transparent" key={label}>
+              <TableCell className="text-muted-foreground">{label}</TableCell>
+              <TableCell className="max-w-0 truncate text-right font-medium">
+                {value}
+              </TableCell>
+            </TableRow>
+          ))}
+        </TableBody>
+      </Table>
+    </div>
   )
 }
 
 function AnalysisProgress({ job }: { job: AnalysisComparisonJobStatus | null }) {
   const progress = Math.round((job?.progress ?? 0) * 100)
   return (
-    <Card>
-      <CardContent>
-        <div className="flex items-center justify-between gap-4 text-sm">
-          <div className="min-w-0">
-            <div className="font-medium">{job?.stage ?? "load/cache"}</div>
-            <div className="truncate text-muted-foreground">
-              {job?.message ?? "Starting comparison."}
-            </div>
-          </div>
-          <div className="shrink-0 tabular-nums text-muted-foreground">
-            {progress}%
-          </div>
-        </div>
-        <Progress className="mt-3" value={progress} />
-        <div className="mt-4 grid gap-2 md:grid-cols-3">
-          <Skeleton className="h-24" />
-          <Skeleton className="h-24" />
-          <Skeleton className="h-24" />
-        </div>
-      </CardContent>
-    </Card>
+    <div className="mx-auto w-full max-w-4xl rounded-lg border bg-card/40 p-3">
+      <div className="flex min-w-0 items-center gap-2 text-sm font-medium">
+        <LoaderCircle className="size-4 shrink-0 animate-spin text-muted-foreground" />
+        <span className="truncate">{analysisProgressLabel(job?.stage)}</span>
+      </div>
+      <Progress className="mt-3" value={progress} />
+    </div>
   )
+}
+
+function analysisProgressLabel(stage: string | null | undefined): string {
+  switch (stage) {
+    case "load/cache":
+      return "Loading checkpoints and cache"
+    case "inference":
+      return "Running model inference"
+    case "metrics":
+      return "Computing metrics"
+    case "embeddings":
+      return "Generating embedding projections"
+    case "LRP":
+      return "Computing LRP maps"
+    case "activation/weights":
+      return "Summarizing activations and weights"
+    case "robustness":
+      return "Evaluating robustness curves"
+    case "persist":
+      return "Writing report cache"
+    case "failed":
+      return "Handling analysis failure"
+    default:
+      return "Preparing report"
+  }
+}
+
+function analysisCheckpointSummaryRows(
+  checkpoint: CheckpointSummary
+): [string, string][] {
+  return [
+    ["Optimizer", checkpoint.optimizer],
+    ["Dataset", formatDatasetName(checkpoint.dataset)],
+    ["Seed", formatInteger(checkpoint.seed)],
+    ["Batch size", formatInteger(checkpoint.config.batch_size)],
+    ["Steps", formatInteger(checkpoint.step)],
+    ["Validation accuracy", formatOptionalPercent(checkpoint.accuracy)],
+    ["Elapsed time", formatOptionalDuration(checkpoint.total_elapsed_seconds)],
+    ["Saved at", formatCheckpointDate(checkpoint.saved_at)],
+  ]
 }
 
 const ANALYSIS_REPORT_SECTIONS = [
