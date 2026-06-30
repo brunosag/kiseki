@@ -143,4 +143,20 @@
     -webkit-appearance: none;
     appearance: none;
     }
+  :where(
+    a[href],
+    button:not(:disabled),
+    label[for],
+    summary,
+    [role="button"]:not([aria-disabled="true"]),
+    [data-slot="alert-dialog-action"]:not([data-disabled]),
+    [data-slot="alert-dialog-cancel"]:not([data-disabled]),
+    [data-slot="alert-dialog-trigger"]:not([data-disabled]),
+    [data-slot="dialog-close"]:not([data-disabled]),
+    [data-slot="dialog-trigger"]:not([data-disabled]),
+    [data-slot="hover-card-trigger"]:not([data-disabled]),
+    [data-slot="tooltip-trigger"]:not([data-disabled])
+  ) {
+    cursor: pointer;
+    }
 }

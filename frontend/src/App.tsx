@@ -1,10 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react"
 import katex from "katex"
 import {
-  Bar,
-  BarChart,
   CartesianGrid,
-  Cell,
   ComposedChart,
   Line,
   Scatter,
@@ -20,6 +17,7 @@ import {
   AlertTriangle,
   ArrowDown,
   ArrowUpDown,
+  Check,
   CircleHelp,
   Funnel,
   FolderOpen,
@@ -30,6 +28,7 @@ import {
   Plus,
   Sun,
   Trash2,
+  X,
 } from "lucide-react"
 import type {
   ChangeEvent,
@@ -287,14 +286,9 @@ type NumericSeriesBucket = {
   values: Map<number, number>
 }
 
-type CategoryChartDatum = {
-  label: string
-} & Record<string, number | string | undefined>
-
 type ChartSeries = {
   color: string
   dataKey: string
-  dashed?: boolean
   label: string
 }
 
@@ -389,8 +383,8 @@ const DEFAULT_ANALYSIS_PARAMS: AnalysisComparisonParams = {
 }
 const REPORT_LEFT_COLOR = "#2563eb"
 const REPORT_RIGHT_COLOR = "#dc2626"
-const REPORT_LEFT_ACCENT_COLOR = "#0891b2"
-const REPORT_RIGHT_ACCENT_COLOR = "#ea580c"
+const REPORT_LEFT_ACCURACY_COLOR = "#93c5fd"
+const REPORT_RIGHT_ACCURACY_COLOR = "#fca5a5"
 
 const FASHION_MNIST_CLASS_LABELS = [
   "T-shirt/top",
@@ -1161,7 +1155,6 @@ export function App() {
           error={analysisError}
           job={analysisJob}
           pausedRunId={isPaused ? status.run_id : null}
-          plotPalette={plotPalette}
           report={currentAnalysisReport}
           schema={schema}
           onLoadCheckpoint={loadAnalysisCheckpoint}
@@ -1179,7 +1172,6 @@ type AnalysisTabProps = {
   error: string | null
   job: AnalysisComparisonJobStatus | null
   pausedRunId: string | null | undefined
-  plotPalette: PlotPalette
   report: AnalysisComparisonReport | null
   schema: SchemaResponse
   onLoadCheckpoint: (
@@ -1196,7 +1188,6 @@ function AnalysisTab({
   error,
   job,
   pausedRunId,
-  plotPalette,
   report,
   schema,
   onLoadCheckpoint,
@@ -1289,7 +1280,6 @@ function AnalysisTab({
         >
           <AnalysisReport
             key={job?.job_id ?? report.generated_at}
-            plotPalette={plotPalette}
             report={report}
             schema={schema}
             scrollRootRef={scrollRootRef}
@@ -1452,12 +1442,10 @@ const INITIAL_ANALYSIS_MOUNTED_SECTIONS: AnalysisMountedSections = {
 }
 
 function AnalysisReport({
-  plotPalette,
   report,
   schema,
   scrollRootRef,
 }: {
-  plotPalette: PlotPalette
   report: AnalysisComparisonReport
   schema: SchemaResponse
   scrollRootRef: RefObject<HTMLDivElement | null>
@@ -1576,7 +1564,6 @@ function AnalysisReport({
       />
       <AnalysisReportSections
         mountedSections={mountedSections}
-        plotPalette={plotPalette}
         report={report}
         schema={schema}
         setSectionRef={setSectionRef}
@@ -1587,13 +1574,11 @@ function AnalysisReport({
 
 const AnalysisReportSections = memo(function AnalysisReportSections({
   mountedSections,
-  plotPalette,
   report,
   schema,
   setSectionRef,
 }: {
   mountedSections: AnalysisMountedSections
-  plotPalette: PlotPalette
   report: AnalysisComparisonReport
   schema: SchemaResponse
   setSectionRef: (
@@ -1613,7 +1598,6 @@ const AnalysisReportSections = memo(function AnalysisReportSections({
         title="Overview"
       >
         <AnalysisOverview
-          plotPalette={plotPalette}
           report={report}
           schema={schema}
           sideLabels={sideLabels}
@@ -1628,7 +1612,6 @@ const AnalysisReportSections = memo(function AnalysisReportSections({
           title="Metrics"
         >
           <AnalysisMetrics
-            plotPalette={plotPalette}
             report={report}
             sideLabels={sideLabels}
           />
@@ -1736,12 +1719,10 @@ function AnalysisReportSection({
 }
 
 function AnalysisOverview({
-  plotPalette,
   report,
   schema,
   sideLabels,
 }: {
-  plotPalette: PlotPalette
   report: AnalysisComparisonReport
   schema: SchemaResponse
   sideLabels: AnalysisSideLabels
@@ -1771,11 +1752,12 @@ function AnalysisOverview({
       <div className="grid gap-4 xl:grid-cols-2">
         <TrainingHistoryChart
           report={report}
+          side="left"
           sideLabels={sideLabels}
         />
-        <OutcomeOverlapChart
-          plotPalette={plotPalette}
+        <TrainingHistoryChart
           report={report}
+          side="right"
           sideLabels={sideLabels}
         />
       </div>
@@ -1784,11 +1766,9 @@ function AnalysisOverview({
 }
 
 function AnalysisMetrics({
-  plotPalette,
   report,
   sideLabels,
 }: {
-  plotPalette: PlotPalette
   report: AnalysisComparisonReport
   sideLabels: AnalysisSideLabels
 }) {
@@ -1803,27 +1783,19 @@ function AnalysisMetrics({
         <ConfusionHeatmapChart
           dataset={report.left.dataset}
           matrix={report.metrics.left.confusion_matrix}
-          title={`${sideLabel("left", sideLabels)} Confusion`}
+          title={`${sideLabel("left", sideLabels)} confusion`}
         />
         <ConfusionHeatmapChart
           dataset={report.left.dataset}
           matrix={report.metrics.right.confusion_matrix}
-          title={`${sideLabel("right", sideLabels)} Confusion`}
+          title={`${sideLabel("right", sideLabels)} confusion`}
         />
         <ConfusionHeatmapChart
           deltaLabel={confusionDeltaLabel}
           dataset={report.left.dataset}
           matrix={report.confusion_difference}
-          title={`Confusion Delta (${confusionDeltaLabel})`}
+          title={`Confusion delta (${confusionDeltaLabel})`}
         />
-      </div>
-      <div className="grid gap-4 xl:grid-cols-2">
-        <CalibrationChart
-          plotPalette={plotPalette}
-          report={report}
-          sideLabels={sideLabels}
-        />
-        <PerClassMetricTable report={report} sideLabels={sideLabels} />
       </div>
     </div>
   )
@@ -1863,6 +1835,7 @@ function AnalysisEmbeddingsView({
         sideLabels={sideLabels}
         title={`t-SNE ${sideLabel("left", sideLabels)}`}
         totalPointCount={report.embeddings.tsne.left_total}
+        showTooltipTitle={false}
       />
       <EmbeddingChartPanel
         bodyClassName="h-[20rem] xl:h-auto xl:flex-1"
@@ -1876,6 +1849,7 @@ function AnalysisEmbeddingsView({
         sideLabels={sideLabels}
         title={`t-SNE ${sideLabel("right", sideLabels)}`}
         totalPointCount={report.embeddings.tsne.right_total}
+        showTooltipTitle={false}
       />
       <div className="xl:col-span-2">
         <EmbeddingChartPanel
@@ -1946,7 +1920,7 @@ function AnalysisRowsTable({
       {title ? <div className="mb-2 text-sm font-medium">{title}</div> : null}
       <Table>
         <TableHeader>
-          <TableRow>
+          <TableRow className="hover:bg-transparent">
             <TableHead />
             <TableHead>{sideLabel("left", sideLabels)}</TableHead>
             <TableHead>{sideLabel("right", sideLabels)}</TableHead>
@@ -1957,7 +1931,7 @@ function AnalysisRowsTable({
             const formattedValues = formatAnalysisTableRowValues(row)
 
             return (
-              <TableRow key={row.label}>
+              <TableRow className="hover:bg-transparent" key={row.label}>
                 <TableCell className="text-muted-foreground">
                   {row.label}
                 </TableCell>
@@ -2032,45 +2006,6 @@ function AnalysisOptimizerParameterCards({
           </div>
         )
       })}
-    </div>
-  )
-}
-
-function PerClassMetricTable({
-  report,
-  sideLabels,
-}: {
-  report: AnalysisComparisonReport
-  sideLabels: AnalysisSideLabels
-}) {
-  return (
-    <div className="rounded-lg border p-3">
-      <div className="mb-2 text-sm font-medium">Per-class F1</div>
-      <ScrollArea className="h-[24rem]">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Class</TableHead>
-              <TableHead>{sideLabel("left", sideLabels)}</TableHead>
-              <TableHead>{sideLabel("right", sideLabels)}</TableHead>
-              <TableHead>Support</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {report.metrics.left.per_class_f1.map((leftMetric, index) => {
-              const rightMetric = report.metrics.right.per_class_f1[index]
-              return (
-                <TableRow key={leftMetric.label}>
-                  <TableCell className="font-medium">{leftMetric.name}</TableCell>
-                  <TableCell>{formatCompactNumber(leftMetric.f1)}</TableCell>
-                  <TableCell>{formatCompactNumber(rightMetric?.f1 ?? 0)}</TableCell>
-                  <TableCell>{formatInteger(leftMetric.support)}</TableCell>
-                </TableRow>
-              )
-            })}
-          </TableBody>
-        </Table>
-      </ScrollArea>
     </div>
   )
 }
@@ -2194,6 +2129,11 @@ function TrainingTelemetryChart({
   stepAxisUpperBound: number
   tooltipConfig: ChartTooltipConfig
 }) {
+  const horizontalGridValues = useMemo(
+    () => numericGridValues(0, lossAxisUpperBound),
+    [lossAxisUpperBound]
+  )
+
   return (
     <ChartContainer className="h-full w-full aspect-auto" config={config}>
       <ComposedChart
@@ -2201,7 +2141,11 @@ function TrainingTelemetryChart({
         data={data}
         margin={{ bottom: 0, left: 8, right: 8, top: 12 }}
       >
-        <CartesianGrid vertical={false} />
+        <CartesianGrid
+          horizontalValues={horizontalGridValues}
+          vertical={false}
+          yAxisId="loss"
+        />
         <XAxis
           axisLine={false}
           dataKey="x"
@@ -2280,11 +2224,16 @@ function TrainingTelemetryChart({
 
 function TrainingHistoryChart({
   report,
+  side,
   sideLabels,
 }: {
   report: AnalysisComparisonReport
+  side: AnalysisSide
   sideLabels: AnalysisSideLabels
 }) {
+  const sideCurves = report.curves[side]
+  const lossDataKey = `${side}Loss`
+  const accuracyDataKey = `${side}Accuracy`
   const series = useMemo<
     (ChartSeries & {
       points: NumericSeriesPoint[]
@@ -2293,42 +2242,29 @@ function TrainingHistoryChart({
   >(
     () => [
       {
-        color: REPORT_LEFT_COLOR,
-        dataKey: "leftLoss",
-        label: `${sideShortLabel("left", sideLabels)} train loss`,
-        points: indexedNumberSeries(report.curves.left.training_loss),
+        color: side === "left" ? REPORT_LEFT_COLOR : REPORT_RIGHT_COLOR,
+        dataKey: lossDataKey,
+        label: "Loss",
+        points: indexedNumberSeries(sideCurves.training_loss),
         yAxisId: "loss",
       },
       {
-        color: REPORT_RIGHT_COLOR,
-        dataKey: "rightLoss",
-        label: `${sideShortLabel("right", sideLabels)} train loss`,
-        points: indexedNumberSeries(report.curves.right.training_loss),
-        yAxisId: "loss",
-      },
-      {
-        color: REPORT_LEFT_ACCENT_COLOR,
-        dashed: true,
-        dataKey: "leftAccuracy",
-        label: `${sideShortLabel("left", sideLabels)} val acc.`,
-        points: accuracyPointSeries(report.curves.left.validation_accuracy),
-        yAxisId: "accuracy",
-      },
-      {
-        color: REPORT_RIGHT_ACCENT_COLOR,
-        dashed: true,
-        dataKey: "rightAccuracy",
-        label: `${sideShortLabel("right", sideLabels)} val acc.`,
-        points: accuracyPointSeries(report.curves.right.validation_accuracy),
+        color:
+          side === "left"
+            ? REPORT_LEFT_ACCURACY_COLOR
+            : REPORT_RIGHT_ACCURACY_COLOR,
+        dataKey: accuracyDataKey,
+        label: "Accuracy",
+        points: accuracyPointSeries(sideCurves.validation_accuracy),
         yAxisId: "accuracy",
       },
     ],
     [
-      report.curves.left.training_loss,
-      report.curves.left.validation_accuracy,
-      report.curves.right.training_loss,
-      report.curves.right.validation_accuracy,
-      sideLabels,
+      accuracyDataKey,
+      lossDataKey,
+      side,
+      sideCurves.training_loss,
+      sideCurves.validation_accuracy,
     ]
   )
   const data = useMemo(
@@ -2342,41 +2278,49 @@ function TrainingHistoryChart({
     [series]
   )
   const config = useMemo(() => chartConfigFromSeries(series), [series])
+  const legendItems = useMemo<ChartLegendItem[]>(
+    () =>
+      series.map((item) => ({
+        color: item.color,
+        label: item.label,
+      })),
+    [series]
+  )
+  const lineSeries = useMemo(() => [...series].reverse(), [series])
   const tooltipConfig = useMemo(
     () =>
       chartTooltipConfigFromSeries(series, {
-        leftAccuracy: (value) => `${value.toFixed(2)}%`,
-        leftLoss: (value) => value.toFixed(4),
-        rightAccuracy: (value) => `${value.toFixed(2)}%`,
-        rightLoss: (value) => value.toFixed(4),
+        [accuracyDataKey]: (value) => `${value.toFixed(2)}%`,
+        [lossDataKey]: (value) => value.toFixed(4),
       }),
-    [series]
+    [accuracyDataKey, lossDataKey, series]
   )
   const maxStep = useMemo(
     () => maxSeriesX(series.flatMap((item) => item.points)),
     [series]
   )
   const lossUpperBound = useMemo(
-    () =>
-      numericAxisUpperBoundFor(
-        [
-          ...report.curves.left.training_loss,
-          ...report.curves.right.training_loss,
-        ],
-        null
-      ),
-    [report.curves.left.training_loss, report.curves.right.training_loss]
+    () => numericAxisUpperBoundFor(sideCurves.training_loss, null),
+    [sideCurves.training_loss]
+  )
+  const horizontalGridValues = useMemo(
+    () => numericGridValues(0, lossUpperBound),
+    [lossUpperBound]
   )
 
   return (
-    <ChartPanel title="Training History">
+    <ChartPanel title={`${sideLabel(side, sideLabels)} training history`}>
       <ChartContainer className="h-full w-full aspect-auto" config={config}>
         <ComposedChart
           accessibilityLayer
           data={data}
           margin={{ bottom: 0, left: 8, right: 8, top: 8 }}
         >
-          <CartesianGrid vertical={false} />
+          <CartesianGrid
+            horizontalValues={horizontalGridValues}
+            vertical={false}
+            yAxisId="loss"
+          />
           <XAxis
             axisLine={false}
             dataKey="x"
@@ -2398,12 +2342,10 @@ function TrainingHistoryChart({
             }
           />
           <ChartLegend
-            content={
-              <ChartLegendContent className="flex-wrap gap-x-5 gap-y-1" />
-            }
+            content={<TrainingHistoryLegend items={legendItems} />}
             verticalAlign="top"
           />
-          {series.map((item) => (
+          {lineSeries.map((item) => (
             <Line
               connectNulls
               dataKey={item.dataKey}
@@ -2412,7 +2354,6 @@ function TrainingHistoryChart({
               key={item.dataKey}
               name={item.label}
               stroke={`var(--color-${item.dataKey})`}
-              strokeDasharray={item.dashed ? "4 4" : undefined}
               strokeWidth={1.6}
               type="monotone"
               yAxisId={item.yAxisId}
@@ -2424,223 +2365,19 @@ function TrainingHistoryChart({
   )
 }
 
-function OutcomeOverlapChart({
-  plotPalette,
-  report,
-  sideLabels,
-}: {
-  plotPalette: PlotPalette
-  report: AnalysisComparisonReport
-  sideLabels: AnalysisSideLabels
-}) {
-  const data = useMemo(
-    () =>
-      report.overlap.upset.map((row) => ({
-        count: row.count,
-        label: overlapSetLabel(row.set, sideLabels),
-      })),
-    [report.overlap.upset, sideLabels]
-  )
-  const config = useMemo<ChartConfig>(
-    () => ({
-      count: { label: "Count", color: plotPalette.accuracy },
-    }),
-    [plotPalette.accuracy]
-  )
-  const tooltipConfig = useMemo<ChartTooltipConfig>(
-    () => ({
-      count: {
-        color: plotPalette.accuracy,
-        formatter: formatInteger,
-        label: "Count",
-      },
-    }),
-    [plotPalette.accuracy]
-  )
-
+function TrainingHistoryLegend({ items }: { items: ChartLegendItem[] }) {
   return (
-    <CategoryBarChart
-      config={config}
-      data={data}
-      dataKeys={["count"]}
-      title="Outcome Overlap"
-      tooltipConfig={tooltipConfig}
-    />
-  )
-}
-
-function CalibrationChart({
-  plotPalette,
-  report,
-  sideLabels,
-}: {
-  plotPalette: PlotPalette
-  report: AnalysisComparisonReport
-  sideLabels: AnalysisSideLabels
-}) {
-  const series = useMemo<ChartSeries[]>(
-    () => [
-      {
-        color: REPORT_LEFT_COLOR,
-        dataKey: "left",
-        label: sideLabel("left", sideLabels),
-      },
-      {
-        color: REPORT_RIGHT_COLOR,
-        dataKey: "right",
-        label: sideLabel("right", sideLabels),
-      },
-      {
-        color: plotPalette.mutationStep,
-        dashed: true,
-        dataKey: "ideal",
-        label: "Ideal",
-      },
-    ],
-    [plotPalette.mutationStep, sideLabels]
-  )
-  const data = useMemo(() => calibrationChartData(report), [report])
-  const config = useMemo(() => chartConfigFromSeries(series), [series])
-  const tooltipConfig = useMemo(
-    () =>
-      chartTooltipConfigFromSeries(series, {
-        ideal: formatCompactNumber,
-        left: formatCompactNumber,
-        right: formatCompactNumber,
-      }),
-    [series]
-  )
-
-  return (
-    <ChartPanel title="Calibration">
-      <ChartContainer className="h-full w-full aspect-auto" config={config}>
-        <ComposedChart
-          accessibilityLayer
-          data={data}
-          margin={{ bottom: 0, left: 8, right: 8, top: 8 }}
-        >
-          <CartesianGrid vertical={false} />
-          <XAxis
-            axisLine={false}
-            dataKey="x"
-            domain={[0, 1]}
-            ticks={[0, 0.25, 0.5, 0.75, 1]}
-            tickFormatter={formatCompactNumber}
-            tickLine={false}
-            tickMargin={8}
-            type="number"
+    <div className="flex flex-wrap items-center justify-center gap-x-5 gap-y-1 pb-3">
+      {items.map((item) => (
+        <div className="flex items-center gap-1.5" key={item.label}>
+          <div
+            className="h-2 w-2 shrink-0 rounded-[2px]"
+            style={{ backgroundColor: item.color }}
           />
-          <YAxis domain={[0, 1]} hide />
-          <ChartTooltip
-            content={
-              <FormattedChartTooltip
-                config={tooltipConfig}
-                labelFormatter={(value) =>
-                  `Confidence ${formatAxisCompact(value)}`
-                }
-              />
-            }
-          />
-          <ChartLegend
-            content={
-              <ChartLegendContent className="flex-wrap gap-x-5 gap-y-1" />
-            }
-            verticalAlign="top"
-          />
-          {series.map((item) => (
-            <Line
-              connectNulls
-              dataKey={item.dataKey}
-              dot={!item.dashed}
-              isAnimationActive={false}
-              key={item.dataKey}
-              name={item.label}
-              stroke={`var(--color-${item.dataKey})`}
-              strokeDasharray={item.dashed ? "4 4" : undefined}
-              strokeWidth={item.dashed ? 1.2 : 1.6}
-              type="monotone"
-            />
-          ))}
-        </ComposedChart>
-      </ChartContainer>
-    </ChartPanel>
-  )
-}
-
-function CategoryBarChart({
-  config,
-  data,
-  dataKeys,
-  tickFormatter = compactCategoryTick,
-  title,
-  tooltipConfig,
-  yUpperBound,
-}: {
-  config: ChartConfig
-  data: CategoryChartDatum[]
-  dataKeys: string[]
-  tickFormatter?: (value: string) => string
-  title: string
-  tooltipConfig: ChartTooltipConfig
-  yUpperBound?: number
-}) {
-  return (
-    <ChartPanel title={title}>
-      <ChartContainer className="h-full w-full aspect-auto" config={config}>
-        <BarChart
-          accessibilityLayer
-          data={data}
-          margin={{ bottom: 0, left: 8, right: 8, top: 8 }}
-        >
-          <CartesianGrid vertical={false} />
-          <XAxis
-            axisLine={false}
-            dataKey="label"
-            interval="preserveStartEnd"
-            minTickGap={16}
-            tickFormatter={(value) => tickFormatter(String(value))}
-            tickLine={false}
-            tickMargin={8}
-          />
-          <YAxis domain={[0, yUpperBound ?? "dataMax"]} hide />
-          <ChartTooltip
-            content={
-              <FormattedChartTooltip
-                config={tooltipConfig}
-                labelFormatter={(value) => String(value ?? "")}
-              />
-            }
-          />
-          {dataKeys.length > 1 ? (
-            <ChartLegend
-              content={
-                <ChartLegendContent className="flex-wrap gap-x-5 gap-y-1" />
-              }
-              verticalAlign="top"
-            />
-          ) : null}
-          {dataKeys.map((dataKey) => (
-            <Bar
-              dataKey={dataKey}
-              fill={`var(--color-${dataKey})`}
-              isAnimationActive={false}
-              key={dataKey}
-              name={config[dataKey]?.label?.toString() ?? dataKey}
-              radius={dataKeys.length === 1 ? [4, 4, 0, 0] : [3, 3, 0, 0]}
-            >
-              {dataKeys.length === 1
-                ? data.map((_, cellIndex) => (
-                    <Cell
-                      fill={`var(--color-${dataKey})`}
-                      key={`${dataKey}-${cellIndex}`}
-                    />
-                  ))
-                : null}
-            </Bar>
-          ))}
-        </BarChart>
-      </ChartContainer>
-    </ChartPanel>
+          {item.label}
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -2654,6 +2391,7 @@ function EmbeddingChartPanel({
   plotAspectRatio = 1,
   sampleLimit,
   sideLabels,
+  showTooltipTitle = true,
   title,
   totalPointCount,
   xDomain,
@@ -2668,6 +2406,7 @@ function EmbeddingChartPanel({
   plotAspectRatio?: number
   sampleLimit: number
   sideLabels: AnalysisSideLabels
+  showTooltipTitle?: boolean
   title: string
   totalPointCount?: number
   xDomain?: [number, number]
@@ -2687,7 +2426,7 @@ function EmbeddingChartPanel({
       sampledPoints.map((point) => ({
         ...point,
         className: classLabelFor(dataset, point.label),
-        correctText: point.correct ? "correct" : "incorrect",
+        correctText: point.correct ? "Correct" : "Incorrect",
         predictionName: classLabelFor(dataset, point.prediction),
         sideName: sideLabel(point.side, sideLabels),
       })),
@@ -2771,7 +2510,7 @@ function EmbeddingChartPanel({
   return (
     <ChartPanel
       bodyClassName={bodyClassName}
-      className={className}
+      className={cn("overflow-visible", className)}
       title={title}
     >
       <div
@@ -2788,10 +2527,13 @@ function EmbeddingChartPanel({
         <EmbeddingLegendOverlay items={legendItems} />
         {activeTooltipPoint ? (
           <div
-            className="pointer-events-none absolute top-0 left-0 z-20 will-change-transform"
+            className="pointer-events-none absolute top-0 left-0 z-50 will-change-transform"
             ref={setTooltipElement}
           >
-            <EmbeddingTooltipCard point={activeTooltipPoint} />
+            <EmbeddingTooltipCard
+              point={activeTooltipPoint}
+              showTitle={showTooltipTitle}
+            />
           </div>
         ) : null}
         <span className="pointer-events-none absolute bottom-0 left-0 text-[0.7rem] text-muted-foreground/60 tabular-nums">
@@ -2956,10 +2698,17 @@ function aspectMatchedEmbeddingDomains(
   }
 }
 
-function EmbeddingTooltipCard({ point }: { point: EmbeddingChartPoint }) {
+function EmbeddingTooltipCard({
+  point,
+  showTitle,
+}: {
+  point: EmbeddingChartPoint
+  showTitle: boolean
+}) {
+  const ResultIcon = point.correct ? Check : X
   return (
     <div className="grid min-w-40 items-start gap-1.5 rounded-lg border border-border/50 bg-background px-2.5 py-1.5 text-xs shadow-xl">
-      <div className="font-medium">{point.sideName}</div>
+      {showTitle ? <div className="font-medium">{point.sideName}</div> : null}
       <div className="grid gap-1">
         <div className="flex justify-between gap-4">
           <span className="text-muted-foreground">Class</span>
@@ -2971,7 +2720,17 @@ function EmbeddingTooltipCard({ point }: { point: EmbeddingChartPoint }) {
         </div>
         <div className="flex justify-between gap-4">
           <span className="text-muted-foreground">Result</span>
-          <span className="font-medium">{point.correctText}</span>
+          <span className="flex items-center gap-1.5 font-medium">
+            <ResultIcon
+              className={cn(
+                "size-3.5",
+                point.correct
+                  ? "text-green-600 dark:text-green-400"
+                  : "text-red-600 dark:text-red-400"
+              )}
+            />
+            {point.correctText}
+          </span>
         </div>
       </div>
     </div>
@@ -3609,7 +3368,7 @@ function CheckpointPicker({
             </DialogDescription>
           </DialogHeader>
 
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+          <div className="flex w-full flex-wrap items-center justify-start gap-x-3 gap-y-2">
             <div className="flex min-w-0 items-center gap-1.5">
               <ArrowUpDown
                 aria-hidden="true"
@@ -3623,7 +3382,7 @@ function CheckpointPicker({
               >
                 <SelectTrigger
                   aria-label="Sort checkpoints by"
-                  className="h-8 w-32"
+                  className="h-8 w-36"
                 >
                   <SelectValue />
                 </SelectTrigger>
@@ -3661,7 +3420,7 @@ function CheckpointPicker({
                 </TooltipContent>
               </Tooltip>
             </div>
-            <div className="flex min-w-0 items-center gap-1.5">
+            <div className="flex min-w-0 flex-wrap items-center gap-1.5">
               <Funnel
                 aria-hidden="true"
                 className="size-4 text-muted-foreground"
@@ -3674,7 +3433,7 @@ function CheckpointPicker({
               >
                 <SelectTrigger
                   aria-label="Filter checkpoints by optimizer"
-                  className="h-8 w-32"
+                  className="h-8 w-36"
                 >
                   <SelectValue />
                 </SelectTrigger>
@@ -3699,7 +3458,7 @@ function CheckpointPicker({
               >
                 <SelectTrigger
                   aria-label="Filter checkpoints by dataset"
-                  className="h-8 w-32"
+                  className="h-8 w-36"
                 >
                   <SelectValue />
                 </SelectTrigger>
@@ -3726,115 +3485,117 @@ function CheckpointPicker({
           ) : null}
 
           <ScrollArea className="h-[min(60vh,32rem)] pr-3">
-            {isLoading ? <CheckpointListSkeleton /> : null}
-            {!isLoading && !error && !hasCheckpoints ? (
-              <CheckpointEmpty
-                title="No checkpoints"
-                description="Completed latest checkpoints will appear here."
-              />
-            ) : null}
-            {!isLoading &&
-            !error &&
-            hasCheckpoints &&
-            !hasVisibleCheckpoints ? (
-              <CheckpointEmpty
-                title="No matching checkpoints"
-                description="Change the optimizer or dataset filter."
-              />
-            ) : null}
-            {!isLoading && !error && hasVisibleCheckpoints ? (
-              <div className="grid gap-2">
-                {visibleCheckpoints.map((checkpoint) => {
-                  const selected = sameCheckpoint(checkpoint, pendingSelection)
-                  const optimizerParams = optimizerParamEntries(
-                    checkpoint,
-                    schema
-                  )
-                  const deleteBlocked = checkpoint.run_id === pausedRunId
-                  const isDeleting = deletingRunId === checkpoint.run_id
+            <div className="flex min-h-full flex-col">
+              {isLoading ? <CheckpointListSkeleton /> : null}
+              {!isLoading && !error && !hasCheckpoints ? (
+                <CheckpointEmpty
+                  title="No checkpoints"
+                  description="Completed latest checkpoints will appear here."
+                />
+              ) : null}
+              {!isLoading &&
+              !error &&
+              hasCheckpoints &&
+              !hasVisibleCheckpoints ? (
+                <CheckpointEmpty
+                  title="No matching checkpoints"
+                  description="Change the optimizer or dataset filter."
+                />
+              ) : null}
+              {!isLoading && !error && hasVisibleCheckpoints ? (
+                <div className="grid gap-2">
+                  {visibleCheckpoints.map((checkpoint) => {
+                    const selected = sameCheckpoint(checkpoint, pendingSelection)
+                    const optimizerParams = optimizerParamEntries(
+                      checkpoint,
+                      schema
+                    )
+                    const deleteBlocked = checkpoint.run_id === pausedRunId
+                    const isDeleting = deletingRunId === checkpoint.run_id
 
-                  return (
-                    <div
-                      aria-label={`Select checkpoint for ${checkpoint.optimizer} ${checkpoint.dataset}, seed ${checkpoint.seed}, step ${checkpoint.step}`}
-                      aria-pressed={selected}
-                      className={cn(
-                        "cursor-pointer rounded-lg border p-4 text-left transition-colors hover:bg-muted/60 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
-                        selected
-                          ? "border-primary bg-primary/5"
-                          : "border-border bg-background"
-                      )}
-                      key={`${checkpoint.run_id}-${checkpoint.kind}`}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => togglePendingSelection(checkpoint)}
-                      onKeyDown={(event) =>
-                        handleCheckpointRowKeyDown(event, checkpoint)
-                      }
-                    >
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="min-w-0">
-                          <div className="flex min-w-0 items-center gap-2">
-                            <span className="truncate font-medium">
-                              {checkpoint.optimizer} ·{" "}
-                              {formatDatasetName(checkpoint.dataset)}
-                            </span>
+                    return (
+                      <div
+                        aria-label={`Select checkpoint for ${checkpoint.optimizer} ${checkpoint.dataset}, seed ${checkpoint.seed}, step ${checkpoint.step}`}
+                        aria-pressed={selected}
+                        className={cn(
+                          "cursor-pointer rounded-lg border p-4 text-left transition-colors hover:bg-muted/60 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none",
+                          selected
+                            ? "border-primary bg-primary/5"
+                            : "border-border bg-background"
+                        )}
+                        key={`${checkpoint.run_id}-${checkpoint.kind}`}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => togglePendingSelection(checkpoint)}
+                        onKeyDown={(event) =>
+                          handleCheckpointRowKeyDown(event, checkpoint)
+                        }
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div className="min-w-0">
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span className="truncate font-medium">
+                                {checkpoint.optimizer} ·{" "}
+                                {formatDatasetName(checkpoint.dataset)}
+                              </span>
+                            </div>
+                            <p className="text-xs text-muted-foreground/80">
+                              Seed {checkpoint.seed} · Batch size{" "}
+                              {formatInteger(checkpoint.config.batch_size)}
+                            </p>
                           </div>
-                          <p className="text-xs text-muted-foreground/80">
-                            Seed {checkpoint.seed} · Batch size{" "}
-                            {formatInteger(checkpoint.config.batch_size)}
-                          </p>
+                          <div className="flex shrink-0 items-center gap-1">
+                            <span className="text-sm text-muted-foreground/80">
+                              {formatCheckpointDate(checkpoint.saved_at)}
+                            </span>
+                            <CheckpointDeleteButton
+                              blocked={deleteBlocked}
+                              deleting={isDeleting}
+                              onDelete={() => requestDeleteCheckpoint(checkpoint)}
+                            />
+                          </div>
                         </div>
-                        <div className="flex shrink-0 items-center gap-1">
-                          <span className="text-sm text-muted-foreground/80">
-                            {formatCheckpointDate(checkpoint.saved_at)}
-                          </span>
-                          <CheckpointDeleteButton
-                            blocked={deleteBlocked}
-                            deleting={isDeleting}
-                            onDelete={() => requestDeleteCheckpoint(checkpoint)}
+
+                        <div className="mt-4 flex flex-wrap items-start gap-x-12 gap-y-3">
+                          <CheckpointMetric
+                            label="Accuracy"
+                            value={formatOptionalPercent(checkpoint.accuracy)}
+                          />
+                          <CheckpointMetric
+                            label="Step"
+                            value={formatInteger(checkpoint.step)}
+                          />
+                          <CheckpointMetric
+                            label="Elapsed"
+                            value={formatOptionalDuration(
+                              checkpoint.total_elapsed_seconds
+                            )}
                           />
                         </div>
-                      </div>
 
-                      <div className="mt-4 flex flex-wrap items-start gap-x-12 gap-y-3">
-                        <CheckpointMetric
-                          label="Accuracy"
-                          value={formatOptionalPercent(checkpoint.accuracy)}
-                        />
-                        <CheckpointMetric
-                          label="Step"
-                          value={formatInteger(checkpoint.step)}
-                        />
-                        <CheckpointMetric
-                          label="Elapsed"
-                          value={formatOptionalDuration(
-                            checkpoint.total_elapsed_seconds
-                          )}
-                        />
+                        {optimizerParams.length > 0 ? (
+                          <div className="mt-5 flex flex-wrap gap-x-7 gap-y-2 text-sm">
+                            {optimizerParams.map(([key, label, value]) => (
+                              <span
+                                className="inline-flex min-w-0 items-baseline gap-1.5"
+                                key={key}
+                              >
+                                <span className="shrink-0 text-muted-foreground">
+                                  <MathLabel math={label} />
+                                </span>
+                                <span className="truncate text-foreground/90">
+                                  {formatParamValue(value)}
+                                </span>
+                              </span>
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
-
-                      {optimizerParams.length > 0 ? (
-                        <div className="mt-5 flex flex-wrap gap-x-7 gap-y-2 text-sm">
-                          {optimizerParams.map(([key, label, value]) => (
-                            <span
-                              className="inline-flex min-w-0 items-baseline gap-1.5"
-                              key={key}
-                            >
-                              <span className="shrink-0 text-muted-foreground">
-                                <MathLabel math={label} />
-                              </span>
-                              <span className="truncate text-foreground/90">
-                                {formatParamValue(value)}
-                              </span>
-                            </span>
-                          ))}
-                        </div>
-                      ) : null}
-                    </div>
-                  )
-                })}
-              </div>
-            ) : null}
+                    )
+                  })}
+                </div>
+              ) : null}
+            </div>
           </ScrollArea>
 
           <DialogFooter>
@@ -3918,7 +3679,7 @@ function CheckpointEmpty({
   description: string
 }) {
   return (
-    <Empty className="min-h-64 border">
+    <Empty className="min-h-full flex-1 border">
       <EmptyHeader>
         <EmptyMedia variant="icon">
           <FolderOpen className="size-4" />
@@ -4944,31 +4705,6 @@ function heatmapCellLabel(value: number, isDelta: boolean): string {
   return String(integer)
 }
 
-function calibrationChartData(report: AnalysisComparisonReport): NumericChartDatum[] {
-  const rows = new Map<number, NumericChartDatum>()
-  const setValue = (x: number, dataKey: string, value: number) => {
-    if (!Number.isFinite(x) || !Number.isFinite(value)) {
-      return
-    }
-    const row = rows.get(x) ?? { x }
-    row[dataKey] = value
-    rows.set(x, row)
-  }
-
-  for (const bin of report.metrics.left.calibration.bins) {
-    setValue(bin.confidence, "left", bin.accuracy)
-  }
-  for (const bin of report.metrics.right.calibration.bins) {
-    setValue(bin.confidence, "right", bin.accuracy)
-  }
-  rows.set(0, { ...(rows.get(0) ?? { x: 0 }), ideal: 0 })
-  rows.set(1, { ...(rows.get(1) ?? { x: 1 }), ideal: 1 })
-
-  return [...rows.values()]
-    .map((row) => ({ ...row, ideal: row.x }))
-    .sort((left, right) => left.x - right.x)
-}
-
 type AnalysisEmbeddingPlotPoint =
   AnalysisEmbeddingProjection["left"][number] & {
     side: AnalysisSide
@@ -5196,21 +4932,6 @@ function tooltipValueNumber(value: TooltipValueType | undefined): number | null 
 function formatAxisInteger(value: unknown): string {
   const numericValue = typeof value === "number" ? value : Number(value)
   return Number.isFinite(numericValue) ? formatInteger(numericValue) : String(value)
-}
-
-function formatAxisCompact(value: unknown): string {
-  const numericValue = typeof value === "number" ? value : Number(value)
-  return Number.isFinite(numericValue)
-    ? formatCompactNumber(numericValue)
-    : String(value)
-}
-
-function compactCategoryTick(value: string): string {
-  if (value.length <= 14) {
-    return value
-  }
-
-  return `${value.slice(0, 12)}...`
 }
 
 function isEmbeddingChartPoint(value: unknown): value is EmbeddingChartPoint {
@@ -5731,6 +5452,27 @@ function numericAxisUpperBoundFor(
   }
 
   return niceAxisUpperBound(maxValue)
+}
+
+function numericGridValues(
+  lowerBound: number,
+  upperBound: number,
+  segmentCount = 5
+): number[] {
+  if (
+    !Number.isFinite(lowerBound) ||
+    !Number.isFinite(upperBound) ||
+    upperBound <= lowerBound ||
+    segmentCount <= 0
+  ) {
+    return []
+  }
+
+  const step = (upperBound - lowerBound) / segmentCount
+  return Array.from(
+    { length: segmentCount + 1 },
+    (_, index) => lowerBound + step * index
+  )
 }
 
 function maxFiniteAxisValue(
