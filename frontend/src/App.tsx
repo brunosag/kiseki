@@ -1792,10 +1792,15 @@ function AnalysisMetrics({
           title={`${sideLabel("right", sideLabels)} confusion`}
         />
         <ConfusionHeatmapChart
+          ariaLabel={`Confusion delta (${confusionDeltaLabel})`}
           deltaLabel={confusionDeltaLabel}
           dataset={report.left.dataset}
           matrix={report.confusion_difference}
-          title={`Confusion delta (${confusionDeltaLabel})`}
+          title={
+            <>
+              Confusion <MathLabel math={"\\Delta"} /> ({confusionDeltaLabel})
+            </>
+          }
         />
       </div>
     </div>
@@ -2092,7 +2097,7 @@ function ChartPanel({
   className?: string
   description?: string
   footer?: ReactNode
-  title: string
+  title: ReactNode
 }) {
   return (
     <Card
@@ -2919,17 +2924,19 @@ function EmbeddingCircleShape(props: ScatterShapeProps & { fill?: string }) {
 }
 
 function ConfusionHeatmapChart({
+  ariaLabel,
   className,
   dataset,
   deltaLabel,
   matrix,
   title,
 }: {
+  ariaLabel?: string
   className?: string
   dataset: CheckpointSummary["dataset"]
   deltaLabel?: string
   matrix: number[][]
-  title: string
+  title: ReactNode
 }) {
   const data = useMemo(
     () => confusionHeatmapData(matrix, dataset, Boolean(deltaLabel)),
@@ -2944,6 +2951,8 @@ function ConfusionHeatmapChart({
     ...matrix.map((row) => row.length)
   )
   const isDelta = Boolean(deltaLabel)
+  const heatmapLabel =
+    ariaLabel ?? (typeof title === "string" ? title : "Confusion heatmap")
 
   const updateTooltip = useCallback(
     (event: PointerEvent<HTMLDivElement>, cell: ConfusionHeatmapDatum) => {
@@ -2964,7 +2973,7 @@ function ConfusionHeatmapChart({
     >
       <div className="relative h-full w-full">
         <div
-          aria-label={title}
+          aria-label={heatmapLabel}
           className="grid h-full w-full overflow-hidden rounded-sm"
           role="img"
           style={{
@@ -3080,7 +3089,8 @@ function LrpSampleCard({
           {overlapSetLabel(sample.group, sideLabels)}
         </span>
       </span>
-      <span className="grid grid-cols-2 gap-2">
+      <span className="grid grid-cols-3 gap-2">
+        <LrpOriginalImagePanel image={sample.image} label="Original" />
         <LrpCanvasPanel
           image={sample.image}
           label={sideLabel("left", sideLabels)}
@@ -3170,6 +3180,11 @@ function LrpSampleDialog({
 
       <div className="px-8 sm:px-10">
         <div className="grid gap-3 md:grid-cols-3">
+          <LrpOriginalImagePanel
+            image={sample.image}
+            label="Original"
+            size="dialog"
+          />
           <LrpCanvasPanel
             image={sample.image}
             label={sideLabel("left", sideLabels)}
@@ -3184,15 +3199,42 @@ function LrpSampleDialog({
             relevance={sample.right_relevance}
             size="dialog"
           />
-          <LrpCanvasPanel
-            image={sample.image}
-            label="Delta"
-            relevance={sample.difference_relevance}
-            size="dialog"
-          />
         </div>
       </div>
     </DialogContent>
+  )
+}
+
+function LrpOriginalImagePanel({
+  image,
+  label,
+  size = "card",
+}: {
+  image: number[][][]
+  label: string
+  size?: "card" | "dialog"
+}) {
+  const isDialog = size === "dialog"
+
+  return (
+    <span className="block min-w-0">
+      <span
+        className={cn(
+          "block aspect-square overflow-hidden rounded-md border bg-muted",
+          isDialog && "rounded-lg"
+        )}
+      >
+        <OriginalImageCanvas image={image} />
+      </span>
+      <span
+        className={cn(
+          "mt-1 block truncate text-center text-xs text-muted-foreground",
+          isDialog && "mt-2 text-sm font-medium text-foreground"
+        )}
+      >
+        {label}
+      </span>
+    </span>
   )
 }
 
@@ -3317,6 +3359,30 @@ function RelevanceCanvas({
   )
 }
 
+function OriginalImageCanvas({ image }: { image: number[][][] }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null)
+
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas) {
+      return
+    }
+
+    drawImage(canvas, image)
+  }, [image])
+
+  return (
+    <canvas
+      className="block h-full w-full"
+      ref={canvasRef}
+      style={{ imageRendering: "pixelated" }}
+    />
+  )
+}
+
+const LRP_MAP_IMAGE_OPACITY = 0.08
+const LRP_MAP_OVERLAY_ALPHA = 0.86
+
 function drawRelevance(
   canvas: HTMLCanvasElement,
   relevance: number[][],
@@ -3342,18 +3408,67 @@ function drawRelevance(
       const base = image?.[y]?.[x] ?? [0.5, 0.5, 0.5]
       const value = clamp(relevance[y]?.[x] ?? 0, -1, 1)
       const overlay = value >= 0 ? [220, 38, 38] : [37, 99, 235]
-      const alpha = Math.abs(value) * 0.7
-      imageData.data[offset] = blendChannel(base[0] ?? 0, overlay[0], alpha)
-      imageData.data[offset + 1] = blendChannel(base[1] ?? 0, overlay[1], alpha)
-      imageData.data[offset + 2] = blendChannel(base[2] ?? 0, overlay[2], alpha)
+      const alpha = Math.abs(value) * LRP_MAP_OVERLAY_ALPHA
+      imageData.data[offset] = blendRelevanceChannel(
+        base[0] ?? 0,
+        overlay[0],
+        alpha
+      )
+      imageData.data[offset + 1] = blendRelevanceChannel(
+        base[1] ?? base[0] ?? 0,
+        overlay[1],
+        alpha
+      )
+      imageData.data[offset + 2] = blendRelevanceChannel(
+        base[2] ?? base[0] ?? 0,
+        overlay[2],
+        alpha
+      )
       imageData.data[offset + 3] = 255
     }
   }
   context.putImageData(imageData, 0, 0)
 }
 
-function blendChannel(base: number, overlay: number, alpha: number): number {
-  return Math.round(clamp(base, 0, 1) * 255 * (1 - alpha) + overlay * alpha)
+function drawImage(canvas: HTMLCanvasElement, image: number[][][]) {
+  const height = image.length
+  const width = image[0]?.length ?? 0
+  if (height === 0 || width === 0) {
+    return
+  }
+
+  canvas.width = width
+  canvas.height = height
+  const context = canvas.getContext("2d")
+  if (!context) {
+    return
+  }
+  context.imageSmoothingEnabled = false
+  const imageData = context.createImageData(width, height)
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4
+      const pixel = image[y]?.[x] ?? [0, 0, 0]
+      imageData.data[offset] = imageChannel(pixel[0] ?? 0)
+      imageData.data[offset + 1] = imageChannel(pixel[1] ?? pixel[0] ?? 0)
+      imageData.data[offset + 2] = imageChannel(pixel[2] ?? pixel[0] ?? 0)
+      imageData.data[offset + 3] = 255
+    }
+  }
+  context.putImageData(imageData, 0, 0)
+}
+
+function imageChannel(value: number): number {
+  return Math.round(clamp(value, 0, 1) * 255)
+}
+
+function blendRelevanceChannel(
+  base: number,
+  overlay: number,
+  alpha: number
+): number {
+  const dimmedBase = imageChannel(base) * LRP_MAP_IMAGE_OPACITY
+  return Math.round(dimmedBase * (1 - alpha) + overlay * alpha)
 }
 
 type CheckpointPickerProps = {
