@@ -1291,6 +1291,7 @@ function AnalysisTab({
             key={job?.job_id ?? report.generated_at}
             plotPalette={plotPalette}
             report={report}
+            schema={schema}
             scrollRootRef={scrollRootRef}
           />
         </ScrollArea>
@@ -1453,10 +1454,12 @@ const INITIAL_ANALYSIS_MOUNTED_SECTIONS: AnalysisMountedSections = {
 function AnalysisReport({
   plotPalette,
   report,
+  schema,
   scrollRootRef,
 }: {
   plotPalette: PlotPalette
   report: AnalysisComparisonReport
+  schema: SchemaResponse
   scrollRootRef: RefObject<HTMLDivElement | null>
 }) {
   const [activeSection, setActiveSection] =
@@ -1575,6 +1578,7 @@ function AnalysisReport({
         mountedSections={mountedSections}
         plotPalette={plotPalette}
         report={report}
+        schema={schema}
         setSectionRef={setSectionRef}
       />
     </div>
@@ -1585,11 +1589,13 @@ const AnalysisReportSections = memo(function AnalysisReportSections({
   mountedSections,
   plotPalette,
   report,
+  schema,
   setSectionRef,
 }: {
   mountedSections: AnalysisMountedSections
   plotPalette: PlotPalette
   report: AnalysisComparisonReport
+  schema: SchemaResponse
   setSectionRef: (
     sectionId: AnalysisReportSectionId,
     element: HTMLElement | null
@@ -1609,6 +1615,7 @@ const AnalysisReportSections = memo(function AnalysisReportSections({
         <AnalysisOverview
           plotPalette={plotPalette}
           report={report}
+          schema={schema}
           sideLabels={sideLabels}
         />
       </AnalysisReportSection>
@@ -1731,34 +1738,34 @@ function AnalysisReportSection({
 function AnalysisOverview({
   plotPalette,
   report,
+  schema,
   sideLabels,
 }: {
   plotPalette: PlotPalette
   report: AnalysisComparisonReport
+  schema: SchemaResponse
   sideLabels: AnalysisSideLabels
 }) {
-  const runtimeRows = useMemo(
-    () => report.runtime.rows.filter((row) => row.label !== "Steps"),
-    [report.runtime.rows]
-  )
-  const checkpointRows = useMemo(() => analysisCheckpointRows(report), [report])
   const rowHeaderLabel =
     report.left.optimizer === report.right.optimizer ? "Model" : "Optimizer"
+  const overviewRows = useMemo(
+    () => analysisOverviewRows(report, rowHeaderLabel),
+    [report, rowHeaderLabel]
+  )
 
   return (
     <div className="grid gap-4">
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div className="flex flex-col items-stretch gap-4 xl:flex-row">
         <AnalysisRowsTable
-          rowHeaderLabel={rowHeaderLabel}
-          rows={checkpointRows}
+          className="min-w-0 flex-1"
+          rows={overviewRows}
           sideLabels={sideLabels}
-          title="Checkpoints"
         />
-        <AnalysisRowsTable
-          rowHeaderLabel={rowHeaderLabel}
-          rows={runtimeRows}
+        <AnalysisOptimizerParameterCards
+          className="xl:shrink-0 xl:self-stretch"
+          report={report}
+          schema={schema}
           sideLabels={sideLabels}
-          title="Runtime"
         />
       </div>
       <div className="grid gap-4 xl:grid-cols-2">
@@ -1924,37 +1931,107 @@ function AnalysisLrpView({
 }
 
 function AnalysisRowsTable({
-  rowHeaderLabel,
+  className,
   rows,
   sideLabels,
   title,
 }: {
-  rowHeaderLabel: string
+  className?: string
   rows: AnalysisTableRow[]
   sideLabels: AnalysisSideLabels
-  title: string
+  title?: string
 }) {
   return (
-    <div className="rounded-lg border p-3">
-      <div className="mb-2 text-sm font-medium">{title}</div>
+    <div className={cn("rounded-lg border p-3", className)}>
+      {title ? <div className="mb-2 text-sm font-medium">{title}</div> : null}
       <Table>
         <TableHeader>
           <TableRow>
-            <TableHead>{rowHeaderLabel}</TableHead>
+            <TableHead />
             <TableHead>{sideLabel("left", sideLabels)}</TableHead>
             <TableHead>{sideLabel("right", sideLabels)}</TableHead>
           </TableRow>
         </TableHeader>
         <TableBody>
-          {rows.map((row) => (
-            <TableRow key={row.label}>
-              <TableCell className="font-medium">{row.label}</TableCell>
-              <TableCell>{formatAnalysisTableValue(row.label, row.left)}</TableCell>
-              <TableCell>{formatAnalysisTableValue(row.label, row.right)}</TableCell>
-            </TableRow>
-          ))}
+          {rows.map((row) => {
+            const formattedValues = formatAnalysisTableRowValues(row)
+
+            return (
+              <TableRow key={row.label}>
+                <TableCell className="text-muted-foreground">
+                  {row.label}
+                </TableCell>
+                <TableCell>{formattedValues.left}</TableCell>
+                <TableCell>{formattedValues.right}</TableCell>
+              </TableRow>
+            )
+          })}
         </TableBody>
       </Table>
+    </div>
+  )
+}
+
+function AnalysisOptimizerParameterCards({
+  className,
+  report,
+  schema,
+  sideLabels,
+}: {
+  className?: string
+  report: AnalysisComparisonReport
+  schema: SchemaResponse
+  sideLabels: AnalysisSideLabels
+}) {
+  return (
+    <div
+      className={cn(
+        "flex w-fit max-w-full flex-wrap items-stretch justify-start gap-4",
+        className
+      )}
+    >
+      {ANALYSIS_SIDES.map((side) => {
+        const checkpoint = report[side]
+        const entries = optimizerParamEntries(checkpoint, schema)
+
+        return (
+          <div
+            className="flex w-fit max-w-full flex-col rounded-lg border py-4 pr-12 pl-4"
+            key={side}
+          >
+            <div className="text-sm font-medium">
+              {sideLabel(side, sideLabels)} parameters
+            </div>
+            {entries.length > 0 ? (
+              <div className="mt-4 grid w-fit max-w-full grid-cols-[max-content_max-content_max-content] items-baseline gap-x-3 gap-y-2">
+                {entries.map(([key, label, value]) => {
+                  const field = schema.optimizers_schema[
+                    checkpoint.optimizer
+                  ]?.find((param) => param.key === key)
+
+                  return (
+                    <div className="contents" key={key}>
+                      <span className="text-base text-muted-foreground/90">
+                        <MathLabel math={label} />
+                      </span>
+                      <span className="text-sm tabular-nums">
+                        {formatParamValue(value)}
+                      </span>
+                      <span className="min-w-0 text-sm text-muted-foreground/70">
+                        {field?.desc ?? key}
+                      </span>
+                    </div>
+                  )
+                })}
+              </div>
+            ) : (
+              <div className="mt-4 text-sm text-muted-foreground">
+                No optimizer parameters.
+              </div>
+            )}
+          </div>
+        )
+      })}
     </div>
   )
 }
@@ -4063,9 +4140,33 @@ function analysisSideLabels(report: AnalysisComparisonReport): AnalysisSideLabel
   return checkpointSideLabels(report.left, report.right)
 }
 
-function analysisCheckpointRows(report: AnalysisComparisonReport): AnalysisTableRow[] {
-  const rows = [...report.metadata]
-  const existingLabels = new Set(rows.map((row) => row.label))
+const OVERVIEW_RUNTIME_LABELS = new Set([
+  "Elapsed time",
+  "Device",
+  "Peak memory",
+])
+
+function analysisOverviewRows(
+  report: AnalysisComparisonReport,
+  rowHeaderLabel: string
+): AnalysisTableRow[] {
+  let rows = report.metadata.map(normalizeAnalysisTableRow)
+  if (rowHeaderLabel === "Optimizer") {
+    rows = rows.filter((row) => row.label !== "Optimizer")
+  }
+
+  rows = insertMissingAnalysisRows(
+    rows,
+    [
+      {
+        label: "Batch size",
+        left: formatInteger(report.left.config.batch_size),
+        right: formatInteger(report.right.config.batch_size),
+      },
+    ],
+    "Seed"
+  )
+
   const accuracyRows = [
     {
       label: "Validation accuracy",
@@ -4077,19 +4178,92 @@ function analysisCheckpointRows(report: AnalysisComparisonReport): AnalysisTable
       left: formatOptionalPercent(report.metrics.left.accuracy),
       right: formatOptionalPercent(report.metrics.right.accuracy),
     },
-  ].filter((row) => !existingLabels.has(row.label))
+  ]
+  rows = insertMissingAnalysisRows(rows, accuracyRows, "Steps")
 
-  if (accuracyRows.length === 0) {
+  const runtimeRows = report.runtime.rows
+    .map(normalizeAnalysisTableRow)
+    .filter((row) => OVERVIEW_RUNTIME_LABELS.has(row.label))
+  rows = insertMissingAnalysisRows(rows, runtimeRows, "Steps")
+
+  return orderAnalysisOverviewRows(rows)
+}
+
+function normalizeAnalysisTableRow(row: AnalysisTableRow): AnalysisTableRow {
+  return {
+    ...row,
+    label: normalizeAnalysisRowLabel(row.label),
+  }
+}
+
+function normalizeAnalysisRowLabel(label: string): string {
+  switch (label) {
+    case "Step":
+      return "Steps"
+    case "Saved":
+      return "Saved at"
+    case "Elapsed":
+      return "Elapsed time"
+    case "Peak Memory":
+      return "Peak memory"
+    default:
+      return label
+  }
+}
+
+function insertMissingAnalysisRows(
+  rows: AnalysisTableRow[],
+  newRows: AnalysisTableRow[],
+  afterLabel: string
+): AnalysisTableRow[] {
+  const existingLabels = new Set(rows.map((row) => row.label))
+  const missingRows = newRows.filter((row) => !existingLabels.has(row.label))
+
+  if (missingRows.length === 0) {
     return rows
   }
 
-  const stepIndex = rows.findIndex((row) => row.label === "Step")
-  if (stepIndex === -1) {
-    return [...rows, ...accuracyRows]
+  const insertIndex = rows.findIndex((row) => row.label === afterLabel)
+  if (insertIndex === -1) {
+    return [...rows, ...missingRows]
   }
 
-  rows.splice(stepIndex + 1, 0, ...accuracyRows)
-  return rows
+  const nextRows = [...rows]
+  nextRows.splice(insertIndex + 1, 0, ...missingRows)
+  return nextRows
+}
+
+const ANALYSIS_OVERVIEW_ROW_ORDER = [
+  "Dataset",
+  "Optimizer",
+  "Seed",
+  "Batch size",
+  "Steps",
+  "Elapsed time",
+  "Validation accuracy",
+  "Test accuracy",
+  "Device",
+  "Peak memory",
+  "Saved at",
+]
+
+const ANALYSIS_OVERVIEW_ROW_RANK = new Map(
+  ANALYSIS_OVERVIEW_ROW_ORDER.map((label, index) => [label, index])
+)
+
+function orderAnalysisOverviewRows(rows: AnalysisTableRow[]): AnalysisTableRow[] {
+  const savedAtRank = ANALYSIS_OVERVIEW_ROW_RANK.get("Saved at") ?? 10_000
+
+  return [...rows].sort((left, right) => {
+    const leftRank =
+      ANALYSIS_OVERVIEW_ROW_RANK.get(left.label) ??
+      (left.label === "Saved at" ? savedAtRank : savedAtRank - 1)
+    const rightRank =
+      ANALYSIS_OVERVIEW_ROW_RANK.get(right.label) ??
+      (right.label === "Saved at" ? savedAtRank : savedAtRank - 1)
+
+    return leftRank - rightRank
+  })
 }
 
 function checkpointSideLabels(
@@ -4099,14 +4273,14 @@ function checkpointSideLabels(
   if (left.optimizer !== right.optimizer) {
     return { left: left.optimizer, right: right.optimizer }
   }
-  return { left: "Model A", right: "Model B" }
+  return { left: `${left.optimizer} 1`, right: `${right.optimizer} 2` }
 }
 
 function sideLabel(
   side: AnalysisSide,
   sideLabels?: AnalysisSideLabels
 ): string {
-  return sideLabels?.[side] ?? (side === "left" ? "Model A" : "Model B")
+  return sideLabels?.[side] ?? (side === "left" ? "Model 1" : "Model 2")
 }
 
 function sideShortLabel(
@@ -4114,11 +4288,11 @@ function sideShortLabel(
   sideLabels?: AnalysisSideLabels
 ): string {
   const label = sideLabel(side, sideLabels)
-  if (label === "Model A") {
-    return "A"
+  if (label === "Model 1") {
+    return "1"
   }
-  if (label === "Model B") {
-    return "B"
+  if (label === "Model 2") {
+    return "2"
   }
   return label
 }
@@ -5221,21 +5395,104 @@ function mergeOptimizerParams(
   )
 }
 
-function formatAnalysisTableValue(label: string, value: string): string {
+function formatAnalysisTableRowValues(row: AnalysisTableRow): {
+  left: string
+  right: string
+} {
+  const normalizedLabel = normalizeAnalysisRowLabel(row.label)
+  const includeYear =
+    normalizedLabel === "Saved at"
+      ? shouldIncludeAnalysisSavedAtYear(row.left, row.right)
+      : undefined
+
+  return {
+    left: formatAnalysisTableValue(row.label, row.left, { includeYear }),
+    right: formatAnalysisTableValue(row.label, row.right, { includeYear }),
+  }
+}
+
+function formatAnalysisTableValue(
+  label: string,
+  value: string,
+  options: { includeYear?: boolean } = {}
+): string {
+  const normalizedLabel = normalizeAnalysisRowLabel(label)
+
   if (isMissingText(value)) {
     return MISSING_VALUE_LABEL
   }
 
-  if (label === "Elapsed") {
+  if (normalizedLabel === "Steps") {
+    const steps = integerFromText(value)
+    return steps === null ? value : formatInteger(steps)
+  }
+
+  if (normalizedLabel === "Elapsed time") {
     const seconds = secondsFromText(value)
     return seconds === null ? value : formatDuration(seconds)
   }
 
-  if (label === "Saved") {
-    return formatReadableDateTime(value)
+  if (normalizedLabel === "Saved at") {
+    return formatReadableDateTime(value, {
+      compact: true,
+      includeYear: options.includeYear,
+    })
+  }
+
+  if (normalizedLabel === "Peak memory") {
+    return formatPeakMemoryValue(value)
   }
 
   return value
+}
+
+function shouldIncludeAnalysisSavedAtYear(left: string, right: string): boolean {
+  const currentYear = new Date().getFullYear()
+  const leftYear = yearFromDateText(left)
+  const rightYear = yearFromDateText(right)
+  const hasNonCurrentYear =
+    (leftYear !== null && leftYear !== currentYear) ||
+    (rightYear !== null && rightYear !== currentYear)
+  const hasDifferentYears =
+    leftYear !== null && rightYear !== null && leftYear !== rightYear
+
+  return hasNonCurrentYear || hasDifferentYears
+}
+
+function yearFromDateText(value: string): number | null {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) {
+    return null
+  }
+  return date.getFullYear()
+}
+
+function formatPeakMemoryValue(value: string): string {
+  const match = /^\s*([+-]?\d+(?:\.\d+)?)\s*(MB|GB)?\s*$/i.exec(value)
+  if (!match) {
+    return value
+  }
+
+  const amount = Number(match[1])
+  if (!Number.isFinite(amount)) {
+    return value
+  }
+
+  const unit = match[2]?.toUpperCase() ?? "MB"
+  const memoryMb = unit === "GB" ? amount * 1024 : amount
+  return formatMemoryMb(memoryMb)
+}
+
+function formatMemoryMb(memoryMb: number): string {
+  if (!Number.isFinite(memoryMb)) {
+    return MISSING_VALUE_LABEL
+  }
+
+  if (memoryMb >= 1024) {
+    return `${formatSignificantNumber(memoryMb / 1024, 3)} GB`
+  }
+
+  return `${formatInteger(Math.round(memoryMb))} MB`
 }
 
 function isMissingText(value: string): boolean {
@@ -5248,6 +5505,16 @@ function secondsFromText(value: string): number | null {
   const numeric = trimmed.endsWith("s") ? trimmed.slice(0, -1) : trimmed
   const seconds = Number(numeric)
   return Number.isFinite(seconds) ? seconds : null
+}
+
+function integerFromText(value: string): number | null {
+  const normalized = value.trim().replaceAll(",", "")
+  if (!/^-?\d+$/.test(normalized)) {
+    return null
+  }
+
+  const parsed = Number(normalized)
+  return Number.isSafeInteger(parsed) ? parsed : null
 }
 
 function formatOptionalPercent(value: number | null | undefined): string {
@@ -5331,7 +5598,7 @@ function optimizerParamEntries(
   const fieldKeys = new Set(fields.map((field) => field.key))
   const schemaEntries: [string, string, OptimizerParamValue][] = []
   for (const field of fields) {
-    const value = params[field.key]
+    const value = params[field.key] ?? field.default
     if (field.type === "boolean") {
       if (typeof value === "boolean") {
         schemaEntries.push([field.key, field.label, value])
@@ -5396,7 +5663,7 @@ function formatCheckpointDate(savedAt: string): string {
 
 function formatReadableDateTime(
   savedAt: string,
-  options: { compact?: boolean } = {}
+  options: { compact?: boolean; includeYear?: boolean } = {}
 ): string {
   const date = new Date(savedAt)
   if (Number.isNaN(date.getTime())) {
@@ -5410,7 +5677,11 @@ function formatReadableDateTime(
     month: "short",
   }
 
-  if (!options.compact || date.getFullYear() !== new Date().getFullYear()) {
+  const includeYear =
+    options.includeYear ??
+    (!options.compact || date.getFullYear() !== new Date().getFullYear())
+
+  if (includeYear) {
     dateOptions.year = "numeric"
   }
 

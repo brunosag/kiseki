@@ -1315,7 +1315,7 @@ def comparison_side_labels(
 ) -> tuple[str, str]:
     if left.optimizer != right.optimizer:
         return left.optimizer, right.optimizer
-    return "Model A", "Model B"
+    return f"{left.optimizer} 1", f"{right.optimizer} 2"
 
 
 def metadata_rows(
@@ -1326,9 +1326,14 @@ def metadata_rows(
         AnalysisTableRow(label="Dataset", left=format_dataset(left.dataset), right=format_dataset(right.dataset)),
         AnalysisTableRow(label="Optimizer", left=left.optimizer, right=right.optimizer),
         AnalysisTableRow(label="Seed", left=str(left.seed), right=str(right.seed)),
-        AnalysisTableRow(label="Step", left=str(left.step), right=str(right.step)),
         AnalysisTableRow(
-            label="Saved",
+            label="Batch size",
+            left=str(left.config.batch_size),
+            right=str(right.config.batch_size),
+        ),
+        AnalysisTableRow(label="Steps", left=str(left.step), right=str(right.step)),
+        AnalysisTableRow(
+            label="Saved at",
             left=left.saved_at,
             right=right.saved_at,
         ),
@@ -1365,7 +1370,7 @@ def runtime_rows(
 ) -> list[AnalysisTableRow]:
     return [
         AnalysisTableRow(
-            label="Elapsed",
+            label="Elapsed time",
             left=format_optional_seconds(left.total_elapsed_seconds),
             right=format_optional_seconds(right.total_elapsed_seconds),
         ),
@@ -1375,19 +1380,9 @@ def runtime_rows(
             right=right.device_name or right.device,
         ),
         AnalysisTableRow(
-            label="Steps",
-            left=str(left_status.current_step),
-            right=str(right_status.current_step),
-        ),
-        AnalysisTableRow(
             label="Peak memory",
-            left=last_history_value(left_status.history.memory_mb, suffix=" MB"),
-            right=last_history_value(right_status.history.memory_mb, suffix=" MB"),
-        ),
-        AnalysisTableRow(
-            label="Steps to target",
-            left=steps_to_target(left_status),
-            right=steps_to_target(right_status),
+            left=last_memory_history_value(left_status.history.memory_mb),
+            right=last_memory_history_value(right_status.history.memory_mb),
         ),
     ]
 
@@ -1532,23 +1527,21 @@ def format_optional_seconds(seconds: float | None) -> str:
     return f"{seconds:.2f}s"
 
 
-def last_history_value(points: list[Any], *, suffix: str = "") -> str:
+def format_memory_mb(value: float) -> str:
+    if not np.isfinite(value):
+        return "n/a"
+    if value >= 1024:
+        return f"{value / 1024:.3g} GB"
+    return f"{value:.0f} MB"
+
+
+def last_memory_history_value(points: list[Any]) -> str:
     if not points:
         return "n/a"
     value = getattr(points[-1], "value", None)
     if value is None:
         return "n/a"
-    return f"{float(value):.2f}{suffix}"
-
-
-def steps_to_target(status: ExperimentStatus) -> str:
-    target = None
-    # Older checkpoints do not store target accuracy in status, so infer only from 100%.
-    for point in status.history.acc:
-        if point.value >= 100.0:
-            target = point.i
-            break
-    return str(target) if target is not None else "n/a"
+    return format_memory_mb(float(value))
 
 
 def safe_float(value: float) -> float:
