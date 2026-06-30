@@ -18,6 +18,8 @@ import {
   ArrowDown,
   ArrowUpDown,
   Check,
+  ChevronLeft,
+  ChevronRight,
   CircleHelp,
   Funnel,
   FolderOpen,
@@ -57,7 +59,6 @@ import {
   AlertDescription,
   AlertTitle,
 } from "@/components/ui/alert"
-import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import {
   Card,
@@ -1877,7 +1878,57 @@ function AnalysisLrpView({
   report: AnalysisComparisonReport
   sideLabels: AnalysisSideLabels
 }) {
-  if (report.lrp.samples.length === 0) {
+  const samples = report.lrp.samples
+  const [selectedSampleIndex, setSelectedSampleIndex] = useState<number | null>(
+    null
+  )
+  const selectedSample =
+    selectedSampleIndex === null ? null : (samples[selectedSampleIndex] ?? null)
+
+  const openSample = useCallback((index: number) => {
+    setSelectedSampleIndex(index)
+  }, [])
+
+  const showPreviousSample = useCallback(() => {
+    setSelectedSampleIndex((currentIndex) => {
+      if (currentIndex === null || samples.length === 0) {
+        return currentIndex
+      }
+
+      return (currentIndex - 1 + samples.length) % samples.length
+    })
+  }, [samples.length])
+
+  const showNextSample = useCallback(() => {
+    setSelectedSampleIndex((currentIndex) => {
+      if (currentIndex === null || samples.length === 0) {
+        return currentIndex
+      }
+
+      return (currentIndex + 1) % samples.length
+    })
+  }, [samples.length])
+
+  function handleDialogOpenChange(open: boolean) {
+    if (!open) {
+      setSelectedSampleIndex(null)
+    }
+  }
+
+  function handleDialogKeyDown(event: KeyboardEvent<HTMLDivElement>) {
+    if (event.key === "ArrowLeft") {
+      event.preventDefault()
+      showPreviousSample()
+      return
+    }
+
+    if (event.key === "ArrowRight") {
+      event.preventDefault()
+      showNextSample()
+    }
+  }
+
+  if (samples.length === 0) {
     return (
       <Empty className="min-h-72 border">
         <EmptyHeader>
@@ -1891,15 +1942,33 @@ function AnalysisLrpView({
   return (
     <div className="grid gap-4">
       <div className="grid grid-cols-[repeat(auto-fill,minmax(17rem,1fr))] gap-3">
-        {report.lrp.samples.map((sample) => (
+        {samples.map((sample, sampleIndex) => (
           <LrpSampleCard
             dataset={report.left.dataset}
             key={sample.index}
             sample={sample}
             sideLabels={sideLabels}
+            onOpen={() => openSample(sampleIndex)}
           />
         ))}
       </div>
+      <Dialog
+        open={selectedSample !== null}
+        onOpenChange={handleDialogOpenChange}
+      >
+        {selectedSample && selectedSampleIndex !== null ? (
+          <LrpSampleDialog
+            dataset={report.left.dataset}
+            sample={selectedSample}
+            sampleCount={samples.length}
+            sampleIndex={selectedSampleIndex}
+            sideLabels={sideLabels}
+            onKeyDown={handleDialogKeyDown}
+            onNext={showNextSample}
+            onPrevious={showPreviousSample}
+          />
+        ) : null}
+      </Dialog>
     </div>
   )
 }
@@ -2989,79 +3058,236 @@ function LrpSampleCard({
   dataset,
   sample,
   sideLabels,
+  onOpen,
 }: {
   dataset: CheckpointSummary["dataset"]
   sample: AnalysisLrpSample
   sideLabels: AnalysisSideLabels
+  onOpen: () => void
 }) {
+  const className = classLabelFor(dataset, sample.label)
+
   return (
-    <div className="rounded-lg border p-3">
-      <div className="mb-3 flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="truncate text-sm font-medium">
-            {classLabelFor(dataset, sample.label)}
-          </div>
-          <div className="truncate text-xs text-muted-foreground">
-            #{sample.index} · {overlapSetLabel(sample.group, sideLabels)}
-          </div>
-        </div>
-        <Badge variant="outline">
-          {sideShortLabel("left", sideLabels)}{" "}
-          {classLabelFor(dataset, sample.left_prediction)} ·{" "}
-          {sideShortLabel("right", sideLabels)}{" "}
-          {classLabelFor(dataset, sample.right_prediction)}
-        </Badge>
-      </div>
-      <div className="grid grid-cols-3 gap-2">
+    <button
+      aria-label={`Open LRP sample: ${className}`}
+      className="group h-full w-full cursor-pointer appearance-none rounded-lg border bg-card/40 p-3 text-left text-foreground transition-colors outline-none hover:bg-muted/40 focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+      type="button"
+      onClick={onOpen}
+    >
+      <span className="mb-3 block min-w-0">
+        <span className="block truncate text-sm">{className}</span>
+        <span className="block truncate text-xs text-muted-foreground">
+          {overlapSetLabel(sample.group, sideLabels)}
+        </span>
+      </span>
+      <span className="grid grid-cols-2 gap-2">
         <LrpCanvasPanel
           image={sample.image}
           label={sideLabel("left", sideLabels)}
+          prediction={lrpPredictionDetails(dataset, sample, "left")}
           relevance={sample.left_relevance}
         />
         <LrpCanvasPanel
           image={sample.image}
           label={sideLabel("right", sideLabels)}
+          prediction={lrpPredictionDetails(dataset, sample, "right")}
           relevance={sample.right_relevance}
         />
-        <LrpCanvasPanel
-          image={sample.image}
-          label="Delta"
-          relevance={sample.difference_relevance}
-        />
+      </span>
+    </button>
+  )
+}
+
+function LrpSampleDialog({
+  dataset,
+  sample,
+  sampleCount,
+  sampleIndex,
+  sideLabels,
+  onKeyDown,
+  onNext,
+  onPrevious,
+}: {
+  dataset: CheckpointSummary["dataset"]
+  sample: AnalysisLrpSample
+  sampleCount: number
+  sampleIndex: number
+  sideLabels: AnalysisSideLabels
+  onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => void
+  onNext: () => void
+  onPrevious: () => void
+}) {
+  const className = classLabelFor(dataset, sample.label)
+
+  return (
+    <DialogContent
+      className="max-h-[calc(100vh-2rem)] overflow-y-auto p-4 sm:max-w-5xl sm:p-5"
+      onKeyDown={onKeyDown}
+    >
+      <DialogHeader className="pr-10">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0">
+            <DialogTitle className="truncate text-lg font-normal">
+              {className}
+            </DialogTitle>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {overlapSetLabel(sample.group, sideLabels)} · {sampleIndex + 1} of{" "}
+              {sampleCount}
+            </div>
+          </div>
+        </div>
+        <DialogDescription className="sr-only">
+          Large LRP relevance maps for the selected gallery sample.
+        </DialogDescription>
+      </DialogHeader>
+
+      <div className="absolute top-1/2 left-2 z-10 -translate-y-1/2">
+        <Button
+          aria-label="Previous LRP sample"
+          className="bg-background/90 shadow-sm"
+          size="icon-lg"
+          title="Previous LRP sample"
+          type="button"
+          variant="outline"
+          onClick={onPrevious}
+        >
+          <ChevronLeft className="size-5" />
+        </Button>
       </div>
-      <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-        <CheckpointMetric
-          label={`${sideShortLabel("left", sideLabels)} conf.`}
-          value={formatOptionalPercent(sample.left_confidence * 100)}
-        />
-        <CheckpointMetric
-          label={`${sideShortLabel("right", sideLabels)} conf.`}
-          value={formatOptionalPercent(sample.right_confidence * 100)}
-        />
+      <div className="absolute top-1/2 right-2 z-10 -translate-y-1/2">
+        <Button
+          aria-label="Next LRP sample"
+          className="bg-background/90 shadow-sm"
+          size="icon-lg"
+          title="Next LRP sample"
+          type="button"
+          variant="outline"
+          onClick={onNext}
+        >
+          <ChevronRight className="size-5" />
+        </Button>
       </div>
-    </div>
+
+      <div className="px-8 sm:px-10">
+        <div className="grid gap-3 md:grid-cols-3">
+          <LrpCanvasPanel
+            image={sample.image}
+            label={sideLabel("left", sideLabels)}
+            prediction={lrpPredictionDetails(dataset, sample, "left")}
+            relevance={sample.left_relevance}
+            size="dialog"
+          />
+          <LrpCanvasPanel
+            image={sample.image}
+            label={sideLabel("right", sideLabels)}
+            prediction={lrpPredictionDetails(dataset, sample, "right")}
+            relevance={sample.right_relevance}
+            size="dialog"
+          />
+          <LrpCanvasPanel
+            image={sample.image}
+            label="Delta"
+            relevance={sample.difference_relevance}
+            size="dialog"
+          />
+        </div>
+      </div>
+    </DialogContent>
   )
 }
 
 function LrpCanvasPanel({
   image,
   label,
+  prediction,
   relevance,
+  size = "card",
 }: {
   image: number[][][]
   label: string
+  prediction?: LrpPredictionDetails
   relevance: number[][]
+  size?: "card" | "dialog"
 }) {
+  const isDialog = size === "dialog"
+
   return (
-    <div className="min-w-0">
-      <div className="aspect-square overflow-hidden rounded-md border bg-muted">
+    <span className="block min-w-0">
+      <span
+        className={cn(
+          "block aspect-square overflow-hidden rounded-md border bg-muted",
+          isDialog && "rounded-lg"
+        )}
+      >
         <RelevanceCanvas image={image} relevance={relevance} />
-      </div>
-      <div className="mt-1 truncate text-center text-xs text-muted-foreground">
+      </span>
+      <span
+        className={cn(
+          "mt-1 block truncate text-center text-xs text-muted-foreground",
+          isDialog && "mt-2 text-sm font-medium text-foreground"
+        )}
+      >
         {label}
-      </div>
-    </div>
+      </span>
+      {prediction ? (
+        <LrpPredictionSummary prediction={prediction} size={size} />
+      ) : null}
+    </span>
   )
+}
+
+type LrpPredictionDetails = {
+  className: string
+  confidence: string
+  correct: boolean
+}
+
+function LrpPredictionSummary({
+  prediction,
+  size,
+}: {
+  prediction: LrpPredictionDetails
+  size: "card" | "dialog"
+}) {
+  const ResultIcon = prediction.correct ? Check : X
+  const resultClassName = prediction.correct
+    ? "text-green-600 dark:text-green-400"
+    : "text-red-600 dark:text-red-400"
+  const isDialog = size === "dialog"
+
+  return (
+    <span
+      className={cn(
+        "mt-1 grid min-w-0 justify-items-center gap-0.5 text-center text-xs",
+        isDialog && "mt-2 text-sm"
+      )}
+    >
+      <span className="flex max-w-full items-center justify-center gap-1 text-foreground">
+        <ResultIcon
+          className={cn("size-3.5 shrink-0", resultClassName, isDialog && "size-4")}
+        />
+        <span className="truncate">{prediction.className}</span>
+      </span>
+      <span className="text-muted-foreground">{prediction.confidence}</span>
+    </span>
+  )
+}
+
+function lrpPredictionDetails(
+  dataset: CheckpointSummary["dataset"],
+  sample: AnalysisLrpSample,
+  side: AnalysisSide
+): LrpPredictionDetails {
+  const prediction =
+    side === "left" ? sample.left_prediction : sample.right_prediction
+  const confidence =
+    side === "left" ? sample.left_confidence : sample.right_confidence
+
+  return {
+    className: classLabelFor(dataset, prediction),
+    confidence: formatOptionalPercent(confidence * 100),
+    correct: prediction === sample.label,
+  }
 }
 
 function RelevanceCanvas({
