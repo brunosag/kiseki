@@ -4,7 +4,7 @@ import time
 import pytest
 from starlette.testclient import TestClient
 
-from kiseki import actions, runner, server
+from kiseki import actions, remote, runner, server
 from kiseki.report import Report, ReportSpec
 from kiseki.server import create_app
 from kiseki.spec import RunSpec
@@ -54,6 +54,20 @@ def test_queue_runs(client, monkeypatch):
     assert response.status_code == 201
     assert [r["status"]["state"] for r in response.json()] == ["queued", "queued"]
     assert len(client.get("/api/runs", headers=TOKEN).json()) == 2
+
+
+def test_a_failed_deploy_says_why(client, home, monkeypatch):
+    config = home.parent / "config"
+    config.mkdir()
+    (config / "machines.toml").write_text('[machines.box]\nssh = "box"\n')
+
+    def deploy(self):
+        raise remote.RemoteError("box: `uv sync` exited 2: no wheels for Python 3.15")
+
+    monkeypatch.setattr(remote.Remote, "deploy", deploy)
+    response = client.post("/api/runs", headers=TOKEN, json={"preset": "smoke", "machine": "box"})
+    assert response.status_code == 502
+    assert response.json() == {"error": "box: `uv sync` exited 2: no wheels for Python 3.15"}
 
 
 def test_report_files_stay_inside_the_report(client, home):

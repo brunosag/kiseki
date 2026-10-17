@@ -119,12 +119,15 @@ class Remote:
             "--include=/src/***",
             "--include=/pyproject.toml",
             "--include=/uv.lock",
+            "--include=/.python-version",  # else uv may pick a newer Python without wheels
             "--include=/README.md",
             "--exclude=*",
             f"{root}/",
             self.target(self.code) + "/",
         )
-        dependencies = any(name in changes for name in ("pyproject.toml", "uv.lock"))
+        dependencies = any(
+            name in changes for name in ("pyproject.toml", "uv.lock", ".python-version")
+        )
         has_env = self.run(f"test -x {_remote_path(self.python)}", check=False).returncode == 0
         if dependencies or not has_env:
             extras = " ".join(f"--extra {shlex.quote(extra)}" for extra in self.machine.extras)

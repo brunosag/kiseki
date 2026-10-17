@@ -25,11 +25,15 @@ be local, so web pages in a browser can neither read nor drive it.
   POST /api/query                        {sql} -> {columns, rows}
   GET  /api/events                       SSE: `run` and `report` events ({id, status}) when a
                                          status changes, `machines` when probed; `ping` every 15 s
+
+Errors are {error}: 400 for a bad request, 404 for an unknown id, 502 when a remote fails
+(deploy, SSH or a timeout).
 """
 
 import asyncio
 import contextlib
 import secrets
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -43,6 +47,7 @@ from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
 from kiseki import actions, paths, store
+from kiseki.remote import RemoteError
 from kiseki.report import Report, ReportSpec
 from kiseki.store import ACTIVE, Run
 
@@ -349,6 +354,11 @@ async def bad_request(request: Request, failure: Exception) -> Response:
     return error(str(failure), 400)
 
 
+async def bad_gateway(request: Request, failure: Exception) -> Response:
+    """A remote that failed (deploy, SSH, timeout): the UI shows why."""
+    return error(str(failure), 502)
+
+
 def spa(directory: Path):
     """The built UI, with index.html for client-side routes."""
     files = StaticFiles(directory=directory, html=True, check_dir=False)
@@ -405,6 +415,8 @@ def create_app(token: str):
         ValueError: bad_request,
         msgspec.ValidationError: bad_request,
         msgspec.DecodeError: bad_request,
+        RemoteError: bad_gateway,
+        subprocess.TimeoutExpired: bad_gateway,
     }
     app = Starlette(routes=routes, lifespan=lifespan, exception_handlers=handlers)
     app.state.kiseki = state
