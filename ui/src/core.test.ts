@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
+  accuracyRange,
   firstReached,
   mergeById,
   parseField,
@@ -153,4 +154,12 @@ test("runs a refresh already listed replace their copies instead of repeating", 
       { id: "c", state: "queued" },
     ],
   );
+});
+test("accuracy axes fit the data within 0–100%, and stay whole with no data", () => {
+  const rounded = (range: [number, number]) => range.map((v) => +v.toFixed(9));
+  assert.deepEqual(rounded(accuracyRange(0.5, 0.75)), [0.48, 0.77]);
+  assert.deepEqual(rounded(accuracyRange(0.99, 0.99)), [0.985, 0.995]);
+  assert.deepEqual(accuracyRange(0.001, 1), [0, 1]);
+  assert.deepEqual(accuracyRange(Infinity, -Infinity), [0, 1]);
+  assert.deepEqual(accuracyRange(null, null), [0, 1]);
 });

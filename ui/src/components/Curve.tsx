@@ -1,7 +1,7 @@
 import { useEffect, useRef } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
-import { colors } from "../core";
+import { accuracyRange, colors } from "../core";
 export interface Line {
   label: string;
   x: number[];
@@ -69,13 +69,9 @@ export function Curve({
         },
         scales: {
           x: { time: false, distr: log ? 3 : 1 },
-          // accuracy: fit the data (runs near 99% would look flat on 0–100%), within [0, 1]
           y: {
             range: accuracy
-              ? (_u, min, max) => {
-                  const pad = Math.max((max - min) * 0.08, 0.005);
-                  return [Math.max(0, min - pad), Math.min(1, max + pad)];
-                }
+              ? (_u, min, max) => accuracyRange(min, max)
               : undefined,
           },
         },
@@ -100,7 +96,9 @@ export function Curve({
               let decimals = 0;
               while (
                 decimals < 3 &&
-                Math.abs(step * 10 ** decimals - Math.round(step * 10 ** decimals)) > 1e-6
+                Math.abs(
+                  step * 10 ** decimals - Math.round(step * 10 ** decimals),
+                ) > 1e-6
               )
                 decimals++;
               return values.map((v) =>

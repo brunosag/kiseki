@@ -132,6 +132,22 @@ export function mergeById<T extends { id: string }>(
   const listed = new Set(list.map((item) => item.id));
   return [...merged, ...incoming.filter((item) => !listed.has(item.id))];
 }
+// The y range of an accuracy chart: the data with 8% padding (runs near 99% would look
+// flat on 0–100%), within [0, 1]; uPlot passes ±Infinity or null when there is no data.
+export function accuracyRange(
+  min: number | null,
+  max: number | null,
+): [number, number] {
+  if (
+    min == null ||
+    max == null ||
+    !Number.isFinite(min) ||
+    !Number.isFinite(max)
+  )
+    return [0, 1];
+  const pad = Math.max((max - min) * 0.08, 0.005);
+  return [Math.max(0, min - pad), Math.min(1, max + pad)];
+}
 export const percent = (n?: number | null) =>
   n == null ? "—" : `${(n * 100).toFixed(2)}%`;
 export const number = (n?: number | null) =>
