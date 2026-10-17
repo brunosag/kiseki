@@ -6,7 +6,8 @@
   events.ndjson  lifecycle events, append-only
   train.ndjson   one row per step: step, loss, accuracy, optimizer extras
   val.ndjson     one row per validation: step, loss, accuracy, elapsed, extras
-  models/        best / final / step-<n> networks (.safetensors with a .json sidecar)
+  models/        best / final / step-<n> saved models (.safetensors; metadata names the
+                 run, model, dataset and step)
   state/         resume checkpoints; state/manifest.json names the committed one
   control        a pending request for the worker: "stop" or "pause"
   worker.log     the worker's stdout and stderr
@@ -142,6 +143,10 @@ class Run:
         status = msgspec.structs.replace(self.status(), **changes)
         self.write_status(status)
         return status
+
+    def fail(self, error: str) -> None:
+        status = self.update_status(state="failed", pid=None, error=error)
+        self.event("failed", step=status.step, error=error)
 
     # -- append-only logs ----------------------------------------------------------------
 

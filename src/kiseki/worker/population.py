@@ -2,7 +2,7 @@
 
 `Scorer.score(flat_population, x, y)` returns each network's mean cross-entropy and its
 number of correct predictions. Networks are vmapped `chunk` at a time (lax.map), which
-bounds activation memory; `kiseki.worker.tuning` picks the chunk per machine.
+bounds activation memory; `kiseki.worker.train.first_chunk` sizes the chunk to the device.
 """
 
 from dataclasses import dataclass

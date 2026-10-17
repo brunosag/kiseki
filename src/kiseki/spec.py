@@ -23,7 +23,9 @@ class RunSpec(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fields=T
     params: dict[str, Any] = {}
     seed: int = 42
     batch_size: Annotated[int, Meta(ge=1)] = 512
-    iterations: Annotated[int, Meta(ge=1, description="Generations, or SGD steps")] = 100_000
+    iterations: Annotated[
+        int, Meta(ge=1, description="Steps to train (generations, for evolution)")
+    ] = 100_000
     target_accuracy: (
         Annotated[float, Meta(gt=0, le=1, description="Stop once validation accuracy reaches it")]
         | None

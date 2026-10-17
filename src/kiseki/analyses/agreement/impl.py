@@ -18,7 +18,7 @@ def mcnemar_exact(only_first: int, only_second: int) -> float:
 
 def run(params: Params, context: Context) -> Section:
     labels = context.labels
-    summary, data, blocks = {}, {}, []
+    summary, data, parts = {}, {}, []
     for first, second in context.pairs():
         a, b = context.evaluate(first), context.evaluate(second)
         both = a.correct & b.correct
@@ -56,7 +56,7 @@ def run(params: Params, context: Context) -> Section:
             for i, name in enumerate(context.class_names)
         ]
         data[key] = {"per_class": per_class, "errors": errors}
-        blocks.append(
+        parts.append(
             f"**{key}**: predictions agree on {100 * agree.mean():.2f}% of images; "
             f"{100 * overlap:.1f}% of the smaller error set is shared; McNemar "
             f"p = {p_value:.3g}.\n\n"
@@ -79,8 +79,8 @@ def run(params: Params, context: Context) -> Section:
                 ],
             )
         )
-    if not blocks:
-        blocks.append("One model: nothing to compare.")
+    if not parts:
+        parts.append("One model: nothing to compare.")
     return Section(
-        name="agreement", title=TITLE, summary=summary, data=data, markdown="\n\n".join(blocks)
+        name="agreement", title=TITLE, summary=summary, data=data, markdown="\n\n".join(parts)
     )

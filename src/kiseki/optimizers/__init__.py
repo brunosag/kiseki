@@ -4,6 +4,10 @@ Each package has two modules:
 - `__init__.py` (light, no JAX): `Params` (a msgspec Struct whose fields carry defaults,
   bounds and descriptions; the CLI, app forms and run validation read it) and `SUMMARY`.
 - `impl.py` (JAX): `build(params, problem) -> Optimizer`, see `kiseki.worker.optimizer`.
+
+A `population_size` field marks an evolutionary optimizer: training sizes the scoring
+chunk from it (`kiseki.worker.train`), and presets set it only where it exists
+(`kiseki.actions.build_specs`).
 """
 
 import importlib

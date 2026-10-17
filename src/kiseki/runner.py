@@ -9,7 +9,10 @@ session that started them.
 
 The runner reads the machine's settings from <home>/machine.json (written by the
 submitter), so a remote needs no config of its own: the environment for workers, and
-where to keep the shared-server notice (`kiseki.notice`) while runs are active.
+where to keep the shared-server notice (`kiseki.notice`) while runs are active. The notice
+is written before each run starts, and a run fails instead of starting when it can't be.
+A started run is marked running with its worker's pid at once, so the queue never starts
+it twice.
 """
 
 import fcntl
@@ -25,10 +28,14 @@ import msgspec
 from kiseki import notice
 from kiseki.machines import Contact
 from kiseki.spec import RunSpec
-from kiseki.store import Run, write_atomic
+from kiseki.store import Run, RunStatus, write_atomic
 
 NOTICE_SECONDS = 600  # how often the runner refreshes the notice during a run
 POLL_SECONDS = 5
+
+
+class NoticeError(Exception):
+    """The machine's notice could not be written; runs there must not start."""
 
 
 class Profile(msgspec.Struct, kw_only=True):
@@ -60,31 +67,29 @@ def worker_alive(pid: int | None) -> bool:
     return b"kiseki.worker" in cmdline
 
 
-def runs(home: Path) -> list[Run]:
-    return Run.all(home / "runs")
+def owned(home: Path) -> list[tuple[RunStatus, Run]]:
+    """This machine's runs and their status. Mirrors of other machines' runs are theirs to
+    start and reconcile."""
+    name = read_profile(home).name
+    found = [(run.status(), run) for run in Run.all(home / "runs")]
+    return [(status, run) for status, run in found if status.machine == name]
 
 
 def queued(home: Path) -> list[Run]:
-    found = [(run.status(), run) for run in runs(home)]
-    waiting = [
-        (status.created_at, run.id, run) for status, run in found if status.state == "queued"
-    ]
+    waiting = [(s.created_at, run.id, run) for s, run in owned(home) if s.state == "queued"]
     return [run for *_, run in sorted(waiting)]
 
 
 def reconcile(home: Path) -> list[Run]:
     """Mark runs whose worker died without saying so as failed; return live running ones."""
     alive = []
-    for run in runs(home):
-        status = run.status()
+    for status, run in owned(home):
         if status.state != "running":
             continue
         if worker_alive(status.pid):
             alive.append(run)
             continue
-        error = "worker exited without recording an outcome (killed, crashed or rebooted)"
-        run.update_status(state="failed", pid=None, error=error)
-        run.event("failed", step=status.step, error=error)
+        run.fail("worker exited without recording an outcome (killed, crashed or rebooted)")
     return alive
 
 
@@ -163,6 +168,12 @@ class Runner:
 
     def start(self, run: Run) -> None:
         self.profile = read_profile(self.home)
+        try:
+            self.write_notice()  # the server's rule: announce before using it
+        except NoticeError as error:
+            log(f"not starting {run.id}: {error}")
+            run.fail(str(error))
+            return
         env = dict(os.environ, KISEKI_HOME=str(self.home), **self.profile.env)
         log(f"starting {run.id}")
         with (run.path / "worker.log").open("ab") as out:
@@ -173,6 +184,9 @@ class Runner:
                 stderr=subprocess.STDOUT,
                 env=env,
             )
+        # Owned from here, while the worker still loads data: stop and pause become
+        # requests it honours, and a later runner waits for it instead of starting another.
+        run.update_status(state="running", pid=process.pid)
         self.wait(run, process)
 
     def wait(self, run: Run, process: subprocess.Popen | None) -> None:
@@ -190,28 +204,35 @@ class Runner:
                     code = None
                     break
             self.refresh_notice()
-        status = run.status()
-        if status.state in {"running", "queued"}:
-            error = f"worker exited with code {code} without recording an outcome; see worker.log"
-            run.update_status(state="failed", pid=None, error=error)
-            run.event("failed", step=status.step, error=error)
+        if run.status().state in {"running", "queued"}:
+            run.fail(f"worker exited with code {code} without recording an outcome; see worker.log")
         log(f"{run.id} {run.status().state}")
 
     def refresh_notice(self, force: bool = False) -> None:
-        profile = self.profile
-        if not profile.notice or not profile.contact:
-            return
+        """Keep the notice current. A failed refresh is only logged: the notice written
+        before the run started still stands."""
         if not force and time.monotonic() - self.last_notice < NOTICE_SECONDS:
             return
+        try:
+            self.write_notice()
+        except NoticeError as error:
+            log(str(error))
+
+    def write_notice(self) -> None:
+        profile = self.profile
+        if not profile.notice:
+            return
+        if not profile.contact:
+            raise NoticeError(f"{profile.name} needs a contact for {profile.notice}")
         self.last_notice = time.monotonic()
         try:
             notice.write(Path(profile.notice), self.notice_block(profile.contact))
         except OSError as error:
-            log(f"could not update {profile.notice}: {error}")
+            raise NoticeError(f"could not write the notice {profile.notice}: {error}") from error
 
     def notice_block(self, contact: Contact) -> str | None:
         now = datetime.now(UTC)
-        statuses = [run.status() for run in runs(self.home)]
+        statuses = [status for status, _ in owned(self.home)]
         running = [s for s in statuses if s.state == "running"]
         waiting = [s for s in statuses if s.state == "queued"]
         if not running and not waiting:

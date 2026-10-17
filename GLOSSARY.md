@@ -38,8 +38,9 @@ Named spec overrides; `smoke` trains for seconds to check that a configuration r
 ## Training
 
 **Model**:
-A network architecture from the catalog (small_cnn, wide_cnn, vgg_mini).
-_Avoid_: architecture (in code and UI), net
+A network architecture from the catalog (small_cnn, wide_cnn, vgg_mini). Built for a
+dataset's image shape and classes, it is a `Network` in code, in variables named `net`.
+_Avoid_: architecture; net (in prose and the UI)
 
 **Optimizer**:
 The training algorithm: SGD, LEEA, CoSyNE or OpenAI-ES.

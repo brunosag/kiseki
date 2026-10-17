@@ -7,5 +7,5 @@ Two halves share this package and must stay apart:
   so it starts fast and never opens a CUDA context.
 - the worker (`kiseki.worker`) runs one training run or report per process, with JAX.
 
-`tests/test_boundaries.py` enforces the split.
+`tests/test_boundary.py` enforces the split.
 """

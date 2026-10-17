@@ -1,5 +1,6 @@
 """What the CLI and the app server do, in one place: queue runs (here or on a remote),
-control them, mirror remote ones, and start reports. Callers only format the results.
+control them, mirror remote ones, and start reports. Callers parse their input and
+present the results.
 """
 
 import itertools
@@ -169,18 +170,22 @@ def control_here(run: Run, action: str) -> dict[str, str]:
     if action == "resume":
         if state not in {"paused", "stopped", "failed"}:
             return {"id": run.id, "result": f"not resumable ({state})"}
+        run.clear_request()
         run.update_status(state="queued", error=None)
         run.event("requeued", previous=state)
         runner.ensure_runner(paths.home())
         return {"id": run.id, "result": "queued"}
-    if state == "queued":
-        run.update_status(state="stopped" if action == "stop" else "paused")
-        run.event("stopped" if action == "stop" else "paused", step=run.status().step)
-        return {"id": run.id, "result": run.status().state}
-    if state != "running":
+    if state not in {"queued", "running"}:
         return {"id": run.id, "result": f"already {state}"}
+    # A request either way: if the runner starts this queued run meanwhile, its worker
+    # honours the request before training.
     run.request(action)  # type: ignore[arg-type]
-    return {"id": run.id, "result": f"{action} requested"}
+    if state == "running":
+        return {"id": run.id, "result": f"{action} requested"}
+    done = "stopped" if action == "stop" else "paused"
+    run.update_status(state=done)
+    run.event(done, step=run.status().step)
+    return {"id": run.id, "result": done}
 
 
 # -- reports -----------------------------------------------------------------------------

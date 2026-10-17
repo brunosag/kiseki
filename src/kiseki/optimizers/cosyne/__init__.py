@@ -13,7 +13,7 @@ SUMMARY = "Neuroevolution by crossover, mutation and per-weight permutation (Gom
 
 
 class Params(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
-    population_size: Annotated[int, Meta(ge=8, description="Networks per generation N")] = 1000
+    population_size: Annotated[int, Meta(ge=8, description="Networks scored each step N")] = 1000
     tournament_size: Annotated[int, Meta(ge=1, description="Contestants per tournament")] = 4
     mutation_stdev: Annotated[float, Meta(ge=0, description="Gaussian mutation σ")] = 0.03
     mutation_probability: Annotated[

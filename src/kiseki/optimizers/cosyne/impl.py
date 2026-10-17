@@ -12,7 +12,7 @@ Generation t, on minibatch B_t:
 5. elites ∪ children ∪ permuted are pooled and the best N, scored on B_t, survive.
 
 Scores already known on B_t are reused instead of recomputed: elites keep theirs, and so do
-permuted networks that came out unchanged (about half of them), whose blocks are skipped.
+permuted networks that came out unchanged (about half of them), whose rounds of scoring are skipped.
 """
 
 import jax
@@ -22,7 +22,7 @@ from jax import lax
 from kiseki.optimizers.cosyne import Params
 from kiseki.worker.optimizer import Optimizer, Problem, centered_ranks, init_population
 
-_COLUMN_BLOCK = 4096  # weight positions permuted at once; bounds the sort's memory
+_COLUMN_GROUP = 4096  # weight positions permuted at once; bounds the sort's memory
 
 
 def build(params: Params, problem: Problem) -> Optimizer:
@@ -72,9 +72,9 @@ def build(params: Params, problem: Problem) -> Optimizer:
         else:
             rank = centered_ranks(-losses)  # best network: 0.5
             probability = 1.0 - (rank + 0.5) ** (1.0 / dims)
-        padded = -(-dims // _COLUMN_BLOCK) * _COLUMN_BLOCK
+        padded = -(-dims // _COLUMN_GROUP) * _COLUMN_GROUP
         columns = jnp.pad(population, ((0, 0), (0, padded - dims))).T.reshape(
-            -1, _COLUMN_BLOCK, size
+            -1, _COLUMN_GROUP, size
         )
         rows = jnp.arange(size)
 
@@ -100,10 +100,10 @@ def build(params: Params, problem: Problem) -> Optimizer:
     def score_skipping_unchanged(candidates, original, known_losses, known_correct, x, y):
         changed = jnp.any(candidates != original, axis=1)
         order = jnp.argsort(~changed, stable=True)  # changed networks first
-        blocks = -(-size // chunk)
-        pad = blocks * chunk - size
-        ordered = jnp.pad(candidates[order], ((0, pad), (0, 0))).reshape(blocks, chunk, dims)
-        live = jnp.pad(changed[order], (0, pad)).reshape(blocks, chunk).any(axis=1)
+        rounds = -(-size // chunk)
+        pad = rounds * chunk - size
+        ordered = jnp.pad(candidates[order], ((0, pad), (0, 0))).reshape(rounds, chunk, dims)
+        live = jnp.pad(changed[order], (0, pad)).reshape(rounds, chunk).any(axis=1)
         losses, correct = scorer.score_chunks(ordered, live, x, y)
         losses = jnp.empty(size).at[order].set(losses[:size])
         correct = jnp.empty(size, jnp.int32).at[order].set(correct[:size])

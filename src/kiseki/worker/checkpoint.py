@@ -59,13 +59,15 @@ class Manifest(msgspec.Struct):
     step: int
     file: str
     chunk_size: int
+    elapsed_seconds: float = 0.0  # training time up to `step`, so resuming counts on from it
 
 
-def save_state(directory: Path, step: int, chunk_size: int, tensors: dict[str, np.ndarray]) -> None:
+def save_state(directory: Path, tensors: dict[str, np.ndarray], **manifest) -> None:
+    """Write the carry, then point the manifest (step, chunk_size, elapsed_seconds) at it."""
     directory.mkdir(parents=True, exist_ok=True)
-    name = f"step-{step}.safetensors"
+    name = f"step-{manifest['step']}.safetensors"
     _save(directory / name, tensors, None)
-    write_atomic(directory / "manifest.json", msgspec.json.encode(Manifest(step, name, chunk_size)))
+    write_atomic(directory / "manifest.json", msgspec.json.encode(Manifest(file=name, **manifest)))
     for old in directory.glob("step-*.safetensors"):
         if old.name != name:
             old.unlink()

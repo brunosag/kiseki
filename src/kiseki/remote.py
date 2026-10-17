@@ -8,7 +8,6 @@ into this machine's runs/ by `pull`, which copies small files by default (spec, 
 metrics, events, logs) and models when asked.
 """
 
-import hashlib
 import shlex
 import subprocess
 from pathlib import Path
@@ -222,13 +221,3 @@ class Remote:
             "runner_pid": int(pid_text) if pid_text.isdigit() else None,
             "deployed": deployed == "deployed",
         }
-
-
-def code_hash() -> str:
-    """Hash of the package as deployed: source files, pyproject and lock."""
-    root = paths.repo_root()
-    digest = hashlib.sha256()
-    for path in sorted([*root.glob("src/**/*.py"), root / "pyproject.toml", root / "uv.lock"]):
-        digest.update(str(path.relative_to(root)).encode())
-        digest.update(path.read_bytes())
-    return digest.hexdigest()[:12]

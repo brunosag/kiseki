@@ -23,7 +23,7 @@ def build(params: Params, problem: Problem) -> Optimizer:
     scorer = problem.scorer
     pairs = params.population_size // 2
     chunk = max(1, min(scorer.chunk // 2, pairs))
-    blocks = -(-pairs // chunk)
+    rounds = -(-pairs // chunk)
 
     def noise(key, index):
         return jax.random.normal(jax.random.fold_in(key, index), (net.size,))
@@ -48,15 +48,17 @@ def build(params: Params, problem: Problem) -> Optimizer:
         utility = centered_ranks(-scores)
         weight = utility[:pairs] - utility[pairs:]
 
-        indices = jnp.pad(jnp.arange(pairs), (0, blocks * chunk - pairs)).reshape(blocks, chunk)
-        weights = jnp.pad(weight, (0, blocks * chunk - pairs)).reshape(blocks, chunk)
+        padding = rounds * chunk - pairs  # padded pairs weigh 0
+        indices = jnp.pad(jnp.arange(pairs), (0, padding)).reshape(rounds, chunk)
+        weights = jnp.pad(weight, (0, padding)).reshape(rounds, chunk)
 
-        def weighted_noise(args):
-            block_indices, block_weights = args
-            eps = jax.vmap(lambda i: noise(key, i))(block_indices)
-            return block_weights @ eps
+        def add_noise(total, args):  # regenerate `chunk` perturbations, add their weighted sum
+            round_indices, round_weights = args
+            eps = jax.vmap(lambda i: noise(key, i))(round_indices)
+            return total + round_weights @ eps, None
 
-        grad = lax.map(weighted_noise, (indices, weights)).sum(axis=0) / params.population_size
+        total, _ = lax.scan(add_noise, jnp.zeros_like(theta), (indices, weights))
+        grad = total / params.population_size
         update = -grad + params.weight_decay * theta
         t = state["t"] + 1
         m = params.beta1 * state["m"] + (1 - params.beta1) * update

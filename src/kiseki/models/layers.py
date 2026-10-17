@@ -7,7 +7,7 @@ populations a plain (N, size) matrix. Images are NHWC; kernels are HWIO.
 """
 
 import math
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 import jax
@@ -213,6 +213,3 @@ def network(
         classes=classes,
         _param_index=param_index,
     )
-
-
-Builder = Callable[[tuple[int, int, int], int], Network]

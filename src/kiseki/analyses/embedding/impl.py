@@ -152,6 +152,7 @@ def run(params: Params, context: Context) -> Section:
     labels = jnp.asarray(context.labels[indices])
     n = len(indices)
     perplexity = min(params.perplexity, (n - 1) / 3)
+    k = max(1, min(params.neighbors, (n - 1) // 2))  # trustworthiness is defined for k < n/2
     run_tsne = jax.jit(tsne, static_argnums=(2, 3))
     summary, rows = {}, []
     data: dict[str, Any] = {"indices": context.save_array("embedding-indices", indices)}
@@ -164,12 +165,12 @@ def run(params: Params, context: Context) -> Section:
         reduced, explained = pca(features, components)
         init = reduced[:, :2] / reduced[:, 0].std() * 1e-4
         embedded = run_tsne(reduced, init, perplexity, params.iterations)
-        _, feature_nn = nearest(features, params.neighbors)
-        _, map_nn = nearest(embedded, params.neighbors)
+        _, feature_nn = nearest(features, k)
+        _, map_nn = nearest(embedded, k)
         result = {
             "knn_accuracy_features": knn_accuracy(feature_nn, labels),
             "knn_accuracy_tsne": knn_accuracy(map_nn, labels),
-            "trustworthiness": trustworthiness(reduced, embedded, params.neighbors),
+            "trustworthiness": trustworthiness(reduced, embedded, k),
             "pca_explained_2": float(explained[:2].sum()),
             "features": int(features.shape[1]),
         }
@@ -217,7 +218,6 @@ def run(params: Params, context: Context) -> Section:
     ]
     figure.legend(handles, context.class_names, loc="lower center", ncol=5, fontsize=8)
     figure.subplots_adjust(bottom=0.08)
-    k = params.neighbors
     markdown = (
         f"{n} images, class-balanced, the same for every model. kNN accuracy: "
         f"leave-one-out {k}-nearest-neighbour vote, in the penultimate space and on "

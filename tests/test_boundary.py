@@ -4,7 +4,7 @@ runs where JAX is not installed."""
 import subprocess
 import sys
 
-from kiseki import analyses
+from kiseki import analyses, datasets, optimizers
 
 LIGHT = [
     "kiseki.cli",
@@ -24,6 +24,8 @@ LIGHT = [
     "kiseki.optimizers",
     "kiseki.analyses",
     *[f"kiseki.analyses.{name}" for name in analyses.NAMES],
+    *[f"kiseki.optimizers.{name}" for name in optimizers.NAMES],
+    *[f"kiseki.datasets.{name}" for name in datasets.NAMES],
 ]
 
 

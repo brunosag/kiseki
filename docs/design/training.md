@@ -59,16 +59,22 @@ and OpenAI-ES (Salimans et al. 2017), each a package with `Params` and a pure `b
   gradient estimate), so it separates "gradient-free" from "gradient-following" in the
   comparison. Mirrored sampling, centred ranks, Adam. Agent's choice.
 - **Bet:** OpenAI-ES's defaults (σ 0.02, Adam 0.01, population 1000) learn MNIST to
-  ≥ 96% in 300 steps. Result 2026-10-17: 96.55% test (best validation 95.64%); LEEA 84.9%,
-  CoSyNE 63.0% in the same 300 steps at their defaults. Tuning LEEA and CoSyNE is open.
+  ≥ 96% in 300 steps; one run settles it. Result 2026-10-17: 96.55% test (best validation
+  95.64%); LEEA 84.9%, CoSyNE 63.0% in the same 300 steps at their defaults. Tuning LEEA
+  and CoSyNE is open.
+- **Pace** on the laptop GPU (MNIST, defaults, performance profile, 2026-10-17):
+  SGD 298 steps/s, LEEA 3.05, OpenAI-ES 2.88, CoSyNE 1.59.
 
 ## Precision: fp32 by default, bf16 per run
 
-`precision: bf16` runs population scoring in bfloat16 (1.4–2.3× faster in the stack
-benchmark).
+`precision: bf16` runs population scoring in bfloat16. It was 1.4× faster on MNIST and
+2.3× on CIFAR-10 in the first benchmarks, which ran in a slower power profile; in the
+performance profile it gained nothing on MNIST (298.5 vs 299.0 ms per 1000 networks).
 
-- **Bet:** bf16 selects networks as fp32 does. Test: the same LEEA run in both, comparing
-  validation curves. Not yet run; until then fp32 stays the default.
+- **Bet:** bf16 is faster on CIFAR-10 in the performance profile and selects networks as
+  fp32 does. Test: time CIFAR-10 scoring in both, then the same LEEA run in both,
+  comparing validation curves. Stop if the timing shows no gain: then remove the option.
+  Not yet run; fp32 stays the default.
 
 ## Datasets and models
 

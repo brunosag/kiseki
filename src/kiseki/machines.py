@@ -15,7 +15,8 @@ contact details). `local` always exists. Example:
     env = { KISEKI_PLATFORM = "cpu" }
 
 A remote keeps its own kiseki home (`home`, default ~/.local/share/kiseki) with code/,
-runs/ and its queue; datasets are copied there from this machine.
+runs/ and its queue; it downloads datasets from their source, or this machine sends its
+copy when that fails.
 """
 
 import subprocess

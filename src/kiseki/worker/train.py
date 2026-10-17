@@ -254,8 +254,15 @@ def train(run: Run) -> int:
     if status.state == "completed":
         log("run already completed")
         return 0
+    request = run.pending_request()
+    if request:  # stopped or paused while the runner was starting this worker
+        run.clear_request()
+        state = "stopped" if request == "stop" else "paused"
+        run.update_status(state=state, pid=None)
+        run.event(state, step=status.step)
+        log(f"{state} before starting")
+        return 0
     interrupted = Interrupted()
-    run.clear_request()
     info = datasets.info(spec.dataset)
     net = models.load(spec.model, info.image_shape, len(info.class_names))
     params = msgspec.convert(spec.params, optimizers.params_type(spec.optimizer))
@@ -279,7 +286,7 @@ def train(run: Run) -> int:
     resumed_from = manifest.step if manifest else 0
     for name in ("train", "val"):
         truncate_rows(run, name, resumed_from)
-    elapsed_before = status.elapsed_seconds if manifest else 0.0
+    elapsed_before = manifest.elapsed_seconds if manifest else 0.0
     run.update_status(
         state="running",
         pid=os.getpid(),
@@ -490,7 +497,12 @@ class Loop:
     def save_state(self, carry: Carry) -> None:
         tensors = checkpoint.flatten(jax.device_get(carry))
         self.writer.submit(
-            checkpoint.save_state, self.run.state_dir, self.step, self.program.chunk, tensors
+            checkpoint.save_state,
+            self.run.state_dir,
+            tensors,
+            step=self.step,
+            chunk_size=self.program.chunk,
+            elapsed_seconds=round(self.elapsed, 3),
         )
 
     def finish(self, carry: Carry, state: str) -> int:
@@ -498,7 +510,8 @@ class Loop:
         final = self.program.opt.current(carry["state"])
         self.save_network(final, "final", self.step)
         summary: dict[str, Any] = {"steps": self.step, "elapsed_seconds": round(self.elapsed, 3)}
-        for name, flat in (("final", final), ("best", carry["best"])):
+        best = carry["best"] if self.best_step is not None else final  # never validated
+        for name, flat in (("final", final), ("best", best)):
             val_loss, val_acc = jax.device_get(evaluate(flat, data.val_x, data.val_y))
             test_loss, test_acc = jax.device_get(evaluate(flat, data.test_x, data.test_y))
             summary[name] = {
@@ -508,7 +521,7 @@ class Loop:
                 "test_accuracy": float(test_acc),
             }
         summary["best"]["step"] = self.best_step
-        if self.best_step is None:  # never validated: the final network is the best one
+        if self.best_step is None:
             self.save_network(final, "best", self.step)
         self.writer.flush()
         write_atomic(self.run.path / "summary.json", encode(summary))

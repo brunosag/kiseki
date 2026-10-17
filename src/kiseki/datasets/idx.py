@@ -33,7 +33,3 @@ def parse_idx_dir(raw_dir: Path, prefix: str = "") -> RawSplits:
         test_x=arrays["test_x"][..., None],
         test_y=arrays["test_y"],
     )
-
-
-def idx_file_names() -> tuple[str, ...]:
-    return tuple(_FILES.values())

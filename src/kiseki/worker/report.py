@@ -12,6 +12,7 @@ An analysis returns a `Section`: headline numbers (`summary`), details (`data`),
 tables (`markdown`), and the files it wrote. report.json and report.md collect them.
 """
 
+import itertools
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -119,8 +120,7 @@ class Context:
         return len({s.net.name for s in self.subjects}) == 1
 
     def pairs(self) -> list[tuple[Subject, Subject]]:
-        first = self.subjects[0]
-        return [(first, other) for other in self.subjects[1:]]
+        return list(itertools.combinations(self.subjects, 2))
 
     def pixels(self, x: Array) -> Array:
         return x * self.data.std + self.data.mean
@@ -219,6 +219,15 @@ def load_subjects(spec: ReportSpec) -> tuple[list[Subject], RunSpec]:
             first = run_spec
         elif run_spec.dataset != first.dataset:
             raise ValueError(f"{ref} is on {run_spec.dataset}, not {first.dataset}")
+        elif (run_spec.split_seed, run_spec.validation_size) != (
+            first.split_seed,
+            first.validation_size,
+        ):  # the validation split, and the training images left, would differ per model
+            raise ValueError(
+                f"{ref} splits {run_spec.dataset} with split_seed {run_spec.split_seed} and "
+                f"validation_size {run_spec.validation_size}; {spec.models[0]} uses "
+                f"{first.split_seed} and {first.validation_size}"
+            )
         info = datasets.info(run_spec.dataset)
         path = run.models_dir / f"{ref.name}.safetensors"
         if not path.exists():

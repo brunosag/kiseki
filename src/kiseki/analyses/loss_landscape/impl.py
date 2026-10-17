@@ -217,14 +217,14 @@ def run(params: Params, context: Context) -> Section:
     figures.append(context.save_figure(figure, "loss_landscape-planes"))
     if lines:
         figure, (loss_axis, accuracy_axis) = plt.subplots(1, 2, figsize=(10, 3.6))
-        for first, other, losses, accuracies in lines:
-            label = f"{first.label} → {other.label}"
-            loss_axis.plot(t, losses, color=other.color, label=label)
-            accuracy_axis.plot(t, 100 * accuracies, color=other.color, label=label)
+        for index, (first, other, losses, accuracies) in enumerate(lines):
+            label, color = f"{first.label} → {other.label}", plt.get_cmap("tab10")(index)
+            loss_axis.plot(t, losses, color=color, label=label)
+            accuracy_axis.plot(t, 100 * accuracies, color=color, label=label)
         for ax in (loss_axis, accuracy_axis):
             for edge in (0, 1):
                 ax.axvline(edge, color="gray", linestyle=":", linewidth=0.8)
-            ax.set_xlabel("t (0: first model, 1: other)")
+            ax.set_xlabel("t (0: model before →, 1: after)")
         loss_axis.set_yscale("log")
         loss_axis.set_ylabel("loss")
         accuracy_axis.set_ylabel("accuracy %")

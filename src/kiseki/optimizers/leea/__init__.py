@@ -1,6 +1,6 @@
 """LEEA: Limited Evaluation Evolutionary Algorithm (Morse & Stanley, GECCO 2016).
 
-Each generation scores every network on one minibatch; offspring inherit a decayed share
+Each step scores every network on one minibatch; offspring inherit a decayed share
 of their parents' fitness so selection integrates evidence across batches.
 """
 
@@ -13,7 +13,7 @@ SUMMARY = "Genetic algorithm with minibatch fitness and fitness inheritance (Mor
 
 
 class Params(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
-    population_size: Annotated[int, Meta(ge=4, description="Networks per generation N")] = 1000
+    population_size: Annotated[int, Meta(ge=4, description="Networks scored each step N")] = 1000
     mutation_probability: Annotated[
         float, Meta(ge=0, le=1, description="Chance each weight of an asexual child mutates")
     ] = 0.04
@@ -33,5 +33,5 @@ class Params(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fields=Tr
         float, Meta(ge=0, le=1, description="Share of children made by crossover")
     ] = 0.5
     fitness_decay: Annotated[
-        float, Meta(ge=0, le=1, description="Share λ of inherited fitness lost each generation")
+        float, Meta(ge=0, le=1, description="Share λ of inherited fitness lost each step")
     ] = 0.2
