@@ -8,13 +8,13 @@
   kiseki machines | pull [--on M] [--models]
   kiseki report RUN[:best|final|step-N]... [-a lrp,embedding] [-s lrp.gallery=12]
   kiseki reports                       built reports; open <path>/report.md
+  kiseki serve [--port N]              the app's server; prints its URL with the session token
 
 RUN is a run id or any unique part of one. `-s key=a,b,c` queues one run per value
 (several -s make a grid). Presets: smoke (seconds; checks that a configuration runs).
 """
 
 import argparse
-import itertools
 import json
 import os
 import subprocess
@@ -25,14 +25,11 @@ from typing import Any
 
 import msgspec
 
-from kiseki import analyses, datasets, machines, models, optimizers, paths, runner
-from kiseki.spec import ModelRef, RunSpec, from_overrides, new_run_id, normalize
-from kiseki.store import ACTIVE, Run
+from kiseki import actions, analyses, datasets, machines, models, optimizers, paths, runner
+from kiseki.actions import PRESETS
+from kiseki.spec import RunSpec, normalize
+from kiseki.store import Run
 
-PRESETS: dict[str, dict[str, Any]] = {
-    "smoke": {"iterations": 20, "validation_interval": 5, "checkpoint_interval": 10,
-              "population_size": 32, "label": "smoke"},
-}
 TERMINAL = ("completed", "stopped", "failed", "paused")
 
 
@@ -94,28 +91,8 @@ def find_runs(ids: list[str]) -> list[Run]:
 
 
 def refresh(runs: list[Run]) -> None:
-    """Pull fresh files of active runs that live on remote machines."""
-    by_machine: dict[str, list[str]] = {}
-    for run in runs:
-        status = run.status()
-        if status.machine != "local" and status.state in (*ACTIVE, "paused"):
-            by_machine.setdefault(status.machine, []).append(run.id)
-    for name, run_ids in by_machine.items():
-        try:
-            remote_for(name).pull(run_ids)
-        except Exception as error:  # offline remote: show what we have
-            print(f"kiseki: could not refresh {name}: {error}", file=sys.stderr)
-
-
-def remote_for(name: str):
-    from kiseki.remote import Remote
-
-    return Remote(machines.get(name))
-
-
-def profile_for(machine: machines.Machine) -> runner.Profile:
-    contact = machines.contact() if machine.notice else None
-    return runner.Profile(name=machine.name, env=machine.env, notice=machine.notice, contact=contact)
+    for error in actions.refresh(runs):
+        print(f"kiseki: {error}", file=sys.stderr)
 
 
 # -- commands ----------------------------------------------------------------------------
@@ -128,64 +105,29 @@ def parse_value(text: str) -> Any:
         return text
 
 
-def expand_settings(settings: list[str]) -> list[dict[str, Any]]:
-    axes: list[list[tuple[str, Any]]] = []
-    for setting in settings:
+def settings_from(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, list[Any]]]:
+    """Overrides and grid axes from -d/-o/-m/--label and -s; `a,b,c` makes an axis."""
+    overrides: dict[str, Any] = {"label": args.label} if args.label else {}
+    grid: dict[str, list[Any]] = {}
+    pairs = [f"{flag}={getattr(args, flag)}" for flag in ("dataset", "optimizer", "model")
+             if getattr(args, flag)] + list(args.set)
+    for setting in pairs:
         key, sep, raw = setting.partition("=")
         if not sep:
-            raise SystemExit(f"kiseki: -s expects key=value, got {setting!r}")
+            raise ValueError(f"-s expects key=value, got {setting!r}")
         values = raw.split(",") if "," in raw and not raw.startswith("[") else [raw]
-        axes.append([(key, parse_value(v)) for v in values])
-    return [dict(combo) for combo in itertools.product(*axes)] if axes else [{}]
-
-
-def build_specs(args: argparse.Namespace) -> list[RunSpec]:
-    base: dict[str, Any] = {}
-    if args.preset:
-        base |= PRESETS[args.preset]
-    settings = list(args.set)
-    for flag in ("dataset", "optimizer", "model", "label"):
-        value = getattr(args, flag)
-        if value and "," in value and flag != "label":
-            settings.append(f"{flag}={value}")  # -o sgd,leea: one run each
-        elif value:
-            base[flag] = value
-    specs = []
-    for combo in expand_settings(settings):
-        overrides = base | combo
-        optimizer = overrides.get("optimizer", RunSpec().optimizer)
-        known = optimizers.params_type(optimizer).__struct_fields__
-        if args.preset and "population_size" in overrides and "population_size" not in known:
-            del overrides["population_size"]
-        specs.append(from_overrides(RunSpec(), overrides))
-    return specs
+        if len(values) > 1:
+            grid[key] = [parse_value(v) for v in values]
+        else:
+            overrides[key] = parse_value(raw)
+    return overrides, grid
 
 
 def cmd_run(args: argparse.Namespace) -> int:
-    specs = build_specs(args)
-    machine = machines.get(args.on)
-    profile = profile_for(machine)
-    queued: list[Run] = []
-    if machine.is_local:
-        home = paths.home()
-        runner.write_profile(home, profile)
-        for spec in specs:
-            queued.append(runner.submit(home, new_run_id(spec), spec, machine.name))
-    else:
-        remote = remote_for(machine.name)
-        remote.deploy()
-        for name in sorted({spec.dataset for spec in specs}):
-            remote.ensure_dataset(name)
-        remote.write_profile(profile)
-        ids = []
-        for spec in specs:
-            run_id = new_run_id(spec)
-            remote.submit(run_id, spec)
-            ids.append(run_id)
-        remote.pull(ids)
-        queued = find_runs(ids)
+    overrides, grid = settings_from(args)
+    queued = actions.queue(actions.build_specs(overrides, grid, args.preset), args.on)
     emit(args, [run_record(run) for run in queued],
-         "\n".join(f"queued {run.id} on {machine.name}" for run in queued))
+         "\n".join(f"queued {run.id} on {run.status().machine}" for run in queued))
     if args.watch:
         return watch(queued, args)
     return 0
@@ -284,41 +226,13 @@ def cmd_watch(args: argparse.Namespace) -> int:
 
 def cmd_control(args: argparse.Namespace) -> int:
     """stop, pause or resume, here or on the machine each run lives on."""
-    if args.here:
+    if args.here:  # over SSH from another machine: this machine's runs only
         runs = [Run.find(run_id, paths.runs_dir()) for run_id in args.runs]
+        results = [actions.control_here(run, args.command) for run in runs]
     else:
-        runs = find_runs(args.runs)
-        remote: dict[str, list[str]] = {}
-        for run in runs:
-            if run.status().machine != "local":
-                remote.setdefault(run.status().machine, []).append(run.id)
-        for name, run_ids in remote.items():
-            target = remote_for(name)
-            target.control(args.command, run_ids)
-            target.pull(run_ids)
-        runs = [r for r in runs if r.status().machine == "local"]
-    results = [control_here(run, args.command) for run in runs]
+        results = actions.control(args.command, find_runs(args.runs))
     emit(args, results, "\n".join(f"{r['id']}: {r['result']}" for r in results))
     return 0
-
-
-def control_here(run: Run, action: str) -> dict[str, str]:
-    state = run.status().state
-    if action == "resume":
-        if state not in {"paused", "stopped", "failed"}:
-            return {"id": run.id, "result": f"not resumable ({state})"}
-        run.update_status(state="queued", error=None)
-        run.event("requeued", previous=state)
-        runner.ensure_runner(paths.home())
-        return {"id": run.id, "result": "queued"}
-    if state == "queued":
-        run.update_status(state="stopped" if action == "stop" else "paused")
-        run.event("stopped" if action == "stop" else "paused", step=run.status().step)
-        return {"id": run.id, "result": run.status().state}
-    if state != "running":
-        return {"id": run.id, "result": f"already {state}"}
-    run.request(action)  # type: ignore[arg-type]
-    return {"id": run.id, "result": f"{action} requested"}
 
 
 def cmd_compare(args: argparse.Namespace) -> int:
@@ -369,19 +283,9 @@ def cmd_query(args: argparse.Namespace) -> int:
 def cmd_pull(args: argparse.Namespace) -> int:
     names = [args.on] if args.on else [n for n, m in machines.all_machines().items() if not m.is_local]
     for name in names:
-        remote_for(name).pull(args.runs or None, models=args.models)
+        actions.remote_for(name).pull(args.runs or None, models=args.models)
     emit(args, {"machines": names}, f"pulled from {', '.join(names) or 'no remotes'}")
     return 0
-
-
-def resolve_model(text: str, offline: bool) -> str:
-    """A full `run:name` ref; models of remote runs are pulled here when missing."""
-    ref = ModelRef.parse(text)
-    run = Run.find(ref.run_id)
-    machine = run.status().machine
-    if not (run.models_dir / f"{ref.name}.safetensors").exists() and machine != "local" and not offline:
-        remote_for(machine).pull([run.id], models=True)
-    return str(ModelRef(run.id, ref.name))
 
 
 def report_analyses(args: argparse.Namespace) -> dict[str, dict[str, Any]]:
@@ -399,22 +303,14 @@ def report_analyses(args: argparse.Namespace) -> dict[str, dict[str, Any]]:
 
 
 def cmd_report(args: argparse.Namespace) -> int:
-    from kiseki.report import Report, ReportSpec
-    from kiseki.report import normalize as normalize_report
+    from kiseki.report import ReportSpec
 
-    spec = normalize_report(ReportSpec(
-        models=[resolve_model(text, args.offline) for text in args.models],
-        labels=args.labels.split(",") if args.labels else [], split=args.split,
-        analyses=report_analyses(args), seed=args.seed,
-    ))
-    report = Report.create(spec)
-    env = dict(os.environ, **machines.get("local").env)
+    report = actions.create_report(ReportSpec(
+        models=args.models, labels=args.labels.split(",") if args.labels else [],
+        split=args.split, analyses=report_analyses(args), seed=args.seed,
+    ), offline=args.offline)
     started, shown = time.monotonic(), 0
-    with (report.path / "worker.log").open("ab") as log:
-        process = subprocess.Popen(
-            [sys.executable, "-m", "kiseki.worker", "report", str(report.path)],
-            stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, env=env,
-        )
+    process = actions.start_report(report)
     while True:
         try:
             code = process.wait(timeout=0.5)
@@ -427,10 +323,8 @@ def cmd_report(args: argparse.Namespace) -> int:
         shown = len(seconds)
         if code is not None:
             break
+    actions.finish_report(report, code)
     status = report.status()
-    if status.state != "completed" and not status.error:
-        status.state, status.error = "failed", f"worker exited with code {code}; see worker.log"
-        report.write_status(status)
     text = f"report {report.id} {status.state} in {duration(time.monotonic() - started)}"
     text += f": {report.path / 'report.md'}" if status.state == "completed" else \
         f": {status.error} ({report.path / 'worker.log'})"
@@ -455,37 +349,27 @@ def cmd_reports(args: argparse.Namespace) -> int:
 
 
 def cmd_machines(args: argparse.Namespace) -> int:
-    rows, data = [], []
-    for name, machine in machines.all_machines().items():
-        record: dict[str, Any] = {"name": name, "ssh": machine.ssh, "notice": machine.notice}
-        if machine.is_local:
-            record |= {"gpu_awake": local_gpu_awake(), "runner": runner.runner_running(paths.home())}
+    records = actions.machine_records()
+    rows = []
+    for record in records:
+        if record["ssh"] is None:
             gpu = "awake" if record["gpu_awake"] else "asleep"
+        elif "error" in record:
+            gpu = f"unreachable: {record['error'][:60]}"
         else:
-            try:
-                record |= remote_for(name).probe()
-                gpu = ", ".join(f"{g['name']} {g['utilization']}% "
-                                f"{g['memory_used_mib']}/{g['memory_total_mib']}MiB"
-                                for g in record["gpus"]) or "none"
-            except Exception as error:
-                record["error"] = str(error)
-                gpu = f"unreachable: {str(error)[:60]}"
-        data.append(record)
-        rows.append([name, machine.ssh or "-", gpu])
-    emit(args, data, table(rows, ["machine", "ssh", "gpu"]))
+            gpu = ", ".join(f"{g['name']} {g['utilization']}% "
+                            f"{g['memory_used_mib']}/{g['memory_total_mib']}MiB"
+                            for g in record["gpus"]) or "none"
+        rows.append([record["name"], record["ssh"] or "-", gpu])
+    emit(args, records, table(rows, ["machine", "ssh", "gpu"]))
     return 0
 
 
-def local_gpu_awake() -> bool | None:
-    """Whether a discrete NVIDIA GPU is powered up, read without waking it."""
-    for device in Path("/sys/bus/pci/devices").glob("*"):
-        try:
-            if (device / "vendor").read_text().strip() == "0x10de" and \
-                    (device / "class").read_text().startswith("0x03"):
-                return (device / "power" / "runtime_status").read_text().strip() == "active"
-        except OSError:
-            continue
-    return None
+def cmd_serve(args: argparse.Namespace) -> int:
+    from kiseki import server
+
+    server.serve(port=args.port)
+    return 0
 
 
 def cmd_datasets(args: argparse.Namespace) -> int:
@@ -620,6 +504,10 @@ def parser() -> argparse.ArgumentParser:
     data.add_argument("names", nargs="*")
     data.add_argument("--fetch", action="store_true", help="download and parse missing ones")
     data.set_defaults(handler=cmd_datasets)
+
+    serve = sub.add_parser("serve", parents=[common], help="the app's server (prints its URL)")
+    serve.add_argument("--port", type=int, default=0, help="0: any free port")
+    serve.set_defaults(handler=cmd_serve)
 
     sub.add_parser("machines", parents=[common], help="machines and their GPUs").set_defaults(
         handler=cmd_machines)
