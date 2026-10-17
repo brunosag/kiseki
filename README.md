@@ -1,6 +1,8 @@
 # `kiseki`
 
-PyTorch experiments for comparing gradient-based and evolutionary optimization on the same neural network architectures. Provides a FastAPI backend, a React dashboard, and a CLI for headless training.
+Experiments comparing gradient descent with evolutionary optimization on the same small
+CNNs, and reports that compare the networks they produce. JAX on the GPU, a CLI built for
+agents, a desktop app, and runs on remote machines over SSH.
 
 > **/kiseki/** `noun`
 >
@@ -9,110 +11,65 @@ PyTorch experiments for comparing gradient-based and evolutionary optimization o
 
 ## What is included
 
-- **Datasets:** MNIST, Fashion MNIST, and CIFAR-10 through `torchvision`.
-- **Models:** PyTorch CNNs selected by dataset.
-- **Optimizers:** `SGD`, `LEEA`, and `CoSyNE`.
-- **Training runtime:** Experiment start, stop, pause, resume, checkpoints, target accuracy, deterministic seeding, and CPU/GPU selection.
-- **Analysis:** Checkpoint comparison reports with metrics, calibration, prediction overlap, activation and weight summaries, t-SNE/PCA projections, robustness curves, and LRP relevance samples.
-- **Dashboard:** React, Vite, shadcn/ui, Recharts, and server-sent event streams from the backend.
-
-## Requirements
-
-- Python 3.14+
-- `uv`
-- Node.js and npm
-- tmux for the repository-level `npm run train` helper
-
-On NixOS, run this once from the repository root so `shell.nix` exposes CUDA libraries and the system CA bundle before Python starts:
-
-```bash
-direnv allow
-```
+- **Datasets:** MNIST, Fashion-MNIST, KMNIST, CIFAR-10.
+- **Models:** small_cnn, wide_cnn, vgg_mini, declared as layer lists.
+- **Optimizers:** SGD, LEEA, CoSyNE, OpenAI-ES. Populations are scored in compiled,
+  memory-sized chunks; many steps run per round trip to the GPU.
+- **Runs:** queue, stop, pause and resume (bit-exact), checkpoints, target accuracy, on
+  this machine or a remote one, surviving sleep and dropped connections.
+- **Reports:** accuracy and per-class metrics, calibration, agreement (McNemar), weights,
+  activations and CKA, t-SNE/PCA embeddings, robustness to corruptions, LRP heatmaps,
+  loss landscapes and linear mode connectivity.
 
 ## Setup
 
-Install frontend dependencies:
+On NixOS, `direnv allow` (or `nix develop`) provides Python 3.14, uv, Node and Electron.
+Then:
 
 ```bash
-npm --prefix frontend install
+uv sync --extra cuda      # drop --extra cuda on machines without an NVIDIA GPU
+uv run kiseki datasets --fetch mnist
 ```
 
-Backend dependencies are managed by `uv` from `backend/pyproject.toml`.
-
-## Run the app
-
-Start the backend and frontend together from the repository root:
+## CLI
 
 ```bash
-npm run dev
+kiseki options                                   # datasets, models, optimizers and their params
+kiseki run -o sgd,leea --preset smoke --watch    # a few seconds each: does it train?
+kiseki run -o leea -s population_size=500,1000 -s iterations=5000
+kiseki ls                                        # runs here and mirrored from remotes
+kiseki show RUN | watch RUN... | compare RUN... | plot RUN... -o curves.png
+kiseki stop | pause | resume RUN...
+kiseki query "select optimizer, max(best_accuracy) from runs group by 1"
+kiseki report RUN_A RUN_B:final                  # writes report.md, report.json and figures
 ```
 
-This starts FastAPI at `http://127.0.0.1:8000` and Vite at
-`http://127.0.0.1:5173`. The frontend proxies `/api` requests to the backend.
+`RUN` is any unique part of a run id. Every command accepts `--json`. The commands assume
+the venv is active (`source .venv/bin/activate`); otherwise prefix them with `uv run`.
 
-Run only the backend from `backend/`:
+## Remote machines
+
+Machines are listed in `~/.config/kiseki/machines.toml` by their `~/.ssh/config` alias
+(see `src/kiseki/machines.py` for the format). `kiseki run --on lugia ...` deploys the
+code, makes the dataset available and queues the runs there; `kiseki machines` shows each
+machine's GPU, and `kiseki pull` mirrors results. On a shared server, set `notice` and
+the runner keeps the required usage notice up to date while runs are active.
+
+## The app
 
 ```bash
-uv run fastapi dev main.py
+ui/kiseki-app
 ```
 
-Run only the frontend from `frontend/`:
-
-```bash
-npm run dev -- --host 127.0.0.1 --port 5173
-```
-
-## Headless training
-
-Use the tmux helper from the repository root for SSH-safe runs:
-
-```bash
-npm run train -- --device gpu --optimizer LEEA --iterations 100000
-```
-
-It creates a `kiseki-train` session, runs `uv run kiseki train` from `backend/`, and writes a log under `logs/`. Detach with `Ctrl-b d`; reattach with:
-
-```bash
-tmux attach -t kiseki-train
-```
-
-Resume from the newest checkpoint, or pass a specific run ID:
-
-```bash
-npm run train -- --resume
-npm run train -- --resume <run_id>
-```
-
-Run the Python CLI directly from `backend/` when tmux is not needed:
-
-```bash
-uv run kiseki train --device cpu --optimizer SGD --iterations 100
-```
-
-Useful CLI options include `--dataset`, `--batch-size`, `--target-acc`, `--checkpoint-interval`, `--seed`, `--deterministic`, and optimizer-specific parameters such as `--learning-rate`, `--population-size`, `--mutation-probability`, `--tournament-size`, and `--elitism-ratio`.
+It starts `kiseki serve` and opens the app: live runs and curves, new runs, comparisons,
+reports with interactive embeddings and LRP galleries, and machines.
 
 ## Checks
 
-Run backend tests and linting from `backend/`:
-
 ```bash
 uv run pytest
-uv run ruff check .
+uv run ruff format src tests && uv run ruff check src tests
+uv run basedpyright
 ```
 
-Run frontend checks from `frontend/`:
-
-```bash
-npm run lint
-npm run build
-```
-
-## Project layout
-
-- `backend/kiseki/`: FastAPI app, experiment manager, models, optimizers, checkpointing, analysis, data loading, and CLI.
-- `backend/tests/`: Backend unit and API tests.
-- `frontend/src/`: Dashboard application and API client.
-- `scripts/dev.sh`: Starts backend and frontend together.
-- `scripts/train-tmux.sh`: Runs CLI training inside tmux.
-
-Runtime artifacts are written to `backend/data/`, `backend/checkpoints/`, and `logs/`.
+`AGENTS.md` maps the code for agents; the design and its reasons are in `docs/design/`.
