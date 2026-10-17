@@ -16,7 +16,6 @@ import time
 import traceback
 from dataclasses import dataclass, field
 from functools import cached_property
-from pathlib import Path
 from typing import Any
 
 import jax
@@ -32,7 +31,7 @@ import matplotlib.pyplot as plt
 from kiseki import analyses, datasets, models
 from kiseki.models.layers import Network
 from kiseki.report import Report, ReportSpec, ReportStatus
-from kiseki.spec import ModelRef, RunSpec, encode
+from kiseki.spec import ModelRef, RunSpec
 from kiseki.store import Run
 from kiseki.worker import checkpoint
 from kiseki.worker import data as device_data
@@ -248,12 +247,22 @@ def build(report: Report) -> int:
         params = msgspec.convert(raw, analyses.params_type(name))
         section = analyses.load_impl(name).run(params, context)
         status.seconds[name] = round(time.perf_counter() - started, 2)
+        report.write_status(status)
         print(f"{name}: {status.seconds[name]:.1f}s", flush=True)
         sections.append(section)
     write_outputs(report, context, sections)
     status.state, status.stage = "completed", ""
     report.write_status(status)
     return 0
+
+
+def _plain(value: Any) -> Any:
+    """numpy and JAX values in analysis output, as JSON-ready Python values."""
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, np.ndarray | jax.Array):
+        return np.asarray(value).tolist()
+    raise NotImplementedError(f"cannot encode {type(value).__name__}")
 
 
 def write_outputs(report: Report, context: Context, sections: list[Section]) -> None:
@@ -269,7 +278,8 @@ def write_outputs(report: Report, context: Context, sections: list[Section]) -> 
         "sections": [msgspec.structs.asdict(s) if isinstance(s, msgspec.Struct) else s.__dict__
                      for s in sections],
     }
-    (report.path / "report.json").write_bytes(encode(document))
+    (report.path / "report.json").write_bytes(
+        msgspec.json.format(msgspec.json.encode(document, enc_hook=_plain), indent=2) + b"\n")
     header = [
         f"# Report {report.id}",
         "",
@@ -294,8 +304,3 @@ def main(report: Report) -> int:
         status.state, status.error = "failed", f"{type(error).__name__}: {error}"
         report.write_status(status)
         return 1
-
-
-def ensure_path(path: Path) -> Path:
-    path.mkdir(parents=True, exist_ok=True)
-    return path

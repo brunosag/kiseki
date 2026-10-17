@@ -6,6 +6,8 @@
   kiseki stop | pause | resume RUN...
   kiseki compare RUN... | plot RUN... -o out.png | query "SQL"
   kiseki machines | pull [--on M] [--models]
+  kiseki report RUN[:best|final|step-N]... [-a lrp,embedding] [-s lrp.gallery=12]
+  kiseki reports                       built reports; open <path>/report.md
 
 RUN is a run id or any unique part of one. `-s key=a,b,c` queues one run per value
 (several -s make a grid). Presets: smoke (seconds; checks that a configuration runs).
@@ -15,6 +17,7 @@ import argparse
 import itertools
 import json
 import os
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -22,8 +25,8 @@ from typing import Any
 
 import msgspec
 
-from kiseki import datasets, machines, models, optimizers, paths, runner
-from kiseki.spec import RunSpec, from_overrides, new_run_id, normalize
+from kiseki import analyses, datasets, machines, models, optimizers, paths, runner
+from kiseki.spec import ModelRef, RunSpec, from_overrides, new_run_id, normalize
 from kiseki.store import ACTIVE, Run
 
 PRESETS: dict[str, dict[str, Any]] = {
@@ -371,6 +374,86 @@ def cmd_pull(args: argparse.Namespace) -> int:
     return 0
 
 
+def resolve_model(text: str, offline: bool) -> str:
+    """A full `run:name` ref; models of remote runs are pulled here when missing."""
+    ref = ModelRef.parse(text)
+    run = Run.find(ref.run_id)
+    machine = run.status().machine
+    if not (run.models_dir / f"{ref.name}.safetensors").exists() and machine != "local" and not offline:
+        remote_for(machine).pull([run.id], models=True)
+    return str(ModelRef(run.id, ref.name))
+
+
+def report_analyses(args: argparse.Namespace) -> dict[str, dict[str, Any]]:
+    names = args.analyses.split(",") if args.analyses else list(analyses.NAMES)
+    chosen: dict[str, dict[str, Any]] = {name: {} for name in names}
+    for setting in args.set:
+        key, sep, raw = setting.partition("=")
+        name, dot, field = key.partition(".")
+        if not sep or not dot:
+            raise ValueError(f"-s expects analysis.key=value, got {setting!r}")
+        if name not in chosen:
+            raise ValueError(f"-s {setting}: {name} is not among the chosen analyses")
+        chosen[name][field] = parse_value(raw)
+    return chosen
+
+
+def cmd_report(args: argparse.Namespace) -> int:
+    from kiseki.report import Report, ReportSpec
+    from kiseki.report import normalize as normalize_report
+
+    spec = normalize_report(ReportSpec(
+        models=[resolve_model(text, args.offline) for text in args.models],
+        labels=args.labels.split(",") if args.labels else [], split=args.split,
+        analyses=report_analyses(args), seed=args.seed,
+    ))
+    report = Report.create(spec)
+    env = dict(os.environ, **machines.get("local").env)
+    started, shown = time.monotonic(), 0
+    with (report.path / "worker.log").open("ab") as log:
+        process = subprocess.Popen(
+            [sys.executable, "-m", "kiseki.worker", "report", str(report.path)],
+            stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, env=env,
+        )
+    while True:
+        try:
+            code = process.wait(timeout=0.5)
+        except subprocess.TimeoutExpired:
+            code = None
+        seconds = list(report.status().seconds.items())
+        if not args.json:
+            for name, value in seconds[shown:]:
+                print(f"  {name} {value:.1f}s", flush=True)
+        shown = len(seconds)
+        if code is not None:
+            break
+    status = report.status()
+    if status.state != "completed" and not status.error:
+        status.state, status.error = "failed", f"worker exited with code {code}; see worker.log"
+        report.write_status(status)
+    text = f"report {report.id} {status.state} in {duration(time.monotonic() - started)}"
+    text += f": {report.path / 'report.md'}" if status.state == "completed" else \
+        f": {status.error} ({report.path / 'worker.log'})"
+    emit(args, {"id": report.id, "path": str(report.path), "status": status}, text)
+    return 0 if status.state == "completed" else 1
+
+
+def cmd_reports(args: argparse.Namespace) -> int:
+    from kiseki.report import Report
+
+    base = paths.reports_dir()
+    found = sorted(base.iterdir(), reverse=True)[:args.limit] if base.exists() else []
+    records, rows = [], []
+    for path in found:
+        report = Report(path)
+        spec, status = report.spec(), report.status()
+        records.append({"id": report.id, "path": str(path), "spec": spec, "status": status})
+        rows.append([report.id, status.state, duration(sum(status.seconds.values())),
+                     " ".join(spec.models), ",".join(spec.analyses)])
+    emit(args, records, table(rows, ["id", "state", "time", "models", "analyses"]))
+    return 0
+
+
 def cmd_machines(args: argparse.Namespace) -> int:
     rows, data = [], []
     for name, machine in machines.all_machines().items():
@@ -518,6 +601,20 @@ def parser() -> argparse.ArgumentParser:
     pull.add_argument("--on", metavar="MACHINE")
     pull.add_argument("--models", action="store_true", help="also copy saved networks")
     pull.set_defaults(handler=cmd_pull)
+
+    report = sub.add_parser("report", parents=[common], help="analyse trained networks")
+    report.add_argument("models", nargs="+", metavar="RUN[:NAME]",
+                        help="NAME: best (default), final or step-N")
+    report.add_argument("-a", "--analyses", help=f"comma-separated, of {','.join(analyses.NAMES)}")
+    report.add_argument("-s", "--set", action="append", default=[], metavar="ANALYSIS.KEY=VALUE")
+    report.add_argument("--labels", help="comma-separated, one per model")
+    report.add_argument("--split", choices=["test", "val"], default="test")
+    report.add_argument("--seed", type=int, default=0)
+    report.set_defaults(handler=cmd_report)
+
+    reports = sub.add_parser("reports", parents=[common], help="list reports")
+    reports.add_argument("-n", "--limit", type=int, default=20)
+    reports.set_defaults(handler=cmd_reports)
 
     data = sub.add_parser("datasets", parents=[common], help="datasets and whether cached")
     data.add_argument("names", nargs="*")
