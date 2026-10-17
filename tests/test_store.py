@@ -36,3 +36,20 @@ def test_control_of_queued_and_paused_runs(home, monkeypatch):
     run.update_status(state="running")
     assert actions.control_here(run, "stop")["result"] == "stop requested"
     assert run.pending_request() == "stop"
+
+
+def test_gpu_query_output_and_its_failure_message():
+    from kiseki.machines import parse_gpus
+
+    assert parse_gpus("NVIDIA GeForce RTX 5070 Ti, 1200, 16303, 7\n") == (
+        [
+            {
+                "name": "NVIDIA GeForce RTX 5070 Ti",
+                "memory_used_mib": 1200,
+                "memory_total_mib": 16303,
+                "utilization": 7,
+            }
+        ],
+        None,
+    )
+    assert parse_gpus("No devices were found\n") == ([], "No devices were found")

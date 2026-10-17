@@ -44,6 +44,8 @@ def test_run_completes_with_curves_and_models(home, mnist, optimizer):
     assert {"best", "final", "step-10", "step-20"} <= set(run.model_names())
     assert [r["step"] for r in run.iter_rows("val")] == [5, 10, 15, 20]
     assert [r["step"] for r in run.iter_rows("train")] == list(range(1, 21))
+    elapsed = [r["elapsed"] for r in run.iter_rows("train")]
+    assert elapsed == sorted(elapsed) and elapsed[-1] > 0
 
 
 def test_pause_and_resume_reproduce_the_uninterrupted_run(home, mnist, monkeypatch):

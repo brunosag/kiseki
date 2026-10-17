@@ -27,6 +27,32 @@ import msgspec
 
 from kiseki import paths
 
+GPU_QUERY = (
+    "nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu "
+    "--format=csv,noheader,nounits"
+)
+
+
+def parse_gpus(text: str) -> tuple[list[dict], str | None]:
+    """GPUs from `GPU_QUERY` output, and nvidia-smi's message when it reports none
+    (e.g. "No devices were found" from a GPU that fell off the bus)."""
+    gpus, problems = [], []
+    for line in filter(None, (line.strip() for line in text.splitlines())):
+        fields = [field.strip() for field in line.split(",")]
+        if len(fields) != 4 or not all(f.isdigit() for f in fields[1:]):
+            problems.append(line)
+            continue
+        name, used, total, utilization = fields
+        gpus.append(
+            {
+                "name": name,
+                "memory_used_mib": int(used),
+                "memory_total_mib": int(total),
+                "utilization": int(utilization),
+            }
+        )
+    return gpus, "; ".join(problems) or None
+
 
 class Contact(msgspec.Struct, frozen=True):
     name: str

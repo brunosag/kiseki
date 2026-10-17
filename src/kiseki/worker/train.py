@@ -435,21 +435,20 @@ class Loop:
             rate = executed / seconds
             self.rate = rate if self.rate is None else 0.7 * self.rate + 0.3 * rate
         steps = range(start + 1, start + executed + 1)
+        # steps of a block take equal shares of its time
+        elapsed = (start_elapsed + seconds * np.arange(1, executed + 1) / executed).round(3)
         names = self.program.train_names
         columns = [buffers[name][:executed].tolist() for name in names]
         self.run.append(
             "train",
             [
-                {"step": s, **dict(zip(names, values, strict=True))}
-                for s, *values in zip(steps, *columns, strict=True)
+                {"step": s, "elapsed": e, **dict(zip(names, values, strict=True))}
+                for s, e, *values in zip(steps, elapsed.tolist(), *columns, strict=True)
             ],
         )
         val_rows = []
         for i in np.flatnonzero(~np.isnan(buffers["val_accuracy"][:executed])):
-            row = {
-                "step": start + int(i) + 1,
-                "elapsed": round(start_elapsed + seconds * (int(i) + 1) / executed, 3),
-            }
+            row = {"step": start + int(i) + 1, "elapsed": float(elapsed[i])}
             row |= {name: float(buffers[name][i]) for name in self.program.val_names}
             val_rows.append(row)
         self.run.append("val", val_rows)

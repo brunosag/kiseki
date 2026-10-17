@@ -12,9 +12,12 @@ be local, so web pages in a browser can neither read nor drive it.
   GET  /api/runs/{id}/rows/{train|val}?offset=N
                                          {columns: {name: [values]}, offset}: rows past
                                          byte offset N, column-wise (uPlot's layout)
+  GET  /api/runs/{id}/files/{path}       worker.log, models/*.safetensors, summary.json, ...
   POST /api/runs                         {overrides, grid, preset, machine} -> [{id, spec, status}]
   POST /api/runs/{id}/{stop|pause|resume}
-  GET  /api/machines?fresh=1             machines with GPU state (cached 30 s)
+  GET  /api/machines?fresh=1             machines with GPU state; a cache older than 30 s
+                                         is returned while a new probe runs (`machines`
+                                         event); fresh=1 waits for the probe
   GET  /api/reports                      [{id, spec, status}]
   GET  /api/reports/{id}                 {id, spec, status, report: report.json or null}
   GET  /api/reports/{id}/files/{path}    figures/*.png, arrays/*.npy
@@ -39,9 +42,8 @@ from starlette.responses import FileResponse, JSONResponse, Response, StreamingR
 from starlette.routing import Mount, Route
 from starlette.staticfiles import StaticFiles
 
-from kiseki import actions, analyses, datasets, machines, models, optimizers, paths, store
+from kiseki import actions, paths, store
 from kiseki.report import Report, ReportSpec
-from kiseki.spec import RunSpec
 from kiseki.store import ACTIVE, Run
 
 POLL_SECONDS = 1.0
@@ -87,7 +89,7 @@ class State:
         self.subscribers: set[asyncio.Queue] = set()
         self.machines: list[dict[str, Any]] = []
         self.machines_at = 0.0
-        self.machines_lock = threading.Lock()
+        self.probing: asyncio.Task | None = None
         self.reports: dict[str, Any] = {}  # report id -> Popen of builds started here
 
     def publish(self, event: str, data: Any) -> None:
@@ -101,32 +103,7 @@ class State:
 
 
 async def options(request: Request) -> Response:
-    return ok(
-        {
-            "datasets": {n: datasets.info(n) for n in datasets.NAMES},
-            "cached": {n: datasets.is_cached(n) for n in datasets.NAMES},
-            "models": list(models.NAMES),
-            "optimizers": {
-                n: {
-                    "summary": optimizers.summary(n),
-                    "params": msgspec.json.schema(optimizers.params_type(n)),
-                }
-                for n in optimizers.NAMES
-            },
-            "run": msgspec.json.schema(RunSpec),
-            "defaults": RunSpec(),
-            "presets": actions.PRESETS,
-            "analyses": {
-                n: {
-                    "title": analyses.title(n),
-                    "summary": analyses.summary(n),
-                    "params": msgspec.json.schema(analyses.params_type(n)),
-                }
-                for n in analyses.NAMES
-            },
-            "machines": list(machines.all_machines()),
-        }
-    )
+    return ok(actions.catalog())
 
 
 async def list_runs(request: Request) -> Response:
@@ -156,10 +133,8 @@ async def run_rows(request: Request) -> Response:
     rows, next_offset = await asyncio.to_thread(
         store.read_ndjson, run.path / f"{kind}.ndjson", offset
     )
-    columns: dict[str, list[Any]] = {}
-    for row in rows:
-        for key, value in row.items():
-            columns.setdefault(key, []).append(value)
+    keys = dict.fromkeys(key for row in rows for key in row)  # rows of older runs lack some
+    columns = {key: [row.get(key) for row in rows] for key in keys}
     return ok({"columns": columns, "offset": next_offset})
 
 
@@ -183,18 +158,28 @@ async def control_run(request: Request) -> Response:
     return ok(results[0] if results else {"id": run.id, "result": "no change"})
 
 
+def probe_machines(state: State) -> asyncio.Task:
+    """The probe of every machine in flight, started unless one is; it publishes
+    `machines` when done."""
+    if state.probing is None or state.probing.done():
+
+        async def probe():
+            state.machines = await asyncio.to_thread(actions.machine_records)
+            state.machines_at = time.monotonic()
+            state.publish("machines", state.machines)
+
+        state.probing = asyncio.create_task(probe())
+    return state.probing
+
+
 async def list_machines(request: Request) -> Response:
+    """Answers from the cache when there is one: a stale cache is returned at once and
+    the probe it starts arrives as a `machines` event. `fresh=1` waits for a probe."""
     state: State = request.app.state.kiseki
-    fresh = request.query_params.get("fresh") == "1"
-    if fresh or time.monotonic() - state.machines_at > MACHINES_TTL:
-
-        def probe():
-            with state.machines_lock:
-                state.machines = actions.machine_records()
-                state.machines_at = time.monotonic()
-
-        await asyncio.to_thread(probe)
-        state.publish("machines", state.machines)
+    if request.query_params.get("fresh") == "1" or not state.machines_at:
+        await probe_machines(state)
+    elif time.monotonic() - state.machines_at > MACHINES_TTL:
+        probe_machines(state)
     return ok(state.machines)
 
 
@@ -217,13 +202,26 @@ async def get_report(request: Request) -> Response:
     return ok(data)
 
 
+async def run_file(request: Request) -> Response:
+    run = find_run(request)
+    return file_within(run.path, request.path_params["path"])
+
+
 async def report_file(request: Request) -> Response:
     report = Report.find(request.path_params["id"])
-    path = (report.path / request.path_params["path"]).resolve()
-    if not path.is_relative_to(report.path.resolve()) or not path.is_file():
+    return file_within(report.path, request.path_params["path"], cache=True)
+
+
+def file_within(root: Path, relative: str, cache: bool = False) -> Response:
+    path = (root / relative).resolve()
+    if not path.is_relative_to(root.resolve()) or not path.is_file():
         return error("not found", 404)
-    media = "application/octet-stream" if path.suffix == ".npy" else None
-    return FileResponse(path, media_type=media, headers={"Cache-Control": "max-age=3600"})
+    binary = path.suffix in {".npy", ".safetensors"}
+    media = (
+        "application/octet-stream" if binary else ("text/plain" if path.suffix == ".log" else None)
+    )
+    headers = {"Cache-Control": "max-age=3600" if cache else "no-cache"}
+    return FileResponse(path, media_type=media, headers=headers)
 
 
 async def create_report(request: Request) -> Response:
@@ -379,6 +377,7 @@ def create_app(token: str):
     async def lifespan(app: Starlette):
         tasks.append(asyncio.create_task(watch_statuses(state)))
         tasks.append(asyncio.create_task(refresh_remotes()))
+        probe_machines(state)  # SSH connections open while the user looks at runs
         yield
         for task in tasks:
             task.cancel()
@@ -389,6 +388,7 @@ def create_app(token: str):
         Route("/api/runs", create_runs, methods=["POST"]),
         Route("/api/runs/{id}", get_run),
         Route("/api/runs/{id}/rows/{kind}", run_rows),
+        Route("/api/runs/{id}/files/{path:path}", run_file),
         Route("/api/runs/{id}/{action}", control_run, methods=["POST"]),
         Route("/api/machines", list_machines),
         Route("/api/reports", list_reports),

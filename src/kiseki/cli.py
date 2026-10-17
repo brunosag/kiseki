@@ -492,22 +492,7 @@ def cmd_datasets(args: argparse.Namespace) -> int:
 
 
 def cmd_options(args: argparse.Namespace) -> int:
-    data = {
-        "datasets": {
-            n: msgspec.to_builtins(datasets.info(n), order="deterministic") for n in datasets.NAMES
-        },
-        "models": list(models.NAMES),
-        "optimizers": {
-            n: {
-                "summary": optimizers.summary(n),
-                "params": msgspec.json.schema(optimizers.params_type(n)),
-            }
-            for n in optimizers.NAMES
-        },
-        "run": msgspec.json.schema(RunSpec),
-        "presets": PRESETS,
-        "machines": list(machines.all_machines()),
-    }
+    data = actions.catalog()
     lines = ["datasets: " + ", ".join(datasets.NAMES), "models: " + ", ".join(models.NAMES)]
     for name in optimizers.NAMES:
         defaults = msgspec.to_builtins(optimizers.params_type(name)())

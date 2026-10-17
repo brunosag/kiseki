@@ -15,7 +15,7 @@ from pathlib import Path
 import msgspec
 
 from kiseki import paths
-from kiseki.machines import Machine
+from kiseki.machines import GPU_QUERY, Machine, parse_gpus
 from kiseki.runner import Profile
 from kiseki.spec import RunSpec
 
@@ -197,27 +197,18 @@ class Remote:
 
     def probe(self) -> dict:
         """GPU state and queue of the remote, from one SSH round trip."""
-        script = (
-            "nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu "
-            "--format=csv,noheader,nounits 2>/dev/null; echo '--'; "
-            f"cat {_remote_path(self.home)}/queue.pid 2>/dev/null; echo '--'; "
+        script = (  # no nvidia-smi: no GPUs, not an error; the pid counts only if it's a runner
+            f"command -v nvidia-smi >/dev/null && {GPU_QUERY} 2>&1; echo '--'; "
+            f"pid=$(cat {_remote_path(self.home)}/queue.pid 2>/dev/null); "
+            'grep -qs kiseki.runner "/proc/$pid/cmdline" && echo "$pid"; echo \'--\'; '
             f"test -x {_remote_path(self.python)} && echo deployed; true"
         )
         out = self.run(script, timeout=30).stdout.decode()
         gpus_text, pid_text, deployed = (part.strip() for part in out.split("--", 2))
-        gpus = []
-        for line in filter(None, gpus_text.splitlines()):
-            name, used, total, util = (field.strip() for field in line.split(","))
-            gpus.append(
-                {
-                    "name": name,
-                    "memory_used_mib": int(used),
-                    "memory_total_mib": int(total),
-                    "utilization": int(util),
-                }
-            )
+        gpus, gpu_error = parse_gpus(gpus_text)
         return {
             "gpus": gpus,
+            "gpu_error": gpu_error,
             "runner_pid": int(pid_text) if pid_text.isdigit() else None,
             "deployed": deployed == "deployed",
         }

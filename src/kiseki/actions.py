@@ -7,12 +7,14 @@ import itertools
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
 import msgspec
 
-from kiseki import machines, optimizers, paths, runner
+from kiseki import analyses, datasets, machines, models, optimizers, paths, runner
+from kiseki.machines import GPU_QUERY
 from kiseki.report import Report, ReportSpec
 from kiseki.report import normalize as normalize_report
 from kiseki.spec import ModelRef, RunSpec, from_overrides, new_run_id
@@ -56,28 +58,75 @@ def local_gpu_awake() -> bool | None:
     return None
 
 
-def machine_records() -> list[dict[str, Any]]:
-    """Every machine with its state: GPUs and runner (one SSH round trip per remote)."""
-    records = []
-    for name, machine in machines.all_machines().items():
-        record: dict[str, Any] = {
-            "name": name,
-            "ssh": machine.ssh,
-            "notice": machine.notice,
-            "description": machine.description,
-        }
-        if machine.is_local:
-            record |= {
-                "gpu_awake": local_gpu_awake(),
-                "runner": runner.runner_running(paths.home()),
+def catalog() -> dict[str, Any]:
+    """What can be run and analysed, with JSON Schemas for every spec and params type,
+    and the machines to run on: `kiseki options --json` and the app's forms."""
+    return {
+        "datasets": {n: datasets.info(n) for n in datasets.NAMES},
+        "cached": {n: datasets.is_cached(n) for n in datasets.NAMES},
+        "models": list(models.NAMES),
+        "optimizers": {
+            n: {
+                "summary": optimizers.summary(n),
+                "params": msgspec.json.schema(optimizers.params_type(n)),
             }
-        else:
-            try:
-                record |= remote_for(name).probe()
-            except Exception as failure:  # unreachable: report it, keep the others
-                record["error"] = str(failure)
-        records.append(record)
-    return records
+            for n in optimizers.NAMES
+        },
+        "run": msgspec.json.schema(RunSpec),
+        "defaults": RunSpec(),
+        "presets": PRESETS,
+        "analyses": {
+            n: {
+                "title": analyses.title(n),
+                "summary": analyses.summary(n),
+                "params": msgspec.json.schema(analyses.params_type(n)),
+            }
+            for n in analyses.NAMES
+        },
+        "machines": [
+            {"name": name, "ssh": m.ssh, "description": m.description, "notice": m.notice}
+            for name, m in machines.all_machines().items()
+        ],
+    }
+
+
+def local_gpus() -> dict[str, Any]:
+    """This machine's GPU: its power state, and memory and load when it is awake anyway
+    (querying a sleeping GPU would wake it)."""
+    awake = local_gpu_awake()
+    record: dict[str, Any] = {"gpu_awake": awake}
+    if awake:
+        try:
+            out = subprocess.run(
+                GPU_QUERY.split(), capture_output=True, text=True, timeout=10
+            ).stdout
+            record["gpus"], record["gpu_error"] = machines.parse_gpus(out)
+        except (OSError, subprocess.TimeoutExpired) as failure:
+            record["gpu_error"] = str(failure)
+    return record
+
+
+def machine_record(name: str, machine: machines.Machine) -> dict[str, Any]:
+    record: dict[str, Any] = {
+        "name": name,
+        "ssh": machine.ssh,
+        "notice": machine.notice,
+        "description": machine.description,
+    }
+    if machine.is_local:
+        return record | local_gpus() | {"runner": runner.runner_running(paths.home())}
+    try:
+        return record | remote_for(name).probe()
+    except Exception as failure:  # unreachable: report it, keep the others
+        return record | {"error": str(failure)}
+
+
+def machine_records() -> list[dict[str, Any]]:
+    """Every machine with its state: GPUs and runner. Remotes are probed in parallel, one
+    SSH round trip each, so the slowest decides the wait."""
+    found = machines.all_machines()
+    with ThreadPoolExecutor(max_workers=max(1, len(found))) as pool:
+        return list(pool.map(machine_record, found.keys(), found.values()))
 
 
 # -- runs --------------------------------------------------------------------------------

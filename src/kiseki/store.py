@@ -4,7 +4,7 @@
   spec.json      frozen RunSpec (normalized)
   status.json    current RunStatus, replaced atomically by the worker or launcher
   events.ndjson  lifecycle events, append-only
-  train.ndjson   one row per step: step, loss, accuracy, optimizer extras
+  train.ndjson   one row per step: step, elapsed, loss, accuracy, optimizer extras
   val.ndjson     one row per validation: step, loss, accuracy, elapsed, extras
   models/        best / final / step-<n> saved models (.safetensors; metadata names the
                  run, model, dataset and step)

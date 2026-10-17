@@ -50,3 +50,6 @@ in its package's `NAMES`; the CLI, server and UI pick it up from the catalogs.
   `LD_LIBRARY_PATH` (`worker/runtime.py`), so launchers need not set it.
 - Datasets download from their original hosts; lugia reaches some slowly (CIFAR-10 from
   Toronto), and `Remote.ensure_dataset` then pushes this machine's parsed copy.
+- A remote needs uv on PATH or in `~/.local/bin` (`curl -LsSf https://astral.sh/uv/install.sh | sh`);
+  the vps got it that way on 2026-10-17. Its first SSH connection takes ~12 s over
+  Tailscale; later commands reuse the ControlMaster connection (~0.5 s).

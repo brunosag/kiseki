@@ -155,8 +155,11 @@ def run(params: Params, context: Context) -> Section:
     k = max(1, min(params.neighbors, (n - 1) // 2))  # trustworthiness is defined for k < n/2
     run_tsne = jax.jit(tsne, static_argnums=(2, 3))
     summary, rows = {}, []
-    data: dict[str, Any] = {"indices": context.save_array("embedding-indices", indices)}
-    arrays = [data["indices"]]
+    data: dict[str, Any] = {
+        "indices": context.save_array("embedding-indices", indices),
+        "labels": context.save_array("embedding-labels", context.labels[indices]),
+    }
+    arrays = [data["indices"], data["labels"]]
     count = len(context.subjects)
     figure, axes = plt.subplots(count, 2, figsize=(9, 4.4 * count), squeeze=False)
     for number, subject in enumerate(context.subjects):

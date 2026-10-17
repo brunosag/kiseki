@@ -1,7 +1,10 @@
+import threading
+import time
+
 import pytest
 from starlette.testclient import TestClient
 
-from kiseki import runner
+from kiseki import actions, runner, server
 from kiseki.report import Report, ReportSpec
 from kiseki.server import create_app
 from kiseki.spec import RunSpec
@@ -60,3 +63,34 @@ def test_report_files_stay_inside_the_report(client, home):
     base = f"/api/reports/{report.id}/files"
     assert client.get(f"{base}/figures/a.png", headers=TOKEN).content == b"png"
     assert client.get(f"{base}/..%2F..%2Fconfig", headers=TOKEN).status_code == 404
+
+
+def test_run_files_stay_inside_the_run(client):
+    run = Run.create("20261017-100000-mnist-sgd-aaaa", RunSpec(), machine="local")
+    (run.path / "worker.log").write_text("compiled in 1.0s\n")
+    base = f"/api/runs/{run.id}/files"
+    response = client.get(f"{base}/worker.log", headers=TOKEN)
+    assert response.text == "compiled in 1.0s\n"
+    assert response.headers["content-type"].startswith("text/plain")
+    assert client.get(f"{base}/..%2F..%2F..%2Fconfig", headers=TOKEN).status_code == 404
+
+
+def test_a_stale_machine_cache_answers_at_once_while_a_probe_runs(home, monkeypatch):
+    probes, release = [], threading.Event()
+
+    def machine_records():
+        probes.append(None)
+        if len(probes) > 1:  # the first probe, at startup, returns at once
+            release.wait(10)
+        return [{"name": "local", "probe": len(probes)}]
+
+    monkeypatch.setattr(actions, "machine_records", machine_records)
+    with TestClient(create_app("secret"), base_url="http://127.0.0.1") as client:
+        assert client.get("/api/machines", headers=TOKEN).json() == [{"name": "local", "probe": 1}]
+        monkeypatch.setattr(server, "MACHINES_TTL", 0.0)  # the cache is stale from now on
+        started = time.monotonic()
+        stale = client.get("/api/machines", headers=TOKEN).json()
+        assert time.monotonic() - started < 1
+        assert stale == [{"name": "local", "probe": 1}]
+        release.set()
+        assert client.get("/api/machines?fresh=1", headers=TOKEN).json()[0]["probe"] >= 2
