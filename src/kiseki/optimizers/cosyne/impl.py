@@ -48,10 +48,12 @@ def build(params: Params, problem: Problem) -> Optimizer:
         beta = jnp.where(
             u <= 0.5, (2 * u) ** (1 / (eta + 1)), (1 / (2 * (1 - u))) ** (1 / (eta + 1))
         )
-        return jnp.concatenate([
-            0.5 * ((1 + beta) * first + (1 - beta) * second),
-            0.5 * ((1 + beta) * second + (1 - beta) * first),
-        ])
+        return jnp.concatenate(
+            [
+                0.5 * ((1 + beta) * first + (1 - beta) * second),
+                0.5 * ((1 + beta) * second + (1 - beta) * first),
+            ]
+        )
 
     def mutate(key, children):
         if params.mutation_stdev <= 0 or params.mutation_probability <= 0:
@@ -119,11 +121,15 @@ def build(params: Params, problem: Problem) -> Optimizer:
         # Parents are sorted best-first, so a tournament's winner is its smallest position.
         contestants = jax.random.randint(k_tour, (2 * pairs, params.tournament_size), 0, parents)
         winners = order[contestants.min(axis=1)]
-        children = mutate(k_mutate, crossover(k_cross, population[winners[:pairs]], population[winners[pairs:]]))
+        children = mutate(
+            k_mutate, crossover(k_cross, population[winners[:pairs]], population[winners[pairs:]])
+        )
         child_losses, child_correct = scorer.score(children, x, y)
 
         permuted = permute(k_perm, population, losses)
-        perm_losses, perm_correct = score_skipping_unchanged(permuted, population, losses, correct, x, y)
+        perm_losses, perm_correct = score_skipping_unchanged(
+            permuted, population, losses, correct, x, y
+        )
 
         pool = jnp.concatenate([population[order[:elites]], children, permuted])
         pool_losses = jnp.concatenate([losses[order[:elites]], child_losses, perm_losses])
@@ -138,6 +144,8 @@ def build(params: Params, problem: Problem) -> Optimizer:
         return {"population": pool[survivors]}, metrics
 
     return Optimizer(
-        init=init, step=step, current=lambda state: state["population"][0],
+        init=init,
+        step=step,
+        current=lambda state: state["population"][0],
         extra_metrics=("mean_loss", "permuted_changed"),
     )

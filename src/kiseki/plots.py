@@ -15,8 +15,14 @@ def run_label(run: Run) -> str:
     return f"{spec.label or spec.optimizer} {run.id[-4:]}"
 
 
-def curves(runs: list[Run], output: Path, *, metric: str = "val_accuracy", x: str = "step",
-           log_x: bool = False) -> Path:
+def curves(
+    runs: list[Run],
+    output: Path,
+    *,
+    metric: str = "val_accuracy",
+    x: str = "step",
+    log_x: bool = False,
+) -> Path:
     """One line per run of `metric` (a train or val column) against step or elapsed time."""
     source = "val" if metric.startswith("val_") or x == "elapsed" else "train"
     figure, axis = plt.subplots(figsize=(8, 4.5), dpi=120)
@@ -27,8 +33,12 @@ def curves(runs: list[Run], output: Path, *, metric: str = "val_accuracy", x: st
         if source == "train" and len(rows) > 4000:  # thin dense step metrics
             stride = len(rows) // 2000
             rows = rows[::stride]
-        axis.plot([r[x] for r in rows], [r.get(metric) for r in rows], label=run_label(run),
-                  linewidth=1.2)
+        axis.plot(
+            [r[x] for r in rows],
+            [r.get(metric, float("nan")) for r in rows],
+            label=run_label(run),
+            linewidth=1.2,
+        )
     axis.set_xlabel("elapsed seconds" if x == "elapsed" else "step")
     axis.set_ylabel(metric)
     if log_x:

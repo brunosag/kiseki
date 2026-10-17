@@ -60,7 +60,7 @@ class Keys:
     step: jax.Array
 
     @classmethod
-    def from_seed(cls, seed: int) -> "Keys":
+    def from_seed(cls, seed: int) -> Keys:
         root = jax.random.key(seed)
         return cls(*(jax.random.fold_in(root, i) for i in range(3)))
 
@@ -108,7 +108,11 @@ def make_block(spec: RunSpec, opt: Optimizer, scorer: Scorer, keys: Keys, train_
                 loss, accuracy = scorer.evaluate(flat, data.val_x, data.val_y)
                 improved = accuracy > carry["best_accuracy"]
                 state = opt.on_validation(state, improved)
-                values = {"val_loss": loss, "val_accuracy": accuracy, **opt.validation_metrics(state)}
+                values = {
+                    "val_loss": loss,
+                    "val_accuracy": accuracy,
+                    **opt.validation_metrics(state),
+                }
                 best = (
                     jnp.where(improved, flat, carry["best"]),
                     jnp.where(improved, accuracy, carry["best_accuracy"]),
@@ -128,8 +132,13 @@ def make_block(spec: RunSpec, opt: Optimizer, scorer: Scorer, keys: Keys, train_
             for name in val_names:
                 buffers[name] = buffers[name].at[i].set(values[name])
             carry = {
-                "state": state, "step": step, "order": order, "best": best,
-                "best_accuracy": best_accuracy, "best_step": best_step, "reached": reached,
+                "state": state,
+                "step": step,
+                "order": order,
+                "best": best,
+                "best_accuracy": best_accuracy,
+                "best_step": best_step,
+                "reached": reached,
             }
             return i + 1, carry, buffers
 
@@ -193,12 +202,23 @@ def compile_program(spec, net, impl, params, data, keys: Keys, chunk: int) -> Pr
     memory = compiled.memory_analysis()
     planned = 0
     if memory is not None:
-        planned = (memory.argument_size_in_bytes + memory.output_size_in_bytes
-                   - memory.alias_size_in_bytes + memory.temp_size_in_bytes)
-    evaluate = jax.jit(lambda flat, x, y: scorer.evaluate(flat, x, y))
+        planned = (
+            memory.argument_size_in_bytes
+            + memory.output_size_in_bytes
+            - memory.alias_size_in_bytes
+            + memory.temp_size_in_bytes
+        )
+    evaluate = jax.jit(scorer.evaluate)
     return Program(
-        chunk=chunk, opt=opt, scorer=scorer, block=compiled, init=init, evaluate=evaluate,
-        train_names=train_names, val_names=val_names, planned_bytes=int(planned),
+        chunk=chunk,
+        opt=opt,
+        scorer=scorer,
+        block=compiled,
+        init=init,
+        evaluate=evaluate,
+        train_names=train_names,
+        val_names=val_names,
+        planned_bytes=int(planned),
         compile_seconds=time.perf_counter() - started,
     )
 
@@ -244,34 +264,53 @@ def train(run: Run) -> int:
     assert spec.validation_size is not None
     loading = time.perf_counter()
     data = device_data.load(
-        spec.dataset, validation_size=spec.validation_size, split_seed=spec.split_seed,
+        spec.dataset,
+        validation_size=spec.validation_size,
+        split_seed=spec.split_seed,
         batch_size=spec.batch_size,
     )
     keys = Keys.from_seed(spec.seed)
     device = runtime.device_summary()
-    log(f"{spec.dataset}/{spec.model}/{spec.optimizer} on {device['device']}; "
-        f"{net.size} weights, data in {time.perf_counter() - loading:.1f}s")
+    log(
+        f"{spec.dataset}/{spec.model}/{spec.optimizer} on {device['device']}; "
+        f"{net.size} weights, data in {time.perf_counter() - loading:.1f}s"
+    )
     manifest = checkpoint.load_manifest(run.state_dir)
     resumed_from = manifest.step if manifest else 0
     for name in ("train", "val"):
         truncate_rows(run, name, resumed_from)
     elapsed_before = status.elapsed_seconds if manifest else 0.0
-    run.update_status(state="running", pid=os.getpid(), device=str(device["device"]),
-                      started_at=status.started_at or now(), error=None, step=resumed_from)
+    run.update_status(
+        state="running",
+        pid=os.getpid(),
+        device=str(device["device"]),
+        started_at=status.started_at or now(),
+        error=None,
+        step=resumed_from,
+    )
     run.event("started" if not manifest else "resumed", step=resumed_from, device=device)
 
     limit = device_limit()
     chunk = first_chunk(net, spec, population, limit)
     while True:  # compile, then run one step; halve the chunk until it fits
         program = compile_program(spec, net, impl, params, data, keys, chunk)
-        log(f"compiled in {program.compile_seconds:.1f}s: chunk {chunk}, "
-            f"plans {program.planned_bytes / 2**30:.2f} of {limit / 2**30:.2f} GiB")
-        if limit and program.planned_bytes > MEMORY_HEADROOM * limit and chunk > 1 and not spec.chunk_size:
+        log(
+            f"compiled in {program.compile_seconds:.1f}s: chunk {chunk}, "
+            f"plans {program.planned_bytes / 2**30:.2f} of {limit / 2**30:.2f} GiB"
+        )
+        if (
+            limit
+            and program.planned_bytes > MEMORY_HEADROOM * limit
+            and chunk > 1
+            and not spec.chunk_size
+        ):
             chunk //= 2
             continue
         if manifest:
             like = jax.eval_shape(program.init, data)
-            carry = jax.device_put(checkpoint.unflatten(like, checkpoint.load_state(run.state_dir, manifest)))
+            carry = jax.device_put(
+                checkpoint.unflatten(like, checkpoint.load_state(run.state_dir, manifest))
+            )
         else:
             carry = program.init(data)
         try:
@@ -282,8 +321,13 @@ def train(run: Run) -> int:
                 raise
             log(f"out of memory at chunk {chunk}; halving")
             chunk //= 2
-    run.event("compiled", chunk_size=chunk, seconds=round(program.compile_seconds, 2),
-              planned_bytes=program.planned_bytes, device_bytes=limit)
+    run.event(
+        "compiled",
+        chunk_size=chunk,
+        seconds=round(program.compile_seconds, 2),
+        planned_bytes=program.planned_bytes,
+        device_bytes=limit,
+    )
     run.update_status(chunk_size=chunk)
     loop = Loop(run, spec, program, data, resumed_from, elapsed_before)
     return loop.execute(first, interrupted)
@@ -292,11 +336,16 @@ def train(run: Run) -> int:
 def run_block(program: Program, carry: Carry, data, count: int, limit: int):
     started = time.perf_counter()
     carry, buffers, executed = program.block(carry, data, jnp.int32(count), jnp.int32(limit))
-    host = jax.device_get({
-        "buffers": buffers, "executed": executed, "step": carry["step"],
-        "best_accuracy": carry["best_accuracy"], "best_step": carry["best_step"],
-        "reached": carry["reached"],
-    })
+    host = jax.device_get(
+        {
+            "buffers": buffers,
+            "executed": executed,
+            "step": carry["step"],
+            "best_accuracy": carry["best_accuracy"],
+            "best_step": carry["best_step"],
+            "reached": carry["reached"],
+        }
+    )
     return carry, host, time.perf_counter() - started
 
 
@@ -326,11 +375,17 @@ class Loop:
                     request = request or "pause"
                 at_checkpoint = carry_step % spec.checkpoint_interval == 0
                 if host["best_step"] != self.saved_best_step and host["best_step"] > 0:
-                    self.save_network(carry["best"], "best", int(host["best_step"]),
-                                      val_accuracy=float(host["best_accuracy"]))
+                    self.save_network(
+                        carry["best"],
+                        "best",
+                        int(host["best_step"]),
+                        val_accuracy=float(host["best_accuracy"]),
+                    )
                     self.saved_best_step = int(host["best_step"])
                 if at_checkpoint and carry_step > 0:
-                    self.save_network(self.program.opt.current(carry["state"]), f"step-{carry_step}", carry_step)
+                    self.save_network(
+                        self.program.opt.current(carry["state"]), f"step-{carry_step}", carry_step
+                    )
                 if done or request or at_checkpoint:
                     self.save_state(carry)
                 if done or request == "stop":
@@ -343,10 +398,14 @@ class Loop:
                     log(f"paused at step {self.step}")
                     return 0
                 count = self.next_count(seconds, int(host["executed"]), count)
-                carry, host, seconds = run_block(self.program, carry, self.data, count, spec.iterations)
+                carry, host, seconds = run_block(
+                    self.program, carry, self.data, count, spec.iterations
+                )
         except BaseException as error:
             self.writer.flush()
-            self.run.update_status(state="failed", pid=None, error=f"{type(error).__name__}: {error}")
+            self.run.update_status(
+                state="failed", pid=None, error=f"{type(error).__name__}: {error}"
+            )
             self.run.event("failed", step=self.step, error=f"{type(error).__name__}: {error}")
             raise
         finally:
@@ -371,24 +430,35 @@ class Loop:
         steps = range(start + 1, start + executed + 1)
         names = self.program.train_names
         columns = [buffers[name][:executed].tolist() for name in names]
-        self.run.append("train", [
-            {"step": s, **dict(zip(names, values, strict=True))}
-            for s, *values in zip(steps, *columns, strict=True)
-        ])
+        self.run.append(
+            "train",
+            [
+                {"step": s, **dict(zip(names, values, strict=True))}
+                for s, *values in zip(steps, *columns, strict=True)
+            ],
+        )
         val_rows = []
         for i in np.flatnonzero(~np.isnan(buffers["val_accuracy"][:executed])):
-            row = {"step": start + int(i) + 1,
-                   "elapsed": round(start_elapsed + seconds * (int(i) + 1) / executed, 3)}
+            row = {
+                "step": start + int(i) + 1,
+                "elapsed": round(start_elapsed + seconds * (int(i) + 1) / executed, 3),
+            }
             row |= {name: float(buffers[name][i]) for name in self.program.val_names}
             val_rows.append(row)
         self.run.append("val", val_rows)
         if host["best_step"] > 0:
-            self.best_accuracy, self.best_step = float(host["best_accuracy"]), int(host["best_step"])
+            self.best_accuracy, self.best_step = (
+                float(host["best_accuracy"]),
+                int(host["best_step"]),
+            )
         last = val_rows[-1] if val_rows else None
         eta = (self.spec.iterations - self.step) / self.rate if self.rate else None
         changes: dict[str, Any] = dict(
-            step=self.step, steps_per_second=self.rate, eta_seconds=eta,
-            elapsed_seconds=round(self.elapsed, 3), best_accuracy=self.best_accuracy,
+            step=self.step,
+            steps_per_second=self.rate,
+            eta_seconds=eta,
+            elapsed_seconds=round(self.elapsed, 3),
+            best_accuracy=self.best_accuracy,
             best_step=self.best_step,
         )
         if last:
@@ -397,19 +467,31 @@ class Loop:
         if time.monotonic() - self.last_log > LOG_SECONDS:
             self.last_log = time.monotonic()
             loss = buffers["loss"][executed - 1] if executed else float("nan")
-            log(f"step {self.step}/{self.spec.iterations} loss {loss:.4f} "
-                f"best val {self.best_accuracy or 0:.4f} {self.rate or 0:.1f} steps/s")
+            log(
+                f"step {self.step}/{self.spec.iterations} loss {loss:.4f} "
+                f"best val {self.best_accuracy or 0:.4f} {self.rate or 0:.1f} steps/s"
+            )
 
     def save_network(self, flat, name: str, step: int, **extra) -> None:
         weights = np.asarray(jax.device_get(flat))
         spec = self.spec
         path = self.run.models_dir / f"{name}.safetensors"
-        self.writer.submit(checkpoint.save_network, path, weights, run=self.run.id, model=spec.model,
-                           dataset=spec.dataset, step=step, **extra)
+        self.writer.submit(
+            checkpoint.save_network,
+            path,
+            weights,
+            run=self.run.id,
+            model=spec.model,
+            dataset=spec.dataset,
+            step=step,
+            **extra,
+        )
 
     def save_state(self, carry: Carry) -> None:
         tensors = checkpoint.flatten(jax.device_get(carry))
-        self.writer.submit(checkpoint.save_state, self.run.state_dir, self.step, self.program.chunk, tensors)
+        self.writer.submit(
+            checkpoint.save_state, self.run.state_dir, self.step, self.program.chunk, tensors
+        )
 
     def finish(self, carry: Carry, state: str) -> int:
         data, evaluate = self.data, self.program.evaluate
@@ -419,18 +501,29 @@ class Loop:
         for name, flat in (("final", final), ("best", carry["best"])):
             val_loss, val_acc = jax.device_get(evaluate(flat, data.val_x, data.val_y))
             test_loss, test_acc = jax.device_get(evaluate(flat, data.test_x, data.test_y))
-            summary[name] = {"val_loss": float(val_loss), "val_accuracy": float(val_acc),
-                             "test_loss": float(test_loss), "test_accuracy": float(test_acc)}
+            summary[name] = {
+                "val_loss": float(val_loss),
+                "val_accuracy": float(val_acc),
+                "test_loss": float(test_loss),
+                "test_accuracy": float(test_acc),
+            }
         summary["best"]["step"] = self.best_step
         if self.best_step is None:  # never validated: the final network is the best one
             self.save_network(final, "best", self.step)
         self.writer.flush()
         write_atomic(self.run.path / "summary.json", encode(summary))
-        self.run.update_status(state=state, pid=None, finished_at=now(), eta_seconds=0.0,
-                               test_accuracy=summary["best"]["test_accuracy"])
+        self.run.update_status(
+            state=state,
+            pid=None,
+            finished_at=now(),
+            eta_seconds=0.0,
+            test_accuracy=summary["best"]["test_accuracy"],
+        )
         self.run.event(state, step=self.step, summary=summary)
-        log(f"{state} at step {self.step}: best val {summary['best']['val_accuracy']:.4f} "
-            f"test {summary['best']['test_accuracy']:.4f}")
+        log(
+            f"{state} at step {self.step}: best val {summary['best']['val_accuracy']:.4f} "
+            f"test {summary['best']['test_accuracy']:.4f}"
+        )
         return 0
 
 

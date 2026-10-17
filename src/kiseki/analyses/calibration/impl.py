@@ -18,8 +18,13 @@ def reliability(confidence: np.ndarray, correct: np.ndarray, bins: int) -> dict:
     gaps = np.abs(np.nan_to_num(accuracy) - np.nan_to_num(mean_confidence))
     ece = float((count / confidence.size * gaps).sum())
     mce = float(gaps[count > 0].max()) if count.any() else 0.0
-    return {"count": count, "confidence": mean_confidence, "accuracy": accuracy, "ece": ece,
-            "mce": mce}
+    return {
+        "count": count,
+        "confidence": mean_confidence,
+        "accuracy": accuracy,
+        "ece": ece,
+        "mce": mce,
+    }
 
 
 def run(params: Params, context: Context) -> Section:
@@ -36,22 +41,56 @@ def run(params: Params, context: Context) -> Section:
         brier = float(((probabilities - one_hot) ** 2).sum(axis=1).mean())
         nll = evaluation.loss
         mean_confidence = float(confidence.mean())
-        summary[subject.label] = {"ece": curve["ece"], "mce": curve["mce"], "brier": brier,
-                                  "nll": nll, "mean_confidence": mean_confidence,
-                                  "accuracy": evaluation.accuracy}
-        data[subject.label] = {
-            "bins": [{"lower": i / params.bins, "upper": (i + 1) / params.bins,
-                      "count": int(curve["count"][i]),
-                      "confidence": None if np.isnan(curve["confidence"][i]) else float(curve["confidence"][i]),
-                      "accuracy": None if np.isnan(curve["accuracy"][i]) else float(curve["accuracy"][i])}
-                     for i in range(params.bins)],
+        summary[subject.label] = {
+            "ece": curve["ece"],
+            "mce": curve["mce"],
+            "brier": brier,
+            "nll": nll,
+            "mean_confidence": mean_confidence,
+            "accuracy": evaluation.accuracy,
         }
-        rows.append([subject.label, 100 * curve["ece"], brier, nll, 100 * mean_confidence,
-                     100 * evaluation.accuracy])
-        diagram.plot(centers, curve["accuracy"], marker="o", markersize=3, color=subject.color,
-                     label=subject.label)
-        histogram.hist(confidence, bins=params.bins, range=(0, 1), histtype="step",
-                       color=subject.color, label=subject.label)
+        data[subject.label] = {
+            "bins": [
+                {
+                    "lower": i / params.bins,
+                    "upper": (i + 1) / params.bins,
+                    "count": int(curve["count"][i]),
+                    "confidence": None
+                    if np.isnan(curve["confidence"][i])
+                    else float(curve["confidence"][i]),
+                    "accuracy": None
+                    if np.isnan(curve["accuracy"][i])
+                    else float(curve["accuracy"][i]),
+                }
+                for i in range(params.bins)
+            ],
+        }
+        rows.append(
+            [
+                subject.label,
+                100 * curve["ece"],
+                brier,
+                nll,
+                100 * mean_confidence,
+                100 * evaluation.accuracy,
+            ]
+        )
+        diagram.plot(
+            centers,
+            curve["accuracy"],
+            marker="o",
+            markersize=3,
+            color=subject.color,
+            label=subject.label,
+        )
+        histogram.hist(
+            confidence,
+            bins=params.bins,
+            range=(0, 1),
+            histtype="step",
+            color=subject.color,
+            label=subject.label,
+        )
     diagram.plot([0, 1], [0, 1], color="gray", linestyle="--", linewidth=1)
     diagram.set_xlabel("confidence")
     diagram.set_ylabel("accuracy")
@@ -61,7 +100,15 @@ def run(params: Params, context: Context) -> Section:
     histogram.set_xlabel("confidence")
     histogram.set_title("Confidence distribution", fontsize=10)
     markdown = md_table(["model", "ECE %", "Brier", "NLL", "mean confidence %", "accuracy %"], rows)
-    markdown += ("\n\nECE: mean |accuracy − confidence| over equal-width bins, weighted by "
-                 "bin size; below accuracy means overconfident.")
-    return Section(name="calibration", title=TITLE, summary=summary, data=data,
-                   markdown=markdown, figures=[context.save_figure(figure, "calibration")])
+    markdown += (
+        "\n\nECE: mean |accuracy − confidence| over equal-width bins, weighted by "
+        "bin size; below accuracy means overconfident."
+    )
+    return Section(
+        name="calibration",
+        title=TITLE,
+        summary=summary,
+        data=data,
+        markdown=markdown,
+        figures=[context.save_figure(figure, "calibration")],
+    )

@@ -5,8 +5,18 @@ from kiseki.models.layers import Conv, Dense, Flatten, MaxPool, Network, ReLU, n
 
 
 def build(input_shape: tuple[int, int, int], classes: int) -> Network:
-    return network("wide_cnn", input_shape, classes, [
-        Conv(32, 5, "SAME"), ReLU(), MaxPool(2),
-        Conv(64, 5, "SAME"), ReLU(), MaxPool(2),
-        Flatten(), Dense(classes),
-    ])
+    return network(
+        "wide_cnn",
+        input_shape,
+        classes,
+        [
+            Conv(32, 5, "SAME"),
+            ReLU(),
+            MaxPool(2),
+            Conv(64, 5, "SAME"),
+            ReLU(),
+            MaxPool(2),
+            Flatten(),
+            Dense(classes),
+        ],
+    )

@@ -4,8 +4,10 @@ import msgspec
 from msgspec import Meta
 
 TITLE = "Layer-wise relevance propagation"
-SUMMARY = ("Which pixels each model's decision rests on: LRP heatmaps (z^B, gamma, epsilon "
-           "rules) for sample images chosen where the models disagree, and class averages.")
+SUMMARY = (
+    "Which pixels each model's decision rests on: LRP heatmaps (z^B, gamma, epsilon "
+    "rules) for sample images chosen where the models disagree, and class averages."
+)
 
 
 class Params(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):

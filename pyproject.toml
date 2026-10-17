@@ -23,6 +23,7 @@ kiseki = "kiseki.cli:main"
 [dependency-groups]
 dev = [
     "basedpyright>=1.31.0",
+    "httpx2>=2.13.1",
     "pytest>=9.1.0",
     "ruff>=0.17.0",
 ]
@@ -49,7 +50,11 @@ src = ["src", "tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "SIM", "RUF", "PL"]
-ignore = ["PLR0913", "PLR2004", "PLR0911", "PLR0912", "PLR0915", "PLC0415", "RUF001", "RUF002", "RUF003"]
+ignore = [
+    "PLR0913", "PLR0917", "PLR2004", "PLR0911", "PLR0912", "PLR0915", "PLC0415",
+    "PLW1510",  # subprocess.run: callers check returncode themselves
+    "RUF001", "RUF002", "RUF003",
+]
 
 [tool.basedpyright]
 include = ["src", "tests"]

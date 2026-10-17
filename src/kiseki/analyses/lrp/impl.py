@@ -36,10 +36,11 @@ def _stabilize(z: jax.Array, epsilon: jax.Array | float) -> jax.Array:
 def _linear(layer) -> Callable:
     def apply(a, w, b):
         return apply_layer(layer, a, (w, b))
+
     return apply
 
 
-def _rule(apply, a, relevance, w, b, epsilon=0.0):
+def _rule(apply, a, relevance, w, b, epsilon: jax.Array | float = 0.0):
     """Generic rule: R_in = a ⊙ ∂/∂a [ s · z(a) ], s = R / stabilized z."""
     z, vjp = jax.vjp(lambda t: apply(t, w, b), a)
     (c,) = vjp(relevance / _stabilize(z, epsilon))
@@ -56,8 +57,17 @@ def _z_bounded(apply, a, relevance, w, low, high):
     return a * vjp_a(s)[0] - low * vjp_l(s)[0] - high * vjp_h(s)[0]
 
 
-def relevance(net: Network, flat: jax.Array, x: jax.Array, targets: jax.Array, *,
-              gamma: float, epsilon: float, low: jax.Array, high: jax.Array):
+def relevance(
+    net: Network,
+    flat: jax.Array,
+    x: jax.Array,
+    targets: jax.Array,
+    *,
+    gamma: float,
+    epsilon: float,
+    low: jax.Array,
+    high: jax.Array,
+):
     """Input relevance (B, H, W, C) of `targets` logits, and the target logits."""
     tensors = net.unflatten(flat)
     inputs, h = [], x
@@ -81,7 +91,9 @@ def relevance(net: Network, flat: jax.Array, x: jax.Array, targets: jax.Array, *
                 elif index == last:
                     r = _rule(apply, a, r, w, b)
                 elif isinstance(layer, Conv):
-                    r = _rule(apply, a, r, w + gamma * jnp.maximum(w, 0), b + gamma * jnp.maximum(b, 0))
+                    r = _rule(
+                        apply, a, r, w + gamma * jnp.maximum(w, 0), b + gamma * jnp.maximum(b, 0)
+                    )
                 else:
                     z = apply(a, w, b)
                     rms = jnp.sqrt((z**2).mean(axis=tuple(range(1, z.ndim)), keepdims=True))
@@ -103,12 +115,22 @@ def relevance(net: Network, flat: jax.Array, x: jax.Array, targets: jax.Array, *
 
 def maps_for(net, flat, x, targets, params: Params, low, high, batch: int = 250):
     """Heatmaps (N, H, W) summed over channels, and kept relevance per image."""
+
     def one(args: tuple[jax.Array, jax.Array]):
         images, labels = args
-        r, logit = relevance(net, flat, images, labels, gamma=params.gamma,
-                             epsilon=params.epsilon, low=low, high=high)
+        r, logit = relevance(
+            net,
+            flat,
+            images,
+            labels,
+            gamma=params.gamma,
+            epsilon=params.epsilon,
+            low=low,
+            high=high,
+        )
         total = r.sum(axis=(1, 2, 3))
         return r.sum(-1), total / jnp.where(jnp.abs(logit) > TINY, logit, 1.0)
+
     count = x.shape[0]
     pad = -(-count // batch) * batch - count
     xs = jnp.pad(x, ((0, pad), (0, 0), (0, 0), (0, 0))).reshape(-1, batch, *x.shape[1:])
@@ -132,8 +154,12 @@ def groups(context: Context) -> np.ndarray:
     second = context.evaluate(context.subjects[1])
     agree = first.predictions == second.predictions
     return np.select(
-        [first.correct & ~second.correct, ~first.correct & second.correct,
-         ~first.correct & ~second.correct & ~agree, ~first.correct & ~second.correct],
+        [
+            first.correct & ~second.correct,
+            ~first.correct & second.correct,
+            ~first.correct & ~second.correct & ~agree,
+            ~first.correct & ~second.correct,
+        ],
         ["only_first", "only_second", "both_wrong_different", "both_wrong_same"],
         "both_right",
     )
@@ -157,7 +183,9 @@ def focus(maps: np.ndarray) -> dict[str, float]:
     flat = np.abs(maps.reshape(maps.shape[0], -1))
     top = max(1, flat.shape[1] // 10)
     concentrated = np.sort(flat, axis=1)[:, -top:].sum(1) / np.maximum(flat.sum(1), 1e-12)
-    positive = np.clip(maps, 0, None).reshape(maps.shape[0], -1).sum(1) / np.maximum(flat.sum(1), 1e-12)
+    positive = np.clip(maps, 0, None).reshape(maps.shape[0], -1).sum(1) / np.maximum(
+        flat.sum(1), 1e-12
+    )
     return {"top10_share": float(concentrated.mean()), "positive_share": float(positive.mean())}
 
 
@@ -166,11 +194,19 @@ def run(params: Params, context: Context) -> Section:
     high = (1.0 - context.data.mean) / context.data.std
     gallery = gallery_indices(context, params.gallery)
     rng = np.random.default_rng(context.seed + 1)
-    per_class = {c: rng.permutation(np.flatnonzero(context.labels == c))[:params.per_class]
-                 for c in range(len(context.class_names))} if params.per_class else {}
+    per_class = (
+        {
+            c: rng.permutation(np.flatnonzero(context.labels == c))[: params.per_class]
+            for c in range(len(context.class_names))
+        }
+        if params.per_class
+        else {}
+    )
     wanted = sorted(set(gallery).union(*[set(v.tolist()) for v in per_class.values()]))
     if not wanted:
-        return Section(name="lrp", title=TITLE, summary={}, data={}, markdown="No images requested.")
+        return Section(
+            name="lrp", title=TITLE, summary={}, data={}, markdown="No images requested."
+        )
     position = {index: i for i, index in enumerate(wanted)}
     x = context.x[jnp.asarray(wanted)]
     group_names = groups(context)
@@ -181,41 +217,68 @@ def run(params: Params, context: Context) -> Section:
         evaluation = context.evaluate(subject)
         source = context.labels if params.target == "label" else evaluation.predictions
         targets = jnp.asarray(source[wanted], jnp.int32)
-        compute = jax.jit(lambda flat, x, t, net=subject.net: maps_for(net, flat, x, t, params, low, high))
+        compute = jax.jit(
+            lambda flat, x, t, net=subject.net: maps_for(net, flat, x, t, params, low, high)
+        )
         heat, kept = compute(subject.weights, x, targets)
         heat = np.asarray(heat)
         kept = np.asarray(kept)
-        gallery_maps[number] = normalized(heat[[position[i] for i in gallery]]) if gallery else heat[:0]
-        means = np.stack([heat[[position[i] for i in per_class[c]]].mean(0)
-                          for c in per_class]) if per_class else heat[:0]
+        gallery_maps[number] = (
+            normalized(heat[[position[i] for i in gallery]]) if gallery else heat[:0]
+        )
+        means = (
+            np.stack([heat[[position[i] for i in per_class[c]]].mean(0) for c in per_class])
+            if per_class
+            else heat[:0]
+        )
         class_maps[number] = normalized(means) if len(means) else means
         summary[subject.label] = {"kept_relevance": float(np.median(kept)), **focus(heat)}
         data["arrays"][subject.label] = {
-            "gallery": context.save_array(f"lrp-{number}-gallery", gallery_maps[number].astype(np.float16)),
-            "classes": context.save_array(f"lrp-{number}-classes", class_maps[number].astype(np.float16)),
+            "gallery": context.save_array(
+                f"lrp-{number}-gallery", gallery_maps[number].astype(np.float16)
+            ),
+            "classes": context.save_array(
+                f"lrp-{number}-classes", class_maps[number].astype(np.float16)
+            ),
         }
         arrays += list(data["arrays"][subject.label].values())
-    images = np.asarray(context.pixels(context.x[jnp.asarray(gallery)])) if gallery else np.zeros((0,))
-    data["arrays"]["images"] = context.save_array("lrp-images", np.clip(images, 0, 1).astype(np.float16))
+    images = (
+        np.asarray(context.pixels(context.x[jnp.asarray(gallery)])) if gallery else np.zeros((0,))
+    )
+    data["arrays"]["images"] = context.save_array(
+        "lrp-images", np.clip(images, 0, 1).astype(np.float16)
+    )
     arrays.append(data["arrays"]["images"])
     for index in gallery:
-        entry = {"index": index, "label": int(context.labels[index]), "group": str(group_names[index])}
+        entry = {
+            "index": index,
+            "label": int(context.labels[index]),
+            "group": str(group_names[index]),
+        }
         for subject in context.subjects:
             evaluation = context.evaluate(subject)
-            entry[subject.label] = {"prediction": int(evaluation.predictions[index]),
-                                    "confidence": float(evaluation.probabilities[index].max())}
+            entry[subject.label] = {
+                "prediction": int(evaluation.predictions[index]),
+                "confidence": float(evaluation.probabilities[index].max()),
+            }
         data["gallery"].append(entry)
 
     figures = []
     if gallery:
         shown = gallery[:12]
         rows = 1 + len(context.subjects)
-        figure, axes = plt.subplots(rows, len(shown), figsize=(1.3 * len(shown), 1.4 * rows), squeeze=False)
+        figure, axes = plt.subplots(
+            rows, len(shown), figsize=(1.3 * len(shown), 1.4 * rows), squeeze=False
+        )
         for column, index in enumerate(shown):
             picture = images[column]
-            axes[0][column].imshow(picture[..., 0] if picture.shape[-1] == 1 else picture,
-                                   cmap="gray" if picture.shape[-1] == 1 else None)
-            axes[0][column].set_title(f"{context.class_names[context.labels[index]][:8]}", fontsize=7)
+            axes[0][column].imshow(
+                picture[..., 0] if picture.shape[-1] == 1 else picture,
+                cmap="gray" if picture.shape[-1] == 1 else None,
+            )
+            axes[0][column].set_title(
+                f"{context.class_names[context.labels[index]][:8]}", fontsize=7
+            )
             for row, subject in enumerate(context.subjects, start=1):
                 prediction = context.evaluate(subject).predictions[index]
                 axes[row][column].imshow(gallery_maps[row - 1][column], cmap="bwr", vmin=-1, vmax=1)
@@ -228,8 +291,12 @@ def run(params: Params, context: Context) -> Section:
         figures.append(context.save_figure(figure, "lrp-gallery"))
     if per_class:
         classes = len(per_class)
-        figure, axes = plt.subplots(len(context.subjects), classes,
-                                    figsize=(1.2 * classes, 1.4 * len(context.subjects)), squeeze=False)
+        figure, axes = plt.subplots(
+            len(context.subjects),
+            classes,
+            figsize=(1.2 * classes, 1.4 * len(context.subjects)),
+            squeeze=False,
+        )
         for row, subject in enumerate(context.subjects):
             for column in range(classes):
                 axes[row][column].imshow(class_maps[row][column], cmap="bwr", vmin=-1, vmax=1)
@@ -239,12 +306,28 @@ def run(params: Params, context: Context) -> Section:
                     axes[row][column].set_title(context.class_names[column][:8], fontsize=7)
             axes[row][0].set_ylabel(subject.label, fontsize=7)
         figures.append(context.save_figure(figure, "lrp-classes"))
-    rows_md = [[s.label, summary[s.label]["kept_relevance"], 100 * summary[s.label]["top10_share"],
-                100 * summary[s.label]["positive_share"]] for s in context.subjects]
-    markdown = (f"Relevance of the {params.target} class. Gallery: {len(gallery)} images, chosen "
-                "round-robin from where the models differ first. Red supports the class, blue "
-                "speaks against it. Kept: median Σ relevance / logit (1: conserved); top-10%: "
-                "share of |relevance| on the most relevant tenth of pixels (higher: more focused)."
-                "\n\n" + md_table(["model", "kept", "top-10% share %", "positive share %"], rows_md))
-    return Section(name="lrp", title=TITLE, summary=summary, data=data, markdown=markdown,
-                   figures=figures, arrays=arrays)
+    rows_md = [
+        [
+            s.label,
+            summary[s.label]["kept_relevance"],
+            100 * summary[s.label]["top10_share"],
+            100 * summary[s.label]["positive_share"],
+        ]
+        for s in context.subjects
+    ]
+    markdown = (
+        f"Relevance of the {params.target} class. Gallery: {len(gallery)} images, chosen "
+        "round-robin from where the models differ first. Red supports the class, blue "
+        "speaks against it. Kept: median Σ relevance / logit (1: conserved); top-10%: "
+        "share of |relevance| on the most relevant tenth of pixels (higher: more focused)."
+        "\n\n" + md_table(["model", "kept", "top-10% share %", "positive share %"], rows_md)
+    )
+    return Section(
+        name="lrp",
+        title=TITLE,
+        summary=summary,
+        data=data,
+        markdown=markdown,
+        figures=figures,
+        arrays=arrays,
+    )

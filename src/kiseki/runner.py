@@ -66,7 +66,9 @@ def runs(home: Path) -> list[Run]:
 
 def queued(home: Path) -> list[Run]:
     found = [(run.status(), run) for run in runs(home)]
-    waiting = [(status.created_at, run.id, run) for status, run in found if status.state == "queued"]
+    waiting = [
+        (status.created_at, run.id, run) for status, run in found if status.state == "queued"
+    ]
     return [run for *_, run in sorted(waiting)]
 
 
@@ -105,8 +107,12 @@ def ensure_runner(home: Path) -> bool:
     env = dict(os.environ, KISEKI_HOME=str(home))
     subprocess.Popen(
         [sys.executable, "-m", "kiseki.runner", str(home)],
-        stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
-        start_new_session=True, env=env, close_fds=True,
+        stdin=subprocess.DEVNULL,
+        stdout=log,
+        stderr=subprocess.STDOUT,
+        start_new_session=True,
+        env=env,
+        close_fds=True,
     )
     return True
 
@@ -162,7 +168,10 @@ class Runner:
         with (run.path / "worker.log").open("ab") as out:
             process = subprocess.Popen(
                 [sys.executable, "-m", "kiseki.worker", "train", str(run.path)],
-                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT, env=env,
+                stdin=subprocess.DEVNULL,
+                stdout=out,
+                stderr=subprocess.STDOUT,
+                env=env,
             )
         self.wait(run, process)
 

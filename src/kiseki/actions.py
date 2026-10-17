@@ -18,8 +18,13 @@ from kiseki.spec import ModelRef, RunSpec, from_overrides, new_run_id
 from kiseki.store import ACTIVE, Run
 
 PRESETS: dict[str, dict[str, Any]] = {
-    "smoke": {"iterations": 20, "validation_interval": 5, "checkpoint_interval": 10,
-              "population_size": 32, "label": "smoke"},
+    "smoke": {
+        "iterations": 20,
+        "validation_interval": 5,
+        "checkpoint_interval": 10,
+        "population_size": 32,
+        "label": "smoke",
+    },
 }
 CONTROL = ("stop", "pause", "resume")
 
@@ -32,15 +37,18 @@ def remote_for(name: str):
 
 def profile_for(machine: machines.Machine) -> runner.Profile:
     contact = machines.contact() if machine.notice else None
-    return runner.Profile(name=machine.name, env=machine.env, notice=machine.notice, contact=contact)
+    return runner.Profile(
+        name=machine.name, env=machine.env, notice=machine.notice, contact=contact
+    )
 
 
 def local_gpu_awake() -> bool | None:
     """Whether a discrete NVIDIA GPU is powered up, read without waking it."""
     for device in Path("/sys/bus/pci/devices").glob("*"):
         try:
-            if (device / "vendor").read_text().strip() == "0x10de" and \
-                    (device / "class").read_text().startswith("0x03"):
+            if (device / "vendor").read_text().strip() == "0x10de" and (
+                device / "class"
+            ).read_text().startswith("0x03"):
                 return (device / "power" / "runtime_status").read_text().strip() == "active"
         except OSError:
             continue
@@ -51,10 +59,17 @@ def machine_records() -> list[dict[str, Any]]:
     """Every machine with its state: GPUs and runner (one SSH round trip per remote)."""
     records = []
     for name, machine in machines.all_machines().items():
-        record: dict[str, Any] = {"name": name, "ssh": machine.ssh, "notice": machine.notice,
-                                  "description": machine.description}
+        record: dict[str, Any] = {
+            "name": name,
+            "ssh": machine.ssh,
+            "notice": machine.notice,
+            "description": machine.description,
+        }
         if machine.is_local:
-            record |= {"gpu_awake": local_gpu_awake(), "runner": runner.runner_running(paths.home())}
+            record |= {
+                "gpu_awake": local_gpu_awake(),
+                "runner": runner.runner_running(paths.home()),
+            }
         else:
             try:
                 record |= remote_for(name).probe()
@@ -67,8 +82,9 @@ def machine_records() -> list[dict[str, Any]]:
 # -- runs --------------------------------------------------------------------------------
 
 
-def build_specs(overrides: dict[str, Any], grid: dict[str, list[Any]] | None = None,
-                preset: str | None = None) -> list[RunSpec]:
+def build_specs(
+    overrides: dict[str, Any], grid: dict[str, list[Any]] | None = None, preset: str | None = None
+) -> list[RunSpec]:
     """One spec per combination of `grid` values, each on top of preset and overrides.
 
     Keys are RunSpec fields or optimizer params (see `spec.from_overrides`); a preset's
@@ -83,7 +99,12 @@ def build_specs(overrides: dict[str, Any], grid: dict[str, list[Any]] | None = N
         optimizer = settings.get("optimizer", RunSpec().optimizer)
         known = optimizers.params_type(optimizer).__struct_fields__
         from_preset = "population_size" not in overrides and "population_size" not in (grid or {})
-        if preset and from_preset and "population_size" in settings and "population_size" not in known:
+        if (
+            preset
+            and from_preset
+            and "population_size" in settings
+            and "population_size" not in known
+        ):
             del settings["population_size"]
         specs.append(from_overrides(RunSpec(), settings))
     return specs
@@ -170,8 +191,11 @@ def resolve_model(text: str, offline: bool = False) -> str:
     ref = ModelRef.parse(text)
     run = Run.find(ref.run_id)
     machine = run.status().machine
-    if not (run.models_dir / f"{ref.name}.safetensors").exists() and machine != "local" \
-            and not offline:
+    if (
+        not (run.models_dir / f"{ref.name}.safetensors").exists()
+        and machine != "local"
+        and not offline
+    ):
         remote_for(machine).pull([run.id], models=True)
     return str(ModelRef(run.id, ref.name))
 
@@ -187,7 +211,10 @@ def start_report(report: Report, *, detach: bool = False) -> subprocess.Popen:
     with (report.path / "worker.log").open("ab") as log:
         return subprocess.Popen(
             [sys.executable, "-m", "kiseki.worker", "report", str(report.path)],
-            stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=subprocess.STDOUT,
+            env=env,
             start_new_session=detach,
         )
 

@@ -48,9 +48,20 @@ class Remote:
         control = paths.cache_dir() / "ssh"
         control.mkdir(parents=True, exist_ok=True)
         self.ssh_options = [
-            "-o", "BatchMode=yes", "-o", "LogLevel=ERROR", "-o", "ConnectTimeout=20",
-            "-o", "ControlMaster=auto", "-o", f"ControlPath={control}/%C",
-            "-o", "ControlPersist=15m", "-o", "ServerAliveInterval=30",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "LogLevel=ERROR",
+            "-o",
+            "ConnectTimeout=20",
+            "-o",
+            "ControlMaster=auto",
+            "-o",
+            f"ControlPath={control}/%C",
+            "-o",
+            "ControlPersist=15m",
+            "-o",
+            "ServerAliveInterval=30",
         ]
         self.home = machine.home.rstrip("/")
         self.code = f"{self.home}/code"
@@ -58,15 +69,20 @@ class Remote:
 
     # -- primitives ------------------------------------------------------------------------
 
-    def run(self, command: str, *, input: bytes | None = None, check: bool = True,
-            timeout: float = 600) -> subprocess.CompletedProcess[bytes]:
+    def run(
+        self, command: str, *, input: bytes | None = None, check: bool = True, timeout: float = 600
+    ) -> subprocess.CompletedProcess[bytes]:
         result = subprocess.run(
             ["ssh", *self.ssh_options, self.host, command],
-            input=input, capture_output=True, timeout=timeout,
+            input=input,
+            capture_output=True,
+            timeout=timeout,
         )
         if check and result.returncode != 0:
-            raise RemoteError(f"{self.machine.name}: `{command}` exited {result.returncode}: "
-                              f"{result.stderr.decode(errors='replace').strip()[-2000:]}")
+            raise RemoteError(
+                f"{self.machine.name}: `{command}` exited {result.returncode}: "
+                f"{result.stderr.decode(errors='replace').strip()[-2000:]}"
+            )
         return result
 
     def rsync(self, *args: str) -> str:
@@ -96,10 +112,18 @@ class Remote:
         root = paths.repo_root()
         self.run(f"mkdir -p {_remote_path(self.code)}")
         changes = self.rsync(
-            "-a", "--delete", "--itemize-changes", "--exclude=__pycache__", "--exclude=.venv",
-            "--include=/src/***", "--include=/pyproject.toml", "--include=/uv.lock",
-            "--include=/README.md", "--exclude=*",
-            f"{root}/", self.target(self.code) + "/",
+            "-a",
+            "--delete",
+            "--itemize-changes",
+            "--exclude=__pycache__",
+            "--exclude=.venv",
+            "--include=/src/***",
+            "--include=/pyproject.toml",
+            "--include=/uv.lock",
+            "--include=/README.md",
+            "--exclude=*",
+            f"{root}/",
+            self.target(self.code) + "/",
         )
         dependencies = any(name in changes for name in ("pyproject.toml", "uv.lock"))
         has_env = self.run(f"test -x {_remote_path(self.python)}", check=False).returncode == 0
@@ -120,7 +144,7 @@ class Remote:
             out = self.kiseki("datasets", "--fetch", "--json", name, timeout=fetch_timeout)
             if msgspec.json.decode(out)[0]["cached"]:
                 return "remote"
-        except (RemoteError, subprocess.TimeoutExpired):
+        except RemoteError, subprocess.TimeoutExpired:
             pass
         local = paths.datasets_dir() / name
         if not (local / "stats.json").exists():
@@ -139,8 +163,14 @@ class Remote:
     # -- runs ------------------------------------------------------------------------------
 
     def submit(self, run_id: str, spec: RunSpec) -> None:
-        self.kiseki("submit", "--id", run_id, "--machine", self.machine.name,
-                    input=msgspec.json.encode(spec))
+        self.kiseki(
+            "submit",
+            "--id",
+            run_id,
+            "--machine",
+            self.machine.name,
+            input=msgspec.json.encode(spec),
+        )
 
     def control(self, action: str, run_ids: list[str]) -> bytes:
         return self.kiseki(action, "--here", "--json", *run_ids)
@@ -149,14 +179,21 @@ class Remote:
         """Mirror remote runs into this machine's runs/<id> (all runs when none named)."""
         local = paths.runs_dir()
         local.mkdir(parents=True, exist_ok=True)
-        filters = ["--include=*/"] if not run_ids else [
-            f"--include=/{run_id}/" for run_id in run_ids
-        ]
+        filters = (
+            ["--include=*/"] if not run_ids else [f"--include=/{run_id}/" for run_id in run_ids]
+        )
         files = [f"--include=/*/{pattern}" for pattern in SMALL_FILES]
         if models:
             files += ["--include=/*/models/", "--include=/*/models/*.safetensors"]
-        self.rsync("-a", "--prune-empty-dirs", *filters, *files, "--exclude=*",
-                   self.target(f"{self.home}/runs") + "/", f"{local}/")
+        self.rsync(
+            "-a",
+            "--prune-empty-dirs",
+            *filters,
+            *files,
+            "--exclude=*",
+            self.target(f"{self.home}/runs") + "/",
+            f"{local}/",
+        )
         return local
 
     def probe(self) -> dict:
@@ -172,10 +209,19 @@ class Remote:
         gpus = []
         for line in filter(None, gpus_text.splitlines()):
             name, used, total, util = (field.strip() for field in line.split(","))
-            gpus.append({"name": name, "memory_used_mib": int(used),
-                         "memory_total_mib": int(total), "utilization": int(util)})
-        return {"gpus": gpus, "runner_pid": int(pid_text) if pid_text.isdigit() else None,
-                "deployed": deployed == "deployed"}
+            gpus.append(
+                {
+                    "name": name,
+                    "memory_used_mib": int(used),
+                    "memory_total_mib": int(total),
+                    "utilization": int(util),
+                }
+            )
+        return {
+            "gpus": gpus,
+            "runner_pid": int(pid_text) if pid_text.isdigit() else None,
+            "deployed": deployed == "deployed",
+        }
 
 
 def code_hash() -> str:

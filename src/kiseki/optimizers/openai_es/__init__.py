@@ -10,7 +10,10 @@ from typing import Annotated
 import msgspec
 from msgspec import Meta
 
-SUMMARY = "Evolution strategy: a gradient estimate from mirrored Gaussian perturbations, Adam step (Salimans et al. 2017)."
+SUMMARY = (
+    "Evolution strategy: a gradient estimate from mirrored Gaussian perturbations, "
+    "Adam step (Salimans et al. 2017)."
+)
 
 
 class Params(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):

@@ -46,8 +46,11 @@ def normalize(spec: ReportSpec) -> ReportSpec:
     unknown = set(chosen) - set(analyses.NAMES)
     if unknown:
         raise KeyError(f"unknown analyses {sorted(unknown)}; known: {', '.join(analyses.NAMES)}")
-    ordered = {name: analyses.normalize_params(name, chosen[name])
-               for name in analyses.NAMES if name in chosen}
+    ordered = {
+        name: analyses.normalize_params(name, chosen[name])
+        for name in analyses.NAMES
+        if name in chosen
+    }
     if spec.labels and len(spec.labels) != len(refs):
         raise ValueError("give one label per model")
     return msgspec.structs.replace(spec, models=refs, analyses=ordered)
@@ -63,7 +66,7 @@ class Report:
         self.id = path.name
 
     @classmethod
-    def create(cls, spec: ReportSpec, root: Path | None = None) -> "Report":
+    def create(cls, spec: ReportSpec, root: Path | None = None) -> Report:
         path = (root or paths.reports_dir()) / new_report_id()
         path.mkdir(parents=True)
         write_atomic(path / "spec.json", encode(spec))
@@ -72,9 +75,11 @@ class Report:
         return report
 
     @classmethod
-    def find(cls, report_id: str, root: Path | None = None) -> "Report":
+    def find(cls, report_id: str, root: Path | None = None) -> Report:
         base = root or paths.reports_dir()
-        matches = sorted(p for p in base.glob(f"*{report_id}*") if p.is_dir()) if base.exists() else []
+        matches = (
+            sorted(p for p in base.glob(f"*{report_id}*") if p.is_dir()) if base.exists() else []
+        )
         if len(matches) != 1:
             raise KeyError(f"{report_id!r} matches {len(matches)} reports")
         return cls(matches[0])

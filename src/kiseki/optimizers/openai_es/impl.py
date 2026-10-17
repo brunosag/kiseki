@@ -75,6 +75,8 @@ def build(params: Params, problem: Problem) -> Optimizer:
         return {"theta": new_theta, "m": m, "v": v, "t": t}, metrics
 
     return Optimizer(
-        init=init, step=step, current=lambda state: state["theta"],
+        init=init,
+        step=step,
+        current=lambda state: state["theta"],
         extra_metrics=("mean_loss", "grad_norm"),
     )

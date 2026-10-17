@@ -30,8 +30,10 @@ def unflatten(like: Any, arrays: dict[str, np.ndarray]) -> Any:
     for path, leaf in leaves:
         value = arrays[jax.tree_util.keystr(path)]
         if value.shape != leaf.shape or value.dtype != leaf.dtype:
-            raise ValueError(f"checkpoint {jax.tree_util.keystr(path)}: {value.shape} {value.dtype}"
-                             f" does not match {leaf.shape} {leaf.dtype}")
+            raise ValueError(
+                f"checkpoint {jax.tree_util.keystr(path)}: {value.shape} {value.dtype}"
+                f" does not match {leaf.shape} {leaf.dtype}"
+            )
         restored.append(value)
     return treedef.unflatten(restored)
 
@@ -44,7 +46,9 @@ def _save(path: Path, tensors: dict[str, np.ndarray], metadata: dict[str, str] |
 
 def save_network(path: Path, weights: np.ndarray, **metadata: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    _save(path, {"weights": np.asarray(weights, np.float32)}, {k: str(v) for k, v in metadata.items()})
+    _save(
+        path, {"weights": np.asarray(weights, np.float32)}, {k: str(v) for k, v in metadata.items()}
+    )
 
 
 def load_network(path: Path) -> np.ndarray:

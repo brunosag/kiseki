@@ -86,21 +86,26 @@ class Run:
     # -- creation and lookup -------------------------------------------------------------
 
     @classmethod
-    def create(cls, run_id: str, spec: RunSpec, *, machine: str, root: Path | None = None) -> "Run":
+    def create(cls, run_id: str, spec: RunSpec, *, machine: str, root: Path | None = None) -> Run:
         path = (root or paths.runs_dir()) / run_id
         path.mkdir(parents=True)
         run = cls(path)
         write_atomic(path / "spec.json", encode(spec))
         stamp = now()
-        run.write_status(RunStatus(
-            state="queued", iterations=spec.iterations, machine=machine,
-            created_at=stamp, updated_at=stamp,
-        ))
+        run.write_status(
+            RunStatus(
+                state="queued",
+                iterations=spec.iterations,
+                machine=machine,
+                created_at=stamp,
+                updated_at=stamp,
+            )
+        )
         run.event("created", machine=machine)
         return run
 
     @classmethod
-    def find(cls, run_id: str, root: Path | None = None) -> "Run":
+    def find(cls, run_id: str, root: Path | None = None) -> Run:
         base = root or paths.runs_dir()
         path = base / run_id
         if path.is_dir():
@@ -110,10 +115,12 @@ class Run:
             return cls(matches[0])
         if not matches:
             raise KeyError(f"no run matches {run_id!r}")
-        raise KeyError(f"{run_id!r} matches {len(matches)} runs: {', '.join(m.name for m in matches[:5])}")
+        raise KeyError(
+            f"{run_id!r} matches {len(matches)} runs: {', '.join(m.name for m in matches[:5])}"
+        )
 
     @classmethod
-    def all(cls, root: Path | None = None) -> list["Run"]:
+    def all(cls, root: Path | None = None) -> list[Run]:
         base = root or paths.runs_dir()
         if not base.exists():
             return []

@@ -73,7 +73,10 @@ def from_overrides(base: RunSpec, overrides: dict[str, Any]) -> RunSpec:
         name = key.removeprefix("params.")
         if key in fields and key != "params":
             top[key] = value
-        elif name in optimizers.params_type(overrides.get("optimizer", base.optimizer)).__struct_fields__:
+        elif (
+            name
+            in optimizers.params_type(overrides.get("optimizer", base.optimizer)).__struct_fields__
+        ):
             params[name] = value
         else:
             raise KeyError(f"unknown setting {key!r}")
@@ -96,7 +99,7 @@ class ModelRef(msgspec.Struct, frozen=True):
     name: str = "best"
 
     @classmethod
-    def parse(cls, text: str) -> "ModelRef":
+    def parse(cls, text: str) -> ModelRef:
         run_id, _, name = text.partition(":")
         return cls(run_id=run_id, name=name or "best")
 

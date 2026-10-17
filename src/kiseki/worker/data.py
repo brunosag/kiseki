@@ -70,7 +70,7 @@ def load(dataset: str, *, validation_size: int, split_seed: int, batch_size: int
     put = jax.device_put
 
     def normalized(images: np.ndarray) -> Array:
-        return put(((images.astype(np.float32) / 255.0 - splits.mean) / splits.std))
+        return put((images.astype(np.float32) / 255.0 - splits.mean) / splits.std)
 
     return DeviceData(
         train_x=put(train_x[train_index]),

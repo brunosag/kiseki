@@ -61,7 +61,9 @@ def percent(value: float | None) -> str:
 def table(rows: list[list[str]], header: list[str]) -> str:
     widths = [max(len(str(r[i])) for r in [header, *rows]) for i in range(len(header))]
     lines = ["  ".join(str(c).ljust(w) for c, w in zip(header, widths, strict=True)).rstrip()]
-    lines += ["  ".join(str(c).ljust(w) for c, w in zip(r, widths, strict=True)).rstrip() for r in rows]
+    lines += [
+        "  ".join(str(c).ljust(w) for c, w in zip(r, widths, strict=True)).rstrip() for r in rows
+    ]
     return "\n".join(lines)
 
 
@@ -72,11 +74,17 @@ def run_record(run: Run) -> dict[str, Any]:
 def run_row(run: Run) -> list[str]:
     spec, status = run.spec(), run.status()
     return [
-        run.id, status.state, f"{status.step}/{spec.iterations}", percent(status.best_accuracy),
+        run.id,
+        status.state,
+        f"{status.step}/{spec.iterations}",
+        percent(status.best_accuracy),
         percent(status.test_accuracy),
         f"{status.steps_per_second:.1f}" if status.steps_per_second else "-",
-        duration(status.eta_seconds) if status.state == "running" else duration(status.elapsed_seconds),
-        status.machine, spec.label,
+        duration(status.eta_seconds)
+        if status.state == "running"
+        else duration(status.elapsed_seconds),
+        status.machine,
+        spec.label,
     ]
 
 
@@ -109,8 +117,11 @@ def settings_from(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, l
     """Overrides and grid axes from -d/-o/-m/--label and -s; `a,b,c` makes an axis."""
     overrides: dict[str, Any] = {"label": args.label} if args.label else {}
     grid: dict[str, list[Any]] = {}
-    pairs = [f"{flag}={getattr(args, flag)}" for flag in ("dataset", "optimizer", "model")
-             if getattr(args, flag)] + list(args.set)
+    pairs = [
+        f"{flag}={getattr(args, flag)}"
+        for flag in ("dataset", "optimizer", "model")
+        if getattr(args, flag)
+    ] + list(args.set)
     for setting in pairs:
         key, sep, raw = setting.partition("=")
         if not sep:
@@ -126,8 +137,11 @@ def settings_from(args: argparse.Namespace) -> tuple[dict[str, Any], dict[str, l
 def cmd_run(args: argparse.Namespace) -> int:
     overrides, grid = settings_from(args)
     queued = actions.queue(actions.build_specs(overrides, grid, args.preset), args.on)
-    emit(args, [run_record(run) for run in queued],
-         "\n".join(f"queued {run.id} on {run.status().machine}" for run in queued))
+    emit(
+        args,
+        [run_record(run) for run in queued],
+        "\n".join(f"queued {run.id} on {run.status().machine}" for run in queued),
+    )
     if args.watch:
         return watch(queued, args)
     return 0
@@ -149,9 +163,12 @@ def cmd_ls(args: argparse.Namespace) -> int:
         runs = [r for r in runs if r.status().state in args.state.split(",")]
     if args.on:
         runs = [r for r in runs if r.status().machine == args.on]
-    runs = runs[-args.limit:] if args.limit else runs
-    emit(args, [run_record(r) for r in runs],
-         table([run_row(r) for r in runs], RUN_HEADER) if runs else "no runs")
+    runs = runs[-args.limit :] if args.limit else runs
+    emit(
+        args,
+        [run_record(r) for r in runs],
+        table([run_row(r) for r in runs], RUN_HEADER) if runs else "no runs",
+    )
     return 0
 
 
@@ -163,8 +180,15 @@ def cmd_show(args: argparse.Namespace) -> int:
     val = list(run.iter_rows("val"))
     summary_path = run.path / "summary.json"
     summary = json.loads(summary_path.read_text()) if summary_path.exists() else None
-    data = {"id": run.id, "path": str(run.path), "spec": spec, "status": status,
-            "summary": summary, "models": run.model_names(), "val_tail": val[-5:]}
+    data = {
+        "id": run.id,
+        "path": str(run.path),
+        "spec": spec,
+        "status": status,
+        "summary": summary,
+        "models": run.model_names(),
+        "val_tail": val[-5:],
+    }
     lines = [
         f"{run.id}  {status.state} on {status.machine}  step {status.step}/{spec.iterations}",
         f"  {spec.dataset}/{spec.model}/{spec.optimizer}  seed {spec.seed}  batch {spec.batch_size}"
@@ -173,7 +197,9 @@ def cmd_show(args: argparse.Namespace) -> int:
         f"  test {percent(status.test_accuracy)}%  last val {percent(status.last_accuracy)}%",
         f"  {status.steps_per_second or 0:.2f} steps/s  elapsed {duration(status.elapsed_seconds)}"
         f"  eta {duration(status.eta_seconds)}  chunk {status.chunk_size}",
-        f"  val curve {sparkline([r['val_accuracy'] for r in val])}" if val else "  no validations yet",
+        f"  val curve {sparkline([r['val_accuracy'] for r in val])}"
+        if val
+        else "  no validations yet",
         f"  models {', '.join(run.model_names()) or '-'}  ({run.path})",
     ]
     if status.error:
@@ -210,11 +236,13 @@ def watch(runs: list[Run], args: argparse.Namespace) -> int:
             if args.json:
                 emit(args, {"id": run.id, "status": status}, "")
             else:
-                print(f"{time.strftime('%H:%M:%S')} {run.id} {status.state} "
-                      f"{status.step}/{status.iterations} val {percent(status.last_accuracy)} "
-                      f"best {percent(status.best_accuracy)} "
-                      f"{status.steps_per_second or 0:.2f}/s eta {duration(status.eta_seconds)}",
-                      flush=True)
+                print(
+                    f"{time.strftime('%H:%M:%S')} {run.id} {status.state} "
+                    f"{status.step}/{status.iterations} val {percent(status.last_accuracy)} "
+                    f"best {percent(status.best_accuracy)} "
+                    f"{status.steps_per_second or 0:.2f}/s eta {duration(status.eta_seconds)}",
+                    flush=True,
+                )
         if all(s.state in TERMINAL for s in statuses.values()):
             return 1 if any(s.state == "failed" for s in statuses.values()) else 0
         time.sleep(interval)
@@ -243,17 +271,44 @@ def cmd_compare(args: argparse.Namespace) -> int:
         spec, status = run.spec(), run.status()
         val = list(run.iter_rows("val"))
         thresholds = {t: next((r for r in val if r["val_accuracy"] >= t), None) for t in args.at}
-        data.append({"id": run.id, "optimizer": spec.optimizer, "params": spec.params,
-                     "best_accuracy": status.best_accuracy, "test_accuracy": status.test_accuracy,
-                     "steps": status.step, "elapsed_seconds": status.elapsed_seconds,
-                     "reached": {str(t): r and {"step": r["step"], "elapsed": r["elapsed"]}
-                                 for t, r in thresholds.items()}})
-        rows.append([run.id, spec.optimizer, percent(status.best_accuracy),
-                     percent(status.test_accuracy), str(status.step),
-                     duration(status.elapsed_seconds),
-                     *[f"{r['step']} ({duration(r['elapsed'])})" if r else "-" for r in thresholds.values()]])
-    header = ["run", "optimizer", "best%", "test%", "steps", "time",
-              *[f"≥{100 * t:g}%" for t in args.at]]
+        data.append(
+            {
+                "id": run.id,
+                "optimizer": spec.optimizer,
+                "params": spec.params,
+                "best_accuracy": status.best_accuracy,
+                "test_accuracy": status.test_accuracy,
+                "steps": status.step,
+                "elapsed_seconds": status.elapsed_seconds,
+                "reached": {
+                    str(t): r and {"step": r["step"], "elapsed": r["elapsed"]}
+                    for t, r in thresholds.items()
+                },
+            }
+        )
+        rows.append(
+            [
+                run.id,
+                spec.optimizer,
+                percent(status.best_accuracy),
+                percent(status.test_accuracy),
+                str(status.step),
+                duration(status.elapsed_seconds),
+                *[
+                    f"{r['step']} ({duration(r['elapsed'])})" if r else "-"
+                    for r in thresholds.values()
+                ],
+            ]
+        )
+    header = [
+        "run",
+        "optimizer",
+        "best%",
+        "test%",
+        "steps",
+        "time",
+        *[f"≥{100 * t:g}%" for t in args.at],
+    ]
     emit(args, data, table(rows, header))
     return 0
 
@@ -275,13 +330,19 @@ def cmd_query(args: argparse.Namespace) -> int:
     if args.json:
         emit(args, [dict(zip(columns, row, strict=True)) for row in rows], "")
     else:
-        print(table([[f"{v:.4g}" if isinstance(v, float) else str(v) for v in row]
-                     for row in rows], columns))
+        print(
+            table(
+                [[f"{v:.4g}" if isinstance(v, float) else str(v) for v in row] for row in rows],
+                columns,
+            )
+        )
     return 0
 
 
 def cmd_pull(args: argparse.Namespace) -> int:
-    names = [args.on] if args.on else [n for n, m in machines.all_machines().items() if not m.is_local]
+    names = (
+        [args.on] if args.on else [n for n, m in machines.all_machines().items() if not m.is_local]
+    )
     for name in names:
         actions.remote_for(name).pull(args.runs or None, models=args.models)
     emit(args, {"machines": names}, f"pulled from {', '.join(names) or 'no remotes'}")
@@ -305,10 +366,16 @@ def report_analyses(args: argparse.Namespace) -> dict[str, dict[str, Any]]:
 def cmd_report(args: argparse.Namespace) -> int:
     from kiseki.report import ReportSpec
 
-    report = actions.create_report(ReportSpec(
-        models=args.models, labels=args.labels.split(",") if args.labels else [],
-        split=args.split, analyses=report_analyses(args), seed=args.seed,
-    ), offline=args.offline)
+    report = actions.create_report(
+        ReportSpec(
+            models=args.models,
+            labels=args.labels.split(",") if args.labels else [],
+            split=args.split,
+            analyses=report_analyses(args),
+            seed=args.seed,
+        ),
+        offline=args.offline,
+    )
     started, shown = time.monotonic(), 0
     process = actions.start_report(report)
     while True:
@@ -326,8 +393,11 @@ def cmd_report(args: argparse.Namespace) -> int:
     actions.finish_report(report, code)
     status = report.status()
     text = f"report {report.id} {status.state} in {duration(time.monotonic() - started)}"
-    text += f": {report.path / 'report.md'}" if status.state == "completed" else \
-        f": {status.error} ({report.path / 'worker.log'})"
+    text += (
+        f": {report.path / 'report.md'}"
+        if status.state == "completed"
+        else f": {status.error} ({report.path / 'worker.log'})"
+    )
     emit(args, {"id": report.id, "path": str(report.path), "status": status}, text)
     return 0 if status.state == "completed" else 1
 
@@ -336,14 +406,21 @@ def cmd_reports(args: argparse.Namespace) -> int:
     from kiseki.report import Report
 
     base = paths.reports_dir()
-    found = sorted(base.iterdir(), reverse=True)[:args.limit] if base.exists() else []
+    found = sorted(base.iterdir(), reverse=True)[: args.limit] if base.exists() else []
     records, rows = [], []
     for path in found:
         report = Report(path)
         spec, status = report.spec(), report.status()
         records.append({"id": report.id, "path": str(path), "spec": spec, "status": status})
-        rows.append([report.id, status.state, duration(sum(status.seconds.values())),
-                     " ".join(spec.models), ",".join(spec.analyses)])
+        rows.append(
+            [
+                report.id,
+                status.state,
+                duration(sum(status.seconds.values())),
+                " ".join(spec.models),
+                ",".join(spec.analyses),
+            ]
+        )
     emit(args, records, table(rows, ["id", "state", "time", "models", "analyses"]))
     return 0
 
@@ -357,9 +434,14 @@ def cmd_machines(args: argparse.Namespace) -> int:
         elif "error" in record:
             gpu = f"unreachable: {record['error'][:60]}"
         else:
-            gpu = ", ".join(f"{g['name']} {g['utilization']}% "
-                            f"{g['memory_used_mib']}/{g['memory_total_mib']}MiB"
-                            for g in record["gpus"]) or "none"
+            gpu = (
+                ", ".join(
+                    f"{g['name']} {g['utilization']}% "
+                    f"{g['memory_used_mib']}/{g['memory_total_mib']}MiB"
+                    for g in record["gpus"]
+                )
+                or "none"
+            )
         rows.append([record["name"], record["ssh"] or "-", gpu])
     emit(args, records, table(rows, ["machine", "ssh", "gpu"]))
     return 0
@@ -379,24 +461,49 @@ def cmd_datasets(args: argparse.Namespace) -> int:
         info = datasets.info(name)
         if args.fetch and not datasets.is_cached(name):
             datasets.load(name)
-        records.append({"name": name, "title": info.title, "cached": datasets.is_cached(name),
-                        "image_shape": info.image_shape, "classes": len(info.class_names),
-                        "default_model": info.default_model})
-    emit(args, records, table(
-        [[r["name"], r["title"], "x".join(map(str, r["image_shape"])), r["default_model"],
-          "yes" if r["cached"] else "no"] for r in records],
-        ["dataset", "title", "shape", "model", "cached"]))
+        records.append(
+            {
+                "name": name,
+                "title": info.title,
+                "cached": datasets.is_cached(name),
+                "image_shape": info.image_shape,
+                "classes": len(info.class_names),
+                "default_model": info.default_model,
+            }
+        )
+    emit(
+        args,
+        records,
+        table(
+            [
+                [
+                    r["name"],
+                    r["title"],
+                    "x".join(map(str, r["image_shape"])),
+                    r["default_model"],
+                    "yes" if r["cached"] else "no",
+                ]
+                for r in records
+            ],
+            ["dataset", "title", "shape", "model", "cached"],
+        ),
+    )
     return 0
 
 
 def cmd_options(args: argparse.Namespace) -> int:
     data = {
-        "datasets": {n: msgspec.to_builtins(datasets.info(n), order="deterministic")
-                     for n in datasets.NAMES},
+        "datasets": {
+            n: msgspec.to_builtins(datasets.info(n), order="deterministic") for n in datasets.NAMES
+        },
         "models": list(models.NAMES),
-        "optimizers": {n: {"summary": optimizers.summary(n),
-                           "params": msgspec.json.schema(optimizers.params_type(n))}
-                       for n in optimizers.NAMES},
+        "optimizers": {
+            n: {
+                "summary": optimizers.summary(n),
+                "params": msgspec.json.schema(optimizers.params_type(n)),
+            }
+            for n in optimizers.NAMES
+        },
         "run": msgspec.json.schema(RunSpec),
         "presets": PRESETS,
         "machines": list(machines.all_machines()),
@@ -406,8 +513,10 @@ def cmd_options(args: argparse.Namespace) -> int:
         defaults = msgspec.to_builtins(optimizers.params_type(name)())
         lines.append(f"{name}: {optimizers.summary(name)}")
         lines.append("    " + " ".join(f"{k}={v}" for k, v in defaults.items()))
-    lines.append("run: " + " ".join(f"{k}={v}" for k, v in msgspec.to_builtins(RunSpec()).items()
-                                    if k != "params"))
+    lines.append(
+        "run: "
+        + " ".join(f"{k}={v}" for k, v in msgspec.to_builtins(RunSpec()).items() if k != "params")
+    )
     lines.append("machines: " + ", ".join(machines.all_machines()))
     emit(args, data, "\n".join(lines))
     return 0
@@ -417,8 +526,9 @@ def cmd_options(args: argparse.Namespace) -> int:
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(prog="kiseki", description=__doc__,
-                                   formatter_class=argparse.RawDescriptionHelpFormatter)
+    root = argparse.ArgumentParser(
+        prog="kiseki", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--json", action="store_true", help="machine-readable output")
     common.add_argument("--offline", action="store_true", help="don't refresh remote runs")
@@ -464,8 +574,13 @@ def parser() -> argparse.ArgumentParser:
 
     compare = sub.add_parser("compare", parents=[common], help="runs side by side")
     compare.add_argument("runs", nargs="+")
-    compare.add_argument("--at", type=float, nargs="*", default=[0.9, 0.95, 0.98],
-                         help="report when validation accuracy first reached these")
+    compare.add_argument(
+        "--at",
+        type=float,
+        nargs="*",
+        default=[0.9, 0.95, 0.98],
+        help="report when validation accuracy first reached these",
+    )
     compare.set_defaults(handler=cmd_compare)
 
     plot = sub.add_parser("plot", parents=[common], help="curves to a PNG")
@@ -487,8 +602,9 @@ def parser() -> argparse.ArgumentParser:
     pull.set_defaults(handler=cmd_pull)
 
     report = sub.add_parser("report", parents=[common], help="analyse trained networks")
-    report.add_argument("models", nargs="+", metavar="RUN[:NAME]",
-                        help="NAME: best (default), final or step-N")
+    report.add_argument(
+        "models", nargs="+", metavar="RUN[:NAME]", help="NAME: best (default), final or step-N"
+    )
     report.add_argument("-a", "--analyses", help=f"comma-separated, of {','.join(analyses.NAMES)}")
     report.add_argument("-s", "--set", action="append", default=[], metavar="ANALYSIS.KEY=VALUE")
     report.add_argument("--labels", help="comma-separated, one per model")
@@ -510,9 +626,11 @@ def parser() -> argparse.ArgumentParser:
     serve.set_defaults(handler=cmd_serve)
 
     sub.add_parser("machines", parents=[common], help="machines and their GPUs").set_defaults(
-        handler=cmd_machines)
+        handler=cmd_machines
+    )
     sub.add_parser("options", parents=[common], help="what can be run").set_defaults(
-        handler=cmd_options)
+        handler=cmd_options
+    )
     return root
 
 

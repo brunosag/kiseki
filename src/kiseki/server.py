@@ -101,21 +101,32 @@ class State:
 
 
 async def options(request: Request) -> Response:
-    return ok({
-        "datasets": {n: datasets.info(n) for n in datasets.NAMES},
-        "cached": {n: datasets.is_cached(n) for n in datasets.NAMES},
-        "models": list(models.NAMES),
-        "optimizers": {n: {"summary": optimizers.summary(n),
-                           "params": msgspec.json.schema(optimizers.params_type(n))}
-                       for n in optimizers.NAMES},
-        "run": msgspec.json.schema(RunSpec),
-        "defaults": RunSpec(),
-        "presets": actions.PRESETS,
-        "analyses": {n: {"title": analyses.title(n), "summary": analyses.summary(n),
-                         "params": msgspec.json.schema(analyses.params_type(n))}
-                     for n in analyses.NAMES},
-        "machines": list(machines.all_machines()),
-    })
+    return ok(
+        {
+            "datasets": {n: datasets.info(n) for n in datasets.NAMES},
+            "cached": {n: datasets.is_cached(n) for n in datasets.NAMES},
+            "models": list(models.NAMES),
+            "optimizers": {
+                n: {
+                    "summary": optimizers.summary(n),
+                    "params": msgspec.json.schema(optimizers.params_type(n)),
+                }
+                for n in optimizers.NAMES
+            },
+            "run": msgspec.json.schema(RunSpec),
+            "defaults": RunSpec(),
+            "presets": actions.PRESETS,
+            "analyses": {
+                n: {
+                    "title": analyses.title(n),
+                    "summary": analyses.summary(n),
+                    "params": msgspec.json.schema(analyses.params_type(n)),
+                }
+                for n in analyses.NAMES
+            },
+            "machines": list(machines.all_machines()),
+        }
+    )
 
 
 async def list_runs(request: Request) -> Response:
@@ -125,11 +136,15 @@ async def list_runs(request: Request) -> Response:
 async def get_run(request: Request) -> Response:
     run = find_run(request)
     summary = run.path / "summary.json"
-    return ok(run_record(run) | {
-        "path": str(run.path), "models": run.model_names(),
-        "summary": msgspec.json.decode(summary.read_bytes()) if summary.exists() else None,
-        "events": run.rows("events")[0],
-    })
+    return ok(
+        run_record(run)
+        | {
+            "path": str(run.path),
+            "models": run.model_names(),
+            "summary": msgspec.json.decode(summary.read_bytes()) if summary.exists() else None,
+            "events": run.rows("events")[0],
+        }
+    )
 
 
 async def run_rows(request: Request) -> Response:
@@ -138,7 +153,9 @@ async def run_rows(request: Request) -> Response:
     if kind not in {"train", "val"}:
         return error(f"unknown rows {kind!r}", 404)
     offset = int(request.query_params.get("offset", "0"))
-    rows, next_offset = await asyncio.to_thread(store.read_ndjson, run.path / f"{kind}.ndjson", offset)
+    rows, next_offset = await asyncio.to_thread(
+        store.read_ndjson, run.path / f"{kind}.ndjson", offset
+    )
     columns: dict[str, list[Any]] = {}
     for row in rows:
         for key, value in row.items():
@@ -170,10 +187,12 @@ async def list_machines(request: Request) -> Response:
     state: State = request.app.state.kiseki
     fresh = request.query_params.get("fresh") == "1"
     if fresh or time.monotonic() - state.machines_at > MACHINES_TTL:
+
         def probe():
             with state.machines_lock:
                 state.machines = actions.machine_records()
                 state.machines_at = time.monotonic()
+
         await asyncio.to_thread(probe)
         state.publish("machines", state.machines)
     return ok(state.machines)
@@ -246,8 +265,11 @@ async def events(request: Request) -> Response:
         finally:
             state.subscribers.discard(queue)
 
-    return StreamingResponse(stream(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+    return StreamingResponse(
+        stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 # -- background watchers -----------------------------------------------------------------
@@ -275,17 +297,24 @@ async def watch_statuses(state: State) -> None:
                 continue
             with contextlib.suppress(OSError, msgspec.DecodeError, KeyError):
                 if kind == "run":
-                    state.publish("run", {"id": item, "status": Run(paths.runs_dir() / item).status()})
+                    state.publish(
+                        "run", {"id": item, "status": Run(paths.runs_dir() / item).status()}
+                    )
                 else:
-                    state.publish("report", {"id": item,
-                                             "status": Report(paths.reports_dir() / item).status()})
+                    state.publish(
+                        "report",
+                        {"id": item, "status": Report(paths.reports_dir() / item).status()},
+                    )
         seen = current
 
 
 async def refresh_remotes() -> None:
     while True:
-        runs = [r for r in Run.all() if r.status().machine != "local"
-                and r.status().state in (*ACTIVE, "paused")]
+        runs = [
+            r
+            for r in Run.all()
+            if r.status().machine != "local" and r.status().state in (*ACTIVE, "paused")
+        ]
         if runs:
             await asyncio.to_thread(actions.refresh, runs)
         await asyncio.sleep(REMOTE_REFRESH_SECONDS)
@@ -296,6 +325,7 @@ async def refresh_remotes() -> None:
 
 def guard(app, token: str):
     """ASGI middleware: local Host only, and the session token on /api (streams pass through)."""
+
     async def guarded(scope, receive, send):
         if scope["type"] == "http":
             request = Request(scope)
@@ -303,7 +333,9 @@ def guard(app, token: str):
             if host not in LOCAL_HOSTS:
                 return await error("forbidden host", 403)(scope, receive, send)
             if scope["path"].startswith("/api/"):
-                given = request.headers.get("x-kiseki-token") or request.query_params.get("token", "")
+                given = request.headers.get("x-kiseki-token") or request.query_params.get(
+                    "token", ""
+                )
                 if not secrets.compare_digest(given.encode(), token.encode()):
                     return await error("missing or wrong token", 401)(scope, receive, send)
         await app(scope, receive, send)
@@ -322,8 +354,11 @@ async def bad_request(request: Request, failure: Exception) -> Response:
 def spa(directory: Path):
     """The built UI, with index.html for client-side routes."""
     files = StaticFiles(directory=directory, html=True, check_dir=False)
-    missing = Response("The UI is not built: cd ui && npm install && npm run build\n",
-                       status_code=503, media_type="text/plain")
+    missing = Response(
+        "The UI is not built: cd ui && npm install && npm run build\n",
+        status_code=503,
+        media_type="text/plain",
+    )
 
     async def app(scope, receive, send):
         if not (directory / "index.html").exists():
@@ -364,8 +399,13 @@ def create_app(token: str):
         Route("/api/events", events),
         Mount("/", app=spa(ui_dir())),
     ]
-    handlers = {KeyError: not_found, FileNotFoundError: not_found, ValueError: bad_request,
-                msgspec.ValidationError: bad_request, msgspec.DecodeError: bad_request}
+    handlers = {
+        KeyError: not_found,
+        FileNotFoundError: not_found,
+        ValueError: bad_request,
+        msgspec.ValidationError: bad_request,
+        msgspec.DecodeError: bad_request,
+    }
     app = Starlette(routes=routes, lifespan=lifespan, exception_handlers=handlers)
     app.state.kiseki = state
     return guard(app, token)

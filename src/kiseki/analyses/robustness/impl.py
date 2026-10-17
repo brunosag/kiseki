@@ -33,8 +33,12 @@ def perturb(kind: str, pixels: jax.Array, level: float, key: jax.Array) -> jax.A
 
 def run(params: Params, context: Context) -> Section:
     pixels = context.pixels(context.x)
-    kinds = {"noise": params.noise, "brightness": params.brightness, "contrast": params.contrast,
-             "occlusion": params.occlusion}
+    kinds = {
+        "noise": params.noise,
+        "brightness": params.brightness,
+        "contrast": params.contrast,
+        "occlusion": params.occlusion,
+    }
     evaluators = {s.label: accuracy_and_loss(s.net) for s in context.subjects}
     data: dict = {kind: {"levels": list(levels)} for kind, levels in kinds.items()}
     summary: dict = {}
@@ -58,7 +62,9 @@ def run(params: Params, context: Context) -> Section:
     for axis, (kind, levels) in zip(axes[0], kinds.items(), strict=True):
         for subject in context.subjects:
             accuracy = data[kind][subject.label]["accuracy"]
-            axis.plot(levels, accuracy, marker="o", markersize=3, color=subject.color, label=subject.label)
+            axis.plot(
+                levels, accuracy, marker="o", markersize=3, color=subject.color, label=subject.label
+            )
             rows.append([kind, subject.label, *[f"{100 * a:.1f}" for a in accuracy]])
         axis.set_title(kind, fontsize=10)
         axis.set_xlabel("level")
@@ -68,8 +74,17 @@ def run(params: Params, context: Context) -> Section:
     axes[0][0].legend(fontsize=7)
     lines = []
     for kind, levels in kinds.items():
-        lines += [f"**{kind}** (levels {', '.join(f'{v:g}' for v in levels)}): accuracy %", "",
-                  md_table(["model", *[f"{v:g}" for v in levels]],
-                           [r[1:] for r in rows if r[0] == kind]), ""]
-    return Section(name="robustness", title=TITLE, summary=summary, data=data,
-                   markdown="\n".join(lines), figures=[context.save_figure(figure, "robustness")])
+        lines += [
+            f"**{kind}** (levels {', '.join(f'{v:g}' for v in levels)}): accuracy %",
+            "",
+            md_table(["model", *[f"{v:g}" for v in levels]], [r[1:] for r in rows if r[0] == kind]),
+            "",
+        ]
+    return Section(
+        name="robustness",
+        title=TITLE,
+        summary=summary,
+        data=data,
+        markdown="\n".join(lines),
+        figures=[context.save_figure(figure, "robustness")],
+    )

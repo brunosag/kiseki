@@ -90,8 +90,14 @@ def batched(function, x: Array, batch: int = BATCH):
 
 
 class Context:
-    def __init__(self, report: Report, spec: ReportSpec, subjects: list[Subject],
-                 data: device_data.DeviceData, info: datasets.DatasetInfo):
+    def __init__(
+        self,
+        report: Report,
+        spec: ReportSpec,
+        subjects: list[Subject],
+        data: device_data.DeviceData,
+        info: datasets.DatasetInfo,
+    ):
         self.report = report
         self.spec = spec
         self.subjects = subjects
@@ -134,10 +140,13 @@ class Context:
             predictions = logits.argmax(axis=1)
             correct = predictions == self.labels
             self._evaluations[key] = Evaluation(
-                logits=logits, probabilities=probabilities, predictions=predictions,
+                logits=logits,
+                probabilities=probabilities,
+                predictions=predictions,
                 correct=correct,
                 loss=float(-log_p[np.arange(self.size), self.labels].mean()),
-                accuracy=float(correct.mean()), features=np.asarray(features),
+                accuracy=float(correct.mean()),
+                features=np.asarray(features),
             )
         return self._evaluations[key]
 
@@ -163,32 +172,39 @@ _forwards: dict[str, Any] = {}
 def _forward(net: Network):
     """Compiled (weights, images) -> (logits, penultimate features), batched."""
     if net.name not in _forwards:
+
         def forward(flat, x):
             def one(batch):
                 logits, taps = net.forward(flat, batch, taps=(net.penultimate,))
                 features = taps[net.penultimate]
                 return logits, features.reshape(features.shape[0], -1)
+
             return batched(one, x)
+
         _forwards[net.name] = jax.jit(forward)
     return _forwards[net.name]
 
 
 def accuracy_and_loss(net: Network):
     """Compiled (weights, images, labels) -> (accuracy, mean loss), batched."""
+
     def evaluate(flat, x, y):
         def one(batch):
             images, labels = batch
             loss, correct = cross_entropy(net.apply(flat, images), labels)
             return loss * labels.shape[0], correct
+
         count = x.shape[0]
         full = count - count % BATCH
-        losses, corrects = lax.map(one, (x[:full].reshape(-1, BATCH, *x.shape[1:]),
-                                         y[:full].reshape(-1, BATCH)))
+        losses, corrects = lax.map(
+            one, (x[:full].reshape(-1, BATCH, *x.shape[1:]), y[:full].reshape(-1, BATCH))
+        )
         total, correct = losses.sum(), corrects.sum()
         if full < count:
             loss, extra = one((x[full:], y[full:]))
             total, correct = total + loss, correct + extra
         return correct / count, total / count
+
     return jax.jit(evaluate)
 
 
@@ -206,15 +222,30 @@ def load_subjects(spec: ReportSpec) -> tuple[list[Subject], RunSpec]:
         info = datasets.info(run_spec.dataset)
         path = run.models_dir / f"{ref.name}.safetensors"
         if not path.exists():
-            raise FileNotFoundError(f"{ref}: no {path.name}; have {', '.join(run.model_names())}"
-                                    " (remote runs: kiseki pull --models)")
+            raise FileNotFoundError(
+                f"{ref}: no {path.name}; have {', '.join(run.model_names())}"
+                " (remote runs: kiseki pull --models)"
+            )
         net = models.load(run_spec.model, info.image_shape, len(info.class_names))
         weights = jnp.asarray(checkpoint.load_network(path))
-        label = spec.labels[index] if spec.labels else (
-            f"{run_spec.label or run_spec.optimizer} {run.id[-4:]}" +
-            (f" {ref.name}" if ref.name != "best" else ""))
-        subjects.append(Subject(ref=ModelRef(run.id, ref.name), label=label, spec=run_spec,
-                                net=net, weights=weights, color=COLORS[index % len(COLORS)]))
+        label = (
+            spec.labels[index]
+            if spec.labels
+            else (
+                f"{run_spec.label or run_spec.optimizer} {run.id[-4:]}"
+                + (f" {ref.name}" if ref.name != "best" else "")
+            )
+        )
+        subjects.append(
+            Subject(
+                ref=ModelRef(run.id, ref.name),
+                label=label,
+                spec=run_spec,
+                net=net,
+                weights=weights,
+                color=COLORS[index % len(COLORS)],
+            )
+        )
     assert first is not None
     return subjects, first
 
@@ -224,6 +255,7 @@ def md_table(header: list[str], rows: list[list[Any]]) -> str:
         if isinstance(value, float):
             return f"{value:.4g}"
         return str(value)
+
     lines = ["| " + " | ".join(header) + " |", "|" + "---|" * len(header)]
     lines += ["| " + " | ".join(cell(v) for v in row) + " |" for row in rows]
     return "\n".join(lines)
@@ -236,8 +268,12 @@ def build(report: Report) -> int:
     subjects, first = load_subjects(spec)
     info = datasets.info(first.dataset)
     assert first.validation_size is not None
-    data = device_data.load(first.dataset, validation_size=first.validation_size,
-                            split_seed=first.split_seed, batch_size=first.batch_size)
+    data = device_data.load(
+        first.dataset,
+        validation_size=first.validation_size,
+        split_seed=first.split_seed,
+        batch_size=first.batch_size,
+    )
     context = Context(report, spec, subjects, data, info)
     sections: list[Section] = []
     for name, raw in spec.analyses.items():
@@ -266,27 +302,43 @@ def _plain(value: Any) -> Any:
 
 
 def write_outputs(report: Report, context: Context, sections: list[Section]) -> None:
-    subjects = [{
-        "ref": str(s.ref), "label": s.label, "color": s.color, "dataset": s.spec.dataset,
-        "model": s.spec.model, "optimizer": s.spec.optimizer, "params": s.spec.params,
-        "seed": s.spec.seed,
-    } for s in context.subjects]
+    subjects = [
+        {
+            "ref": str(s.ref),
+            "label": s.label,
+            "color": s.color,
+            "dataset": s.spec.dataset,
+            "model": s.spec.model,
+            "optimizer": s.spec.optimizer,
+            "params": s.spec.params,
+            "seed": s.spec.seed,
+        }
+        for s in context.subjects
+    ]
     document = {
-        "id": report.id, "spec": context.spec, "split": context.spec.split,
-        "dataset": context.info.name, "class_names": list(context.class_names),
+        "id": report.id,
+        "spec": context.spec,
+        "split": context.spec.split,
+        "dataset": context.info.name,
+        "class_names": list(context.class_names),
         "subjects": subjects,
-        "sections": [msgspec.structs.asdict(s) if isinstance(s, msgspec.Struct) else s.__dict__
-                     for s in sections],
+        "sections": [
+            msgspec.structs.asdict(s) if isinstance(s, msgspec.Struct) else s.__dict__
+            for s in sections
+        ],
     }
     (report.path / "report.json").write_bytes(
-        msgspec.json.format(msgspec.json.encode(document, enc_hook=_plain), indent=2) + b"\n")
+        msgspec.json.format(msgspec.json.encode(document, enc_hook=_plain), indent=2) + b"\n"
+    )
     header = [
         f"# Report {report.id}",
         "",
         f"{context.info.title}, {context.spec.split} split ({context.size} images).",
         "",
-        md_table(["model", "run", "optimizer", "network"],
-                 [[s.label, str(s.ref), s.spec.optimizer, s.spec.model] for s in context.subjects]),
+        md_table(
+            ["model", "run", "optimizer", "network"],
+            [[s.label, str(s.ref), s.spec.optimizer, s.spec.model] for s in context.subjects],
+        ),
     ]
     body = []
     for section in sections:

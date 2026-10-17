@@ -37,13 +37,13 @@ class Scorer:
     def score(self, population: Array, x: Array, y: Array) -> tuple[Array, Array]:
         """(losses, corrects) for a (N, size) population; non-finite losses become +inf."""
         losses, correct = lax.map(
-            lambda flat: self.one(flat, x, y), population, batch_size=min(self.chunk, population.shape[0])
+            lambda flat: self.one(flat, x, y),
+            population,
+            batch_size=min(self.chunk, population.shape[0]),
         )
         return jnp.where(jnp.isfinite(losses), losses, jnp.inf), correct
 
-    def score_chunks(
-        self, chunks: Array, live: Array, x: Array, y: Array
-    ) -> tuple[Array, Array]:
+    def score_chunks(self, chunks: Array, live: Array, x: Array, y: Array) -> tuple[Array, Array]:
         """Score (n, chunk, size) blocks, skipping blocks whose `live` flag is false.
 
         Skipped blocks return +inf losses; callers substitute known scores for them.

@@ -31,30 +31,40 @@ def forecast_end(now: datetime, remaining_seconds: float) -> datetime:
     return end.replace(minute=0, second=0, microsecond=0) + timedelta(minutes=minutes)
 
 
-def render(contact: Contact, start: datetime, end: datetime, running: int, queued: int,
-           now: datetime, user: str | None = None) -> str:
+def render(
+    contact: Contact,
+    start: datetime,
+    end: datetime,
+    running: int,
+    queued: int,
+    now: datetime,
+    user: str | None = None,
+) -> str:
     def when(moment: datetime) -> str:
         return moment.astimezone(ZONE).strftime("%d/%m/%Y %H:%M")
 
     begin, finish = _markers(user or getpass.getuser())
     runs = f"{running} rodando" + (f", {queued} na fila" if queued else "")
-    return "\n".join([
-        begin,
-        f"Experimentos em execução na GPU (kiseki): {contact.name} <{contact.email}>",
-        f"Uso do servidor: de {when(start)} até a previsão de {when(end)} (horário de Brasília)",
-        f"Execuções: {runs}. Atualizado em {when(now)}.",
-        finish,
-    ])
+    return "\n".join(
+        [
+            begin,
+            f"Experimentos em execução na GPU (kiseki): {contact.name} <{contact.email}>",
+            f"Uso do servidor: de {when(start)} até a previsão de {when(end)} "
+            "(horário de Brasília)",
+            f"Execuções: {runs}. Atualizado em {when(now)}.",
+            finish,
+        ]
+    )
 
 
 def replace_block(text: str, block: str | None, user: str | None = None) -> str:
     """`text` with our block replaced by `block` (or removed when None)."""
     begin, finish = _markers(user or getpass.getuser())
     lines = text.splitlines()
-    if begin in lines and finish in lines[lines.index(begin):]:
+    if begin in lines and finish in lines[lines.index(begin) :]:
         start = lines.index(begin)
         end = lines.index(finish, start)
-        lines = lines[:start] + lines[end + 1:]
+        lines = lines[:start] + lines[end + 1 :]
     while lines and not lines[-1].strip():
         lines.pop()
     if block:

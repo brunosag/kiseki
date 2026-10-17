@@ -165,11 +165,17 @@ def network(
     names: list[str] = []
     param_index: dict[int, tuple[int, int]] = {}
     counts: dict[str, int] = {}
-    shape: tuple[int, ...] = input_shape
+    shape = list(input_shape)  # the running activation shape
     offset = 0
     for index, layer in enumerate(layers):
-        kind = {Conv: "conv", Dense: "dense", ReLU: "relu", MaxPool: "pool", AvgPool: "pool",
-                Flatten: "flatten"}[type(layer)]
+        kind = {
+            Conv: "conv",
+            Dense: "dense",
+            ReLU: "relu",
+            MaxPool: "pool",
+            AvgPool: "pool",
+            Flatten: "flatten",
+        }[type(layer)]
         counts[kind] = counts.get(kind, 0) + 1
         layer_name = kind if kind == "flatten" else f"{kind}{counts[kind]}"
         names.append(layer_name)
@@ -180,11 +186,11 @@ def network(
                 fan_in = layer.kernel * layer.kernel * c
                 if layer.padding == "VALID":
                     h, w = h - layer.kernel + 1, w - layer.kernel + 1
-                shape = (h, w, layer.features)
+                shape = [h, w, layer.features]
             else:
-                (fan_in,) = shape
+                fan_in = shape[0]
                 w_shape = (fan_in, layer.features)
-                shape = (layer.features,)
+                shape = [layer.features]
             gain = 1.0 if index == len(layers) - 1 else math.sqrt(2.0)
             weight = Slot(f"{layer_name}.w", w_shape, offset, fan_in, gain)
             offset += weight.size
@@ -194,12 +200,18 @@ def network(
             slots += [weight, bias]
         elif isinstance(layer, MaxPool | AvgPool):
             h, w, c = shape
-            shape = (h // layer.window, w // layer.window, c)
+            shape = [h // layer.window, w // layer.window, c]
         elif isinstance(layer, Flatten):
-            shape = (math.prod(shape),)
+            shape = [math.prod(shape)]
     return Network(
-        name=name, input_shape=input_shape, layers=layers, slots=tuple(slots),
-        names=tuple(names), size=offset, classes=classes, _param_index=param_index,
+        name=name,
+        input_shape=input_shape,
+        layers=layers,
+        slots=tuple(slots),
+        names=tuple(names),
+        size=offset,
+        classes=classes,
+        _param_index=param_index,
     )
 
 

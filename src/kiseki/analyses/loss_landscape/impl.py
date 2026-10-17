@@ -16,6 +16,7 @@ scores a population: chunks of networks vmapped over the same images.
 """
 
 import math
+from collections.abc import Callable
 
 import jax
 import jax.numpy as jnp
@@ -60,13 +61,18 @@ def chunk_for(net: Network, images: int, limit: int) -> int:
 
 
 def score_along(net: Network, chunk: int):
-    """Compiled (origin, directions (k, size), coefficients (n, k), x, y) -> (losses, accuracies)."""
+    """Compiled (origin, directions (k, size), coefficients (n, k), x, y) -> losses, accuracies."""
+
     def score(origin, directions, coefficients, x, y):
         def one(c):
             loss, correct = cross_entropy(net.apply(origin + c @ directions, x), y)
             return loss, correct / y.shape[0]
-        losses, accuracies = lax.map(one, coefficients, batch_size=min(chunk, coefficients.shape[0]))
+
+        losses, accuracies = lax.map(
+            one, coefficients, batch_size=min(chunk, coefficients.shape[0])
+        )
         return jnp.where(jnp.isfinite(losses), losses, jnp.inf), accuracies
+
     return jax.jit(score)
 
 
@@ -74,9 +80,9 @@ def sample(context: Context, params: Params) -> tuple[jax.Array, jax.Array]:
     rng = np.random.default_rng(context.seed + 2)
     if params.data == "train":
         count = int(context.data.train_x.shape[0])
-        index = jnp.asarray(np.sort(rng.permutation(count)[:params.samples]))
+        index = jnp.asarray(np.sort(rng.permutation(count)[: params.samples]))
         return context.data.normalize(context.data.train_x[index]), context.data.train_y[index]
-    index = jnp.asarray(np.sort(rng.permutation(context.size)[:params.samples]))
+    index = jnp.asarray(np.sort(rng.permutation(context.size)[: params.samples]))
     return context.x[index], context.y[index]
 
 
@@ -94,7 +100,7 @@ def run(params: Params, context: Context) -> Section:
     radius = np.hypot(alpha, beta)
     step = axis[1] - axis[0]
     key = jax.random.key(context.seed)
-    scorers: dict[str, object] = {}
+    scorers: dict[str, Callable] = {}
 
     def scorer(net: Network):
         if net.name not in scorers:
@@ -121,18 +127,31 @@ def run(params: Params, context: Context) -> Section:
             "accuracy": center_accuracy,
             "rise_half": ring(radius, loss_grid, params.radius / 2, width) - center_loss,
             "rise_edge": ring(radius, loss_grid, params.radius, width) - center_loss,
-            "basin_share": float((accuracy_grid[disk] >= center_accuracy - ACCURACY_TOLERANCE).mean()),
+            "basin_share": float(
+                (accuracy_grid[disk] >= center_accuracy - ACCURACY_TOLERANCE).mean()
+            ),
         }
         summary[subject.label] = result
         planes[number] = loss_grid
         data[subject.label] = {
-            "loss": context.save_array(f"loss_landscape-{number}-plane-loss", loss_grid.astype(np.float32)),
-            "accuracy": context.save_array(f"loss_landscape-{number}-plane-accuracy",
-                                           accuracy_grid.astype(np.float32)),
+            "loss": context.save_array(
+                f"loss_landscape-{number}-plane-loss", loss_grid.astype(np.float32)
+            ),
+            "accuracy": context.save_array(
+                f"loss_landscape-{number}-plane-accuracy", accuracy_grid.astype(np.float32)
+            ),
         }
         arrays += list(data[subject.label].values())
-        rows.append([subject.label, center_loss, 100 * center_accuracy, result["rise_half"],
-                     result["rise_edge"], 100 * result["basin_share"]])
+        rows.append(
+            [
+                subject.label,
+                center_loss,
+                100 * center_accuracy,
+                result["rise_half"],
+                result["rise_edge"],
+                100 * result["basin_share"],
+            ]
+        )
 
     t = np.linspace(-params.line_margin, 1 + params.line_margin, params.line_points)
     inside = (t >= 0) & (t <= 1)
@@ -143,19 +162,28 @@ def run(params: Params, context: Context) -> Section:
         score = scorer(first.net)
         directions = (other.weights - first.weights)[None, :]
         coefficients = jnp.asarray(np.concatenate([t, [0.0, 1.0]])[:, None], jnp.float32)
-        losses, accuracies = (np.asarray(v) for v in score(first.weights, directions, coefficients, x, y))
+        losses, accuracies = (
+            np.asarray(v) for v in score(first.weights, directions, coefficients, x, y)
+        )
         (loss_a, loss_b), (accuracy_a, accuracy_b) = losses[-2:], accuracies[-2:]
         losses, accuracies = losses[:-2], accuracies[:-2]
-        loss_barrier = float(max(0.0, (losses[inside] - ((1 - t) * loss_a + t * loss_b)[inside]).max()))
-        accuracy_barrier = float(max(
-            0.0, (((1 - t) * accuracy_a + t * accuracy_b)[inside] - accuracies[inside]).max()))
+        loss_barrier = float(
+            max(0.0, (losses[inside] - ((1 - t) * loss_a + t * loss_b)[inside]).max())
+        )
+        accuracy_barrier = float(
+            max(0.0, (((1 - t) * accuracy_a + t * accuracy_b)[inside] - accuracies[inside]).max())
+        )
         name = f"{first.label} → {other.label}"
         distance = float(jnp.linalg.norm(other.weights - first.weights))
         summary.setdefault("lines", {})[name] = {
-            "loss_barrier": loss_barrier, "accuracy_barrier": accuracy_barrier, "distance": distance,
+            "loss_barrier": loss_barrier,
+            "accuracy_barrier": accuracy_barrier,
+            "distance": distance,
         }
-        path = context.save_array(f"loss_landscape-line-{len(lines)}",
-                                  np.stack([t, losses, accuracies], 1).astype(np.float32))
+        path = context.save_array(
+            f"loss_landscape-line-{len(lines)}",
+            np.stack([t, losses, accuracies], 1).astype(np.float32),
+        )
         arrays.append(path)
         data.setdefault("lines", {})[name] = path
         lines.append((first, other, losses, accuracies))
@@ -166,12 +194,13 @@ def run(params: Params, context: Context) -> Section:
     figure, axes = plt.subplots(1, count, figsize=(4.2 * count, 3.8), squeeze=False, sharey=True)
     finite = np.concatenate([g[np.isfinite(g)] for g in planes.values()])
     low = np.log10(max(1e-4, finite.min()))
-    high = np.log10(max(10 ** low * 1.01, np.percentile(finite, 98)))
+    high = np.log10(max(10**low * 1.01, np.percentile(finite, 98)))
     levels = np.linspace(low, high, 25)
+    fills = []
     for number, subject in enumerate(context.subjects):
         ax = axes[0][number]
         shown = np.log10(np.clip(planes[number], 10**low, 10**high))
-        filled = ax.contourf(alpha, beta, shown, levels=levels, cmap="viridis")
+        fills.append(ax.contourf(alpha, beta, shown, levels=levels, cmap="viridis"))
         ax.contour(alpha, beta, shown, levels=levels[::4], colors="white", linewidths=0.4)
         ax.plot(0, 0, marker="+", color="red", markersize=10)
         ax.set_title(subject.label, fontsize=10)
@@ -179,7 +208,12 @@ def run(params: Params, context: Context) -> Section:
         ax.set_xlabel("α")
         if number == 0:
             ax.set_ylabel("β")
-    figure.colorbar(filled, ax=axes[0].tolist(), label="log10 loss", shrink=0.85)
+    figure.colorbar(
+        fills[-1],
+        ax=axes[0].tolist(),
+        label="log10 loss",
+        shrink=0.85,
+    )
     figures.append(context.save_figure(figure, "loss_landscape-planes"))
     if lines:
         figure, (loss_axis, accuracy_axis) = plt.subplots(1, 2, figsize=(10, 3.6))
@@ -197,14 +231,25 @@ def run(params: Params, context: Context) -> Section:
         accuracy_axis.legend(fontsize=8)
         figures.append(context.save_figure(figure, "loss_landscape-lines"))
 
-    markdown = (f"Loss on {int(x.shape[0])} {params.data} images. Planes: {params.resolution}² "
-                f"points within ±{params.radius:g} filter-normalized units. Rise: mean loss "
-                f"increase on the circle at r/2 and r (lower: flatter); basin: share of the "
-                f"disk within {100 * ACCURACY_TOLERANCE:g} pp of the model's accuracy.\n\n"
-                + md_table(["model", "loss", "accuracy %", "rise r/2", "rise r", "basin %"], rows))
+    markdown = (
+        f"Loss on {int(x.shape[0])} {params.data} images. Planes: {params.resolution}² "
+        f"points within ±{params.radius:g} filter-normalized units. Rise: mean loss "
+        f"increase on the circle at r/2 and r (lower: flatter); basin: share of the "
+        f"disk within {100 * ACCURACY_TOLERANCE:g} pp of the model's accuracy.\n\n"
+        + md_table(["model", "loss", "accuracy %", "rise r/2", "rise r", "basin %"], rows)
+    )
     if pair_rows:
-        markdown += ("\n\nLines between models of one architecture. Barrier: largest rise above "
-                     "the straight line between the end points, t ∈ [0, 1] (≈0: one basin).\n\n"
-                     + md_table(["pair", "distance", "loss barrier", "accuracy barrier pp"], pair_rows))
-    return Section(name="loss_landscape", title=TITLE, summary=summary, data=data,
-                   markdown=markdown, figures=figures, arrays=arrays)
+        markdown += (
+            "\n\nLines between models of one architecture. Barrier: largest rise above "
+            "the straight line between the end points, t ∈ [0, 1] (≈0: one basin).\n\n"
+            + md_table(["pair", "distance", "loss barrier", "accuracy barrier pp"], pair_rows)
+        )
+    return Section(
+        name="loss_landscape",
+        title=TITLE,
+        summary=summary,
+        data=data,
+        markdown=markdown,
+        figures=figures,
+        arrays=arrays,
+    )

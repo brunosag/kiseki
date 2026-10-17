@@ -8,14 +8,18 @@ from kiseki.worker.report import Context, Section, md_table
 
 
 def confusion(labels: np.ndarray, predictions: np.ndarray, classes: int) -> np.ndarray:
-    return np.bincount(labels * classes + predictions, minlength=classes * classes).reshape(classes, classes)
+    return np.bincount(labels * classes + predictions, minlength=classes * classes).reshape(
+        classes, classes
+    )
 
 
 def per_class(matrix: np.ndarray) -> dict[str, np.ndarray]:
     true_positive = np.diag(matrix).astype(np.float64)
     predicted = matrix.sum(axis=0)
     support = matrix.sum(axis=1)
-    precision = np.divide(true_positive, predicted, out=np.zeros_like(true_positive), where=predicted > 0)
+    precision = np.divide(
+        true_positive, predicted, out=np.zeros_like(true_positive), where=predicted > 0
+    )
     recall = np.divide(true_positive, support, out=np.zeros_like(true_positive), where=support > 0)
     total = precision + recall
     f1 = np.divide(2 * precision * recall, total, out=np.zeros_like(total), where=total > 0)
@@ -32,22 +36,40 @@ def run(params: Params, context: Context) -> Section:
         matrices[subject.label] = matrix
         scores = per_class(matrix)
         macro_f1 = float(scores["f1"].mean())
-        summary[subject.label] = {"accuracy": evaluation.accuracy, "loss": evaluation.loss,
-                                  "macro_f1": macro_f1}
+        summary[subject.label] = {
+            "accuracy": evaluation.accuracy,
+            "loss": evaluation.loss,
+            "macro_f1": macro_f1,
+        }
         data[subject.label] = {
             "confusion": matrix.tolist(),
-            "per_class": [{"class": name, "precision": float(scores["precision"][i]),
-                           "recall": float(scores["recall"][i]), "f1": float(scores["f1"][i]),
-                           "support": int(scores["support"][i])}
-                          for i, name in enumerate(context.class_names)],
+            "per_class": [
+                {
+                    "class": name,
+                    "precision": float(scores["precision"][i]),
+                    "recall": float(scores["recall"][i]),
+                    "f1": float(scores["f1"][i]),
+                    "support": int(scores["support"][i]),
+                }
+                for i, name in enumerate(context.class_names)
+            ],
         }
-        rows.append([subject.label, 100 * evaluation.accuracy, evaluation.loss, macro_f1,
-                     context.size - int(evaluation.correct.sum())])
+        rows.append(
+            [
+                subject.label,
+                100 * evaluation.accuracy,
+                evaluation.loss,
+                macro_f1,
+                context.size - int(evaluation.correct.sum()),
+            ]
+        )
 
     lines = [md_table(["model", "accuracy %", "loss", "macro F1", "errors"], rows), ""]
     header = ["class", *[f"F1 {s.label}" for s in context.subjects]]
-    f1_rows = [[name, *[data[s.label]["per_class"][i]["f1"] for s in context.subjects]]
-               for i, name in enumerate(context.class_names)]
+    f1_rows = [
+        [name, *[data[s.label]["per_class"][i]["f1"] for s in context.subjects]]
+        for i, name in enumerate(context.class_names)
+    ]
     lines.append(md_table(header, f1_rows))
 
     count = len(context.subjects)
@@ -67,5 +89,11 @@ def run(params: Params, context: Context) -> Section:
     if count >= 2:
         first, second = context.subjects[:2]
         data["confusion_difference"] = (matrices[first.label] - matrices[second.label]).tolist()
-    return Section(name="metrics", title=TITLE, summary=summary, data=data,
-                   markdown="\n".join(lines), figures=figures)
+    return Section(
+        name="metrics",
+        title=TITLE,
+        summary=summary,
+        data=data,
+        markdown="\n".join(lines),
+        figures=figures,
+    )

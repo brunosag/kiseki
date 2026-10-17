@@ -12,11 +12,14 @@ Each model gets its own map: penultimate spaces of different networks are not al
 one joint map would mostly separate the models from each other.
 """
 
+from typing import Any
+
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 from jax import lax
+from matplotlib.lines import Line2D
 
 from kiseki.analyses.embedding import TITLE, Params
 from kiseki.worker.report import Context, Section, md_table
@@ -27,9 +30,7 @@ ROW_BLOCK = 1024
 
 
 def squared_distances(a: jax.Array, b: jax.Array) -> jax.Array:
-    return jnp.maximum(
-        (a * a).sum(1)[:, None] + (b * b).sum(1)[None, :] - 2.0 * a @ b.T, 0.0
-    )
+    return jnp.maximum((a * a).sum(1)[:, None] + (b * b).sum(1)[None, :] - 2.0 * a @ b.T, 0.0)
 
 
 def nearest(features: jax.Array, k: int) -> tuple[jax.Array, jax.Array]:
@@ -96,8 +97,9 @@ def tsne(features: jax.Array, init: jax.Array, perplexity: float, iterations: in
 
         def block(start):
             rows, kernel = kernel_rows(y, start)
-            pq = (exaggeration * lax.dynamic_slice_in_dim(p_padded, start, ROW_BLOCK)
-                  - kernel / total) * kernel
+            pq = (
+                exaggeration * lax.dynamic_slice_in_dim(p_padded, start, ROW_BLOCK) - kernel / total
+            ) * kernel
             return 4.0 * (pq.sum(1)[:, None] * rows - pq @ y)
 
         return lax.map(block, starts).reshape(-1, 2)[:n]
@@ -151,7 +153,8 @@ def run(params: Params, context: Context) -> Section:
     n = len(indices)
     perplexity = min(params.perplexity, (n - 1) / 3)
     run_tsne = jax.jit(tsne, static_argnums=(2, 3))
-    summary, data, rows = {}, {"indices": context.save_array("embedding-indices", indices)}, []
+    summary, rows = {}, []
+    data: dict[str, Any] = {"indices": context.save_array("embedding-indices", indices)}
     arrays = [data["indices"]]
     count = len(context.subjects)
     figure, axes = plt.subplots(count, 2, figsize=(9, 4.4 * count), squeeze=False)
@@ -171,31 +174,72 @@ def run(params: Params, context: Context) -> Section:
             "features": int(features.shape[1]),
         }
         summary[subject.label] = result
-        names = {kind: context.save_array(f"embedding-{number}-{kind}", value)
-                 for kind, value in (("tsne", embedded), ("pca", reduced[:, :2]),
-                                     ("predictions", context.evaluate(subject).predictions[indices]))}
+        names = {
+            kind: context.save_array(f"embedding-{number}-{kind}", value)
+            for kind, value in (
+                ("tsne", embedded),
+                ("pca", reduced[:, :2]),
+                ("predictions", context.evaluate(subject).predictions[indices]),
+            )
+        }
         data[subject.label] = names
         arrays += list(names.values())
-        rows.append([subject.label, result["features"], 100 * result["knn_accuracy_features"],
-                     100 * result["knn_accuracy_tsne"], result["trustworthiness"],
-                     100 * result["pca_explained_2"]])
-        for axis, (kind, points) in zip(axes[number], (("PCA", reduced), ("t-SNE", embedded)),
-                                        strict=True):
-            points = np.asarray(points)
-            axis.scatter(points[:, 0], points[:, 1], c=np.asarray(labels), cmap="tab10", s=2,
-                         vmin=0, vmax=9, linewidths=0)
+        rows.append(
+            [
+                subject.label,
+                result["features"],
+                100 * result["knn_accuracy_features"],
+                100 * result["knn_accuracy_tsne"],
+                result["trustworthiness"],
+                100 * result["pca_explained_2"],
+            ]
+        )
+        for axis, (kind, values) in zip(
+            axes[number], (("PCA", reduced), ("t-SNE", embedded)), strict=True
+        ):
+            points = np.asarray(values)
+            axis.scatter(
+                points[:, 0],
+                points[:, 1],
+                c=np.asarray(labels),
+                cmap="tab10",
+                s=2,
+                vmin=0,
+                vmax=9,
+                linewidths=0,
+            )
             axis.set_title(f"{subject.label}: {kind}", fontsize=10)
             axis.set_xticks([])
             axis.set_yticks([])
-    handles = [plt.Line2D([], [], marker="o", linestyle="", color=plt.get_cmap("tab10")(i),
-                          markersize=4) for i in range(len(context.class_names))]
+    handles = [
+        Line2D([], [], marker="o", linestyle="", color=plt.get_cmap("tab10")(i), markersize=4)
+        for i in range(len(context.class_names))
+    ]
     figure.legend(handles, context.class_names, loc="lower center", ncol=5, fontsize=8)
     figure.subplots_adjust(bottom=0.08)
     k = params.neighbors
-    markdown = (f"{n} images, class-balanced, the same for every model. kNN accuracy: "
-                f"leave-one-out {k}-nearest-neighbour vote, in the penultimate space and on "
-                "the t-SNE map; trustworthiness: share of map neighbourhoods that are real.\n\n"
-                + md_table(["model", "features", f"{k}-NN acc % (features)",
-                            f"{k}-NN acc % (t-SNE)", "trustworthiness", "PCA var % (2 PCs)"], rows))
-    return Section(name="embedding", title=TITLE, summary=summary, data=data, markdown=markdown,
-                   figures=[context.save_figure(figure, "embedding")], arrays=arrays)
+    markdown = (
+        f"{n} images, class-balanced, the same for every model. kNN accuracy: "
+        f"leave-one-out {k}-nearest-neighbour vote, in the penultimate space and on "
+        "the t-SNE map; trustworthiness: share of map neighbourhoods that are real.\n\n"
+        + md_table(
+            [
+                "model",
+                "features",
+                f"{k}-NN acc % (features)",
+                f"{k}-NN acc % (t-SNE)",
+                "trustworthiness",
+                "PCA var % (2 PCs)",
+            ],
+            rows,
+        )
+    )
+    return Section(
+        name="embedding",
+        title=TITLE,
+        summary=summary,
+        data=data,
+        markdown=markdown,
+        figures=[context.save_figure(figure, "embedding")],
+        arrays=arrays,
+    )

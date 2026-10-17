@@ -26,11 +26,16 @@ def build(params: Params, problem: Problem) -> Optimizer:
         grad = grad + params.weight_decay * state["weights"]
         velocity = params.momentum * state["velocity"] + grad
         weights = state["weights"] - params.learning_rate * velocity
-        metrics = {"loss": loss, "accuracy": correct / x.shape[0],
-                   "grad_norm": jnp.linalg.norm(grad)}
+        metrics = {
+            "loss": loss,
+            "accuracy": correct / x.shape[0],
+            "grad_norm": jnp.linalg.norm(grad),
+        }
         return {"weights": weights, "velocity": velocity}, metrics
 
     return Optimizer(
-        init=init, step=step, current=lambda state: state["weights"],
+        init=init,
+        step=step,
+        current=lambda state: state["weights"],
         extra_metrics=("grad_norm",),
     )

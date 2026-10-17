@@ -13,8 +13,15 @@ from typing import Any
 import msgspec
 
 NAMES = (
-    "metrics", "calibration", "agreement", "weights", "representations", "embedding",
-    "robustness", "lrp", "loss_landscape",
+    "metrics",
+    "calibration",
+    "agreement",
+    "weights",
+    "representations",
+    "embedding",
+    "robustness",
+    "lrp",
+    "loss_landscape",
 )
 
 

@@ -61,7 +61,9 @@ def build(params: Params, problem: Problem) -> Optimizer:
         # The second crossover parent is drawn from the wheel without the first one.
         masked = jnp.where(jnp.arange(elite)[None, :] == first[:, None], -jnp.inf, logits)
         second = jax.random.categorical(k_second, masked, axis=-1)
-        parent_a = jnp.where(is_asexual, jax.random.categorical(k_asexual, logits, shape=(size,)), first)
+        parent_a = jnp.where(
+            is_asexual, jax.random.categorical(k_asexual, logits, shape=(size,)), first
+        )
         parent_a, parent_b = wheel[parent_a], wheel[second]
 
         # One uniform draw per weight decides whether it mutates (u < p) and, rescaled,
@@ -72,7 +74,9 @@ def build(params: Params, problem: Problem) -> Optimizer:
         delta = jnp.where(u < p, (2.0 * u / max(p, 1e-12) - 1.0) * step_size, 0.0)
         mutants = population[parent_a[:asexual]] + delta
         take_first = jax.random.bernoulli(k_cross, 0.5, (sexual, problem.net.size))
-        crossed = jnp.where(take_first, population[parent_a[asexual:]], population[parent_b[asexual:]])
+        crossed = jnp.where(
+            take_first, population[parent_a[asexual:]], population[parent_b[asexual:]]
+        )
 
         metrics = {
             "loss": losses[best],
@@ -101,7 +105,10 @@ def build(params: Params, problem: Problem) -> Optimizer:
         }
 
     return Optimizer(
-        init=init, step=step, current=lambda state: state["best"], on_validation=on_validation,
+        init=init,
+        step=step,
+        current=lambda state: state["best"],
+        on_validation=on_validation,
         extra_metrics=("mean_loss", "mutation_step"),
         validation_metrics=lambda state: {"mutation_step": state["mutation_step"]},
     )

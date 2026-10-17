@@ -2,8 +2,6 @@
 
 import math
 
-import numpy as np
-
 from kiseki.analyses.agreement import TITLE, Params
 from kiseki.worker.report import Context, Section, md_table
 
@@ -30,8 +28,10 @@ def run(params: Params, context: Context) -> Section:
         same_wrong = neither & (a.predictions == b.predictions)
         agree = a.predictions == b.predictions
         counts = {
-            "both_correct": int(both.sum()), "only_first": int(only_a.sum()),
-            "only_second": int(only_b.sum()), "both_wrong_same": int(same_wrong.sum()),
+            "both_correct": int(both.sum()),
+            "only_first": int(only_a.sum()),
+            "only_second": int(only_b.sum()),
+            "both_wrong_same": int(same_wrong.sum()),
             "both_wrong_different": int((neither & ~same_wrong).sum()),
         }
         errors = int((~a.correct).sum()) + int((~b.correct).sum())
@@ -40,21 +40,47 @@ def run(params: Params, context: Context) -> Section:
         smaller = min(int((~a.correct).sum()), int((~b.correct).sum()))
         overlap = float(neither.sum() / smaller) if smaller else 0.0
         p_value = mcnemar_exact(counts["only_first"], counts["only_second"])
-        summary[key] = {"agreement": float(agree.mean()), "error_overlap": overlap,
-                        "mcnemar_p": p_value, **counts}
-        per_class = [{"class": name, "agreement": float(agree[labels == i].mean()),
-                      "only_first": int(only_a[labels == i].sum()),
-                      "only_second": int(only_b[labels == i].sum())}
-                     for i, name in enumerate(context.class_names)]
+        summary[key] = {
+            "agreement": float(agree.mean()),
+            "error_overlap": overlap,
+            "mcnemar_p": p_value,
+            **counts,
+        }
+        per_class = [
+            {
+                "class": name,
+                "agreement": float(agree[labels == i].mean()),
+                "only_first": int(only_a[labels == i].sum()),
+                "only_second": int(only_b[labels == i].sum()),
+            }
+            for i, name in enumerate(context.class_names)
+        ]
         data[key] = {"per_class": per_class, "errors": errors}
-        blocks.append(f"**{key}**: predictions agree on {100 * agree.mean():.2f}% of images; "
-                      f"{100 * overlap:.1f}% of the smaller error set is shared; McNemar "
-                      f"p = {p_value:.3g}.\n\n" + md_table(
-                          ["both right", f"only {first.label}", f"only {second.label}",
-                           "both wrong (same)", "both wrong (different)"],
-                          [[counts["both_correct"], counts["only_first"], counts["only_second"],
-                            counts["both_wrong_same"], counts["both_wrong_different"]]]))
+        blocks.append(
+            f"**{key}**: predictions agree on {100 * agree.mean():.2f}% of images; "
+            f"{100 * overlap:.1f}% of the smaller error set is shared; McNemar "
+            f"p = {p_value:.3g}.\n\n"
+            + md_table(
+                [
+                    "both right",
+                    f"only {first.label}",
+                    f"only {second.label}",
+                    "both wrong (same)",
+                    "both wrong (different)",
+                ],
+                [
+                    [
+                        counts["both_correct"],
+                        counts["only_first"],
+                        counts["only_second"],
+                        counts["both_wrong_same"],
+                        counts["both_wrong_different"],
+                    ]
+                ],
+            )
+        )
     if not blocks:
         blocks.append("One model: nothing to compare.")
-    return Section(name="agreement", title=TITLE, summary=summary, data=data,
-                   markdown="\n\n".join(blocks))
+    return Section(
+        name="agreement", title=TITLE, summary=summary, data=data, markdown="\n\n".join(blocks)
+    )

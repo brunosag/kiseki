@@ -15,17 +15,27 @@ INFO = DatasetInfo(
     title="CIFAR-10",
     image_shape=(32, 32, 3),
     class_names=(
-        "airplane", "automobile", "bird", "cat", "deer",
-        "dog", "frog", "horse", "ship", "truck",
+        "airplane",
+        "automobile",
+        "bird",
+        "cat",
+        "deer",
+        "dog",
+        "frog",
+        "horse",
+        "ship",
+        "truck",
     ),
     train_size=50000,
     validation_size=5000,
     default_model="vgg_mini",
     homepage="https://www.cs.toronto.edu/~kriz/cifar.html",
     files=(
-        RawFile("cifar-10-binary.tar.gz",
-                "https://www.cs.toronto.edu/~kriz/cifar-10-binary.tar.gz",
-                "c4a38c50a1bc5f3a1c5537f2155ab9d68f9f25eb1ed8d9ddda3db29a59bca1dd"),
+        RawFile(
+            "cifar-10-binary.tar.gz",
+            "https://www.cs.toronto.edu/~kriz/cifar-10-binary.tar.gz",
+            "c4a38c50a1bc5f3a1c5537f2155ab9d68f9f25eb1ed8d9ddda3db29a59bca1dd",
+        ),
     ),
 )
 
@@ -44,8 +54,10 @@ def parse(raw_dir: Path) -> RawSplits:
     train = np.concatenate([batches[f"data_batch_{i}.bin"] for i in range(1, 6)])
     test = batches["test_batch.bin"]
     return RawSplits(
-        train_x=_images(train), train_y=train[:, 0].copy(),
-        test_x=_images(test), test_y=test[:, 0].copy(),
+        train_x=_images(train),
+        train_y=train[:, 0].copy(),
+        test_x=_images(test),
+        test_y=test[:, 0].copy(),
     )
 
 
