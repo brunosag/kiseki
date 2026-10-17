@@ -28,6 +28,14 @@ def test_mirrors_of_remote_runs_are_neither_started_nor_failed(home):
     assert running_there.status().state == "running"
 
 
+def test_runs_submitted_in_the_same_second_start_in_submission_order(home):
+    ids = [f"20261017-100000-mnist-{name}" for name in ("sgd-zzzz", "leea-aaaa", "cosyne-mmmm")]
+    for run_id in ids:
+        Run.create(run_id, RunSpec(), machine="local")
+
+    assert [run.id for run in runner.queued(home)] == ids
+
+
 def test_a_run_does_not_start_when_the_notice_cannot_be_written(home, tmp_path, monkeypatch):
     missing = tmp_path / "etc" / "motd.tail"
     runner.write_profile(home, runner.Profile(name="lugia", notice=str(missing), contact=CONTACT))

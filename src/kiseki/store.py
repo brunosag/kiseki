@@ -92,14 +92,13 @@ class Run:
         path.mkdir(parents=True)
         run = cls(path)
         write_atomic(path / "spec.json", encode(spec))
-        stamp = now()
         run.write_status(
             RunStatus(
                 state="queued",
                 iterations=spec.iterations,
                 machine=machine,
-                created_at=stamp,
-                updated_at=stamp,
+                # microseconds: the queue starts runs submitted together in this order
+                created_at=datetime.now(UTC).isoformat(timespec="microseconds"),
             )
         )
         run.event("created", machine=machine)
