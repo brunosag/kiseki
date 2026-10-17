@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { firstReached, parseField, properties, runRequest } from "./core.ts";
+import {
+  firstReached,
+  mergeById,
+  parseField,
+  properties,
+  runRequest,
+} from "./core.ts";
 import { decodeNpy, float16 } from "./npy.ts";
 
 test("schema references, nullable fields, strict bounds and even populations", () => {
@@ -129,5 +135,22 @@ test("NumPy rejects malformed and unsupported arrays", () => {
   assert.throws(
     () => decodeNpy(npy("<f2", [0, 60, 0, 184], "2,", true)),
     /Fortran/,
+  );
+});
+test("runs a refresh already listed replace their copies instead of repeating", () => {
+  const listed = [
+    { id: "a", state: "completed" },
+    { id: "b", state: "queued" },
+  ];
+  assert.deepEqual(
+    mergeById(listed, [
+      { id: "b", state: "running" },
+      { id: "c", state: "queued" },
+    ]),
+    [
+      { id: "a", state: "completed" },
+      { id: "b", state: "running" },
+      { id: "c", state: "queued" },
+    ],
   );
 });

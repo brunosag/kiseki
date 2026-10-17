@@ -1,3 +1,4 @@
+import asyncio
 import threading
 import time
 
@@ -108,3 +109,24 @@ def test_a_stale_machine_cache_answers_at_once_while_a_probe_runs(home, monkeypa
         assert stale == [{"name": "local", "probe": 1}]
         release.set()
         assert client.get("/api/machines?fresh=1", headers=TOKEN).json()[0]["probe"] >= 2
+
+
+def test_a_refresh_announces_finished_remote_runs_once_their_models_are_here(home, monkeypatch):
+    done = Run.create("20261017-100000-mnist-sgd-aaaa", RunSpec(), machine="vps")
+    going = Run.create("20261017-100000-mnist-sgd-bbbb", RunSpec(), machine="vps")
+    for run in (done, going):
+        run.update_status(state="running")
+
+    def refresh(runs):  # the pull: one finished there, with its models
+        done.update_status(state="completed")
+        return []
+
+    monkeypatch.setattr(actions, "refresh", refresh)
+    state = server.State("secret")
+    events = asyncio.Queue()
+    state.subscribers.add(events)
+
+    asyncio.run(server.refresh_remote_runs(state))
+    message = events.get_nowait()
+    assert message.startswith("event: run\n") and done.id in message and "completed" in message
+    assert events.empty()

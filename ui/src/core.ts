@@ -121,6 +121,17 @@ export function firstReached(
     ? null
     : { step: columns.step[index], elapsed: columns.elapsed?.[index] };
 }
+// A list with `incoming` in place of same-id items and the rest appended: an SSE refresh
+// can list runs before the POST that created them returns.
+export function mergeById<T extends { id: string }>(
+  list: T[],
+  incoming: T[],
+): T[] {
+  const byId = new Map(incoming.map((item) => [item.id, item]));
+  const merged = list.map((item) => byId.get(item.id) ?? item);
+  const listed = new Set(list.map((item) => item.id));
+  return [...merged, ...incoming.filter((item) => !listed.has(item.id))];
+}
 export const percent = (n?: number | null) =>
   n == null ? "—" : `${(n * 100).toFixed(2)}%`;
 export const number = (n?: number | null) =>

@@ -1,6 +1,7 @@
 import { Component, useCallback, useEffect, useState } from "react";
 import type { ReactNode } from "react";
 import { api, eventStream, observeRunStatus, resetRunRows } from "./api";
+import { mergeById } from "./core";
 import type { Options, ReportRecord, Run } from "./types";
 import { ErrorBox, Loading } from "./components/Common";
 import { Runs } from "./views/Runs";
@@ -173,7 +174,7 @@ export default function App() {
       <NewRun
         options={options}
         created={(created) => {
-          setRuns((previous) => [...previous, ...created]);
+          setRuns((previous) => mergeById(previous, created));
           setSelected(new Set(created.map((r) => r.id)));
           navigate("/runs");
         }}
@@ -197,7 +198,7 @@ export default function App() {
         runs={selectedRuns}
         options={options}
         created={(r) => {
-          setReports((previous) => [...previous, r]);
+          setReports((previous) => mergeById(previous, [r]));
           navigate(`/reports/${r.id}`);
         }}
         navigate={navigate}

@@ -311,15 +311,26 @@ async def watch_statuses(state: State) -> None:
         seen = current
 
 
-async def refresh_remotes() -> None:
+async def refresh_remote_runs(state: State) -> None:
+    """Mirror active remote runs. A run that finished gets its models after its status
+    changed (and the UI fetched it), so it is announced again once they are here."""
+    runs = [
+        r
+        for r in Run.all()
+        if r.status().machine != "local" and r.status().state in (*ACTIVE, "paused")
+    ]
+    if not runs:
+        return
+    await asyncio.to_thread(actions.refresh, runs)
+    for run in runs:
+        status = run.status()
+        if status.state not in (*ACTIVE, "paused"):
+            state.publish("run", {"id": run.id, "status": status})
+
+
+async def refresh_remotes(state: State) -> None:
     while True:
-        runs = [
-            r
-            for r in Run.all()
-            if r.status().machine != "local" and r.status().state in (*ACTIVE, "paused")
-        ]
-        if runs:
-            await asyncio.to_thread(actions.refresh, runs)
+        await refresh_remote_runs(state)
         await asyncio.sleep(REMOTE_REFRESH_SECONDS)
 
 
@@ -386,7 +397,7 @@ def create_app(token: str):
     @contextlib.asynccontextmanager
     async def lifespan(app: Starlette):
         tasks.append(asyncio.create_task(watch_statuses(state)))
-        tasks.append(asyncio.create_task(refresh_remotes()))
+        tasks.append(asyncio.create_task(refresh_remotes(state)))
         probe_machines(state)  # SSH connections open while the user looks at runs
         yield
         for task in tasks:

@@ -183,7 +183,8 @@ def queue(specs: list[RunSpec], machine_name: str = "local") -> list[Run]:
 
 
 def refresh(runs: list[Run]) -> list[str]:
-    """Pull fresh files of active runs that live on remote machines; returns errors."""
+    """Pull fresh files of active runs that live on remote machines, and the models of
+    those the pull shows finished (once: finished runs are not refreshed); returns errors."""
     by_machine: dict[str, list[str]] = {}
     for run in runs:
         status = run.status()
@@ -192,7 +193,11 @@ def refresh(runs: list[Run]) -> list[str]:
     errors = []
     for name, run_ids in by_machine.items():
         try:
-            remote_for(name).pull(run_ids)
+            remote = remote_for(name)
+            remote.pull(run_ids)
+            finished = [i for i in run_ids if Run.find(i).status().state not in (*ACTIVE, "paused")]
+            if finished:
+                remote.pull(finished, models=True)
         except Exception as error:  # offline remote: callers show what they have
             errors.append(f"could not refresh {name}: {error}")
     return errors

@@ -71,8 +71,8 @@ their `~/.ssh/config` alias. `kiseki run --on lugia` rsyncs the package to
 `<remote home>/code`, runs `uv sync` only when dependencies changed, makes the dataset
 available (the remote downloads it from the source with pinned hashes, else this machine
 pushes its copy), writes `machine.json` and submits over one multiplexed SSH connection.
-`pull` mirrors small files of remote runs (models with `--models`); read commands refresh
-active remote runs.
+`pull` mirrors small files of remote runs (models with `--models`); read commands and the
+app refresh active remote runs, and pull a run's models once they see it finish.
 
 - **Why:** "An easy way to select remote machines" and lugia (PREFERENCES.md); a remote
   needs only SSH, uv and its own disk.
