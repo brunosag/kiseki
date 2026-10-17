@@ -35,3 +35,11 @@ def datasets_dir() -> Path:
 def repo_root() -> Path:
     """The source checkout this package runs from (code shipped to remotes comes from here)."""
     return Path(__file__).resolve().parents[2]
+
+
+def config_dir() -> Path:
+    root = os.environ.get("KISEKI_CONFIG")
+    if root:
+        return Path(root).expanduser()
+    config = os.environ.get("XDG_CONFIG_HOME") or "~/.config"
+    return Path(config).expanduser() / "kiseki"

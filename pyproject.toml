@@ -56,3 +56,23 @@ include = ["src", "tests"]
 pythonVersion = "3.14"
 typeCheckingMode = "standard"
 reportMissingTypeStubs = false
+
+[tool.uv]
+# CUDA user-space libraries held at the CUDA 13.0 releases: lugia's driver (580) is a CUDA
+# 13.0 driver, and its GPU went down on the first run with the 13.4 releases (2026-10-17).
+# 13.0 is also what PyTorch ran there without trouble. Newer drivers run these fine.
+constraint-dependencies = [
+    "nvidia-cuda-runtime==13.0.*",
+    "nvidia-cuda-nvcc==13.0.*",
+    "nvidia-cuda-nvrtc==13.0.*",
+    "nvidia-cuda-cupti==13.0.*",
+    "nvidia-cuda-crt==13.0.*",
+    "nvidia-cuda-cccl==13.0.*",
+    "nvidia-nvvm==13.0.*",
+    "nvidia-nvjitlink==13.0.*",
+    "nvidia-cublas<13.2",
+    "nvidia-cufft<12.1",
+    "nvidia-cusolver<12.1",
+    "nvidia-cusparse<12.7",
+    "nvidia-cudnn-cu13<9.21",
+]

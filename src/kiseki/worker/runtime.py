@@ -1,8 +1,9 @@
 """Process-wide JAX setup. Must run before the first `import jax` in a worker process.
 
 Environment it honours (set by the launcher from the machine profile):
-- KISEKI_GPU_MEMORY_FRACTION: share of GPU memory JAX preallocates (unset: 0.9).
-  "0" disables preallocation, which shared machines use.
+- KISEKI_GPU_MEMORY_FRACTION: share of GPU memory to preallocate. Unset (or "0"), JAX
+  allocates on demand and caches what it got, which costs a steady training loop nothing
+  measurable and lets a report run beside a training run, or a shared GPU stay shared.
 - KISEKI_DETERMINISTIC=1: deterministic GPU kernels.
 - KISEKI_PLATFORM=cpu: force CPU (tests, machines without GPUs).
 """
@@ -30,7 +31,7 @@ def ensure_driver_path() -> None:
 
 
 def configure(*, deterministic: bool | None = None) -> None:
-    fraction = os.environ.get("KISEKI_GPU_MEMORY_FRACTION", "0.9")
+    fraction = os.environ.get("KISEKI_GPU_MEMORY_FRACTION", "0")
     if fraction in {"0", "0.0", "off"}:
         os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
     else:
