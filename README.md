@@ -23,7 +23,7 @@ agents, a desktop app, and runs on remote machines over SSH.
 
 ## Setup
 
-On NixOS, `direnv allow` (or `nix develop`) provides Python 3.14, uv, Node and Electron.
+On NixOS, `direnv allow` (or `nix develop`) provides Python 3.14, uv, Node, pnpm and Electron.
 Then:
 
 ```bash
@@ -58,6 +58,7 @@ the runner keeps the required usage notice up to date while runs are active.
 ## The app
 
 ```bash
+cd ui && pnpm install --frozen-lockfile && cd ..   # once
 ui/kiseki-app
 ```
 

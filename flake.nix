@@ -9,7 +9,7 @@
       pkgs = nixpkgs.legacyPackages.${system};
     in {
       devShells.${system}.default = pkgs.mkShell {
-        packages = [ pkgs.python314 pkgs.uv pkgs.nodejs_24 pkgs.electron pkgs.rsync pkgs.openssh ];
+        packages = [ pkgs.python314 pkgs.uv pkgs.nodejs_24 pkgs.pnpm pkgs.electron pkgs.rsync pkgs.openssh ];
         # uv-managed wheels (JAX, CUDA) find libcuda through the NixOS driver path.
         shellHook = ''
           export UV_PYTHON=${pkgs.python314}/bin/python3.14
