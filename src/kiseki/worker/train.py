@@ -31,7 +31,7 @@ import numpy as np
 from jax import lax
 
 from kiseki import datasets, models, optimizers
-from kiseki.spec import RunSpec, encode
+from kiseki.spec import ModelRef, RunSpec, encode
 from kiseki.store import Run, now, read_ndjson, write_atomic
 from kiseki.worker import checkpoint, runtime
 from kiseki.worker import data as device_data
@@ -188,11 +188,30 @@ def first_chunk(net, spec: RunSpec, population: int, limit: int) -> int:
     return max(1, min(chunk, 256, population))
 
 
-def compile_program(spec, net, impl, params, data, keys: Keys, chunk: int) -> Program:
+def starting_network(spec: RunSpec, net) -> jax.Array | None:
+    """The saved network `spec.start_from` names, checked to share this run's dataset, model
+    and train/validation split (else its held-out images could be training ones here)."""
+    if not spec.start_from:
+        return None
+    ref = ModelRef.parse(spec.start_from)
+    source = Run.find(ref.run_id).spec()
+    for field in ("dataset", "model", "split_seed", "validation_size"):
+        if getattr(source, field) != getattr(spec, field):
+            raise ValueError(
+                f"start_from {ref}: its {field} is {getattr(source, field)!r}, "
+                f"this run's is {getattr(spec, field)!r}"
+            )
+    weights = checkpoint.load_network(Run.find(ref.run_id).models_dir / f"{ref.name}.safetensors")
+    if weights.shape != (net.size,):
+        raise ValueError(f"start_from {ref}: {weights.shape[0]} weights, the model has {net.size}")
+    return jnp.asarray(weights)
+
+
+def compile_program(spec, net, impl, params, data, keys: Keys, chunk: int, start=None) -> Program:
     started = time.perf_counter()
     dtype = jnp.bfloat16 if spec.precision == "bf16" else jnp.float32
     scorer = Scorer(net, chunk, dtype)
-    opt = impl.build(params, Problem(net, scorer, spec.batch_size))
+    opt = impl.build(params, Problem(net, scorer, spec.batch_size, start))
     init = jax.jit(lambda d: initial_carry(opt, d, keys))
     carry_shape = jax.eval_shape(init, data)
     train_names, val_names = metric_names(opt, carry_shape)
@@ -297,10 +316,11 @@ def train(run: Run) -> int:
     )
     run.event("started" if not manifest else "resumed", step=resumed_from, device=device)
 
+    start = starting_network(spec, net)
     limit = device_limit()
     chunk = first_chunk(net, spec, population, limit)
     while True:  # compile, then run one step; halve the chunk until it fits
-        program = compile_program(spec, net, impl, params, data, keys, chunk)
+        program = compile_program(spec, net, impl, params, data, keys, chunk, start)
         log(
             f"compiled in {program.compile_seconds:.1f}s: chunk {chunk}, "
             f"plans {program.planned_bytes / 2**30:.2f} of {limit / 2**30:.2f} GiB"

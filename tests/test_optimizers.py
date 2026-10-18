@@ -63,10 +63,45 @@ def test_es_gradient_points_downhill():
     assert agree >= 0.8
 
 
+def test_es_on_raw_losses_estimates_the_smoothed_gradient():
+    sigma = 0.02
+    opt = build(
+        "openai_es",
+        population_size=20000,
+        sigma=sigma,
+        learning_rate=1.0,
+        weight_decay=0.0,
+        shaping="none",
+        update="sgd",
+    )
+    x, y = toy_batch(jax.random.key(0))
+    state = opt.init(jax.random.key(1))
+    true = jax.grad(lambda f: Scorer(NET, 1).one(f, x, y)[0])(state["theta"])
+    new, metrics = opt.step(state, jax.random.key(2), x, y)
+    estimate = state["theta"] - new["theta"]  # plain step at lr 1: the gradient estimate
+    cosine = estimate @ true / (jnp.linalg.norm(estimate) * jnp.linalg.norm(true))
+    assert cosine > 0.95
+    assert jnp.allclose(jnp.linalg.norm(estimate), jnp.linalg.norm(true), rtol=0.1)
+    assert 0 <= metrics["ties"] < 0.1  # float32 losses of 20k close networks can coincide
+
+
+def test_adam_with_l2_matches_its_first_step_by_hand():
+    opt = build("adam", learning_rate=0.1, l2=0.5)
+    x, y = toy_batch(jax.random.key(0))
+    state = opt.init(jax.random.key(1))
+    w0 = state["weights"]
+    g = jax.grad(lambda f: Scorer(NET, 1).one(f, x, y)[0])(w0) + 0.5 * w0
+    new, _ = opt.step(state, jax.random.key(2), x, y)
+    # Adam's bias-corrected first step is -lr · g / (|g| + ε)
+    assert jnp.allclose(new["weights"], w0 - 0.1 * g / (jnp.abs(g) + 1e-8), atol=1e-4)
+
+
 @pytest.mark.parametrize(
     "name,params,steps",
     [
         ("sgd", {"learning_rate": 0.5}, 100),
+        ("adam", {"learning_rate": 0.05}, 100),
+        ("adam", {"learning_rate": 0.05, "weight_decay": 0.01}, 100),
         ("openai_es", {"population_size": 64}, 150),
         ("leea", {"population_size": 64}, 150),
         ("cosyne", {"population_size": 64}, 150),

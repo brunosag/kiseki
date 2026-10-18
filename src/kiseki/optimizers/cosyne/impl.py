@@ -35,7 +35,7 @@ def build(params: Params, problem: Problem) -> Optimizer:
     chunk = min(scorer.chunk, size)
 
     def init(key):
-        population = init_population(problem.net, key, size)
+        population = init_population(problem.net, key, size, problem.start)
         return {"population": population}
 
     def crossover(key, first, second):

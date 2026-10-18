@@ -71,8 +71,9 @@ def load_splits(info: DatasetInfo, parse, root: Path | None = None) -> Splits:
         raw_dir = directory / "raw"
         for raw in info.files:
             fetch(raw, raw_dir)
-        raw_splits = parse(raw_dir)
+        raw_splits = parse(raw_dir)  # a generated dataset has no files and makes its own
         _check_shapes(info, raw_splits)
+        directory.mkdir(parents=True, exist_ok=True)
         for name in _ARRAYS:
             np.save(directory / f"{name}.npy", getattr(raw_splits, name))
         scaled = raw_splits.train_x.reshape(-1, info.image_shape[2]).astype(np.float64) / 255.0

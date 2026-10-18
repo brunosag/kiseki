@@ -5,7 +5,7 @@ perturbations, then takes an Adam step. Noise is regenerated from its key instea
 stored, so memory does not grow with the population.
 """
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 import msgspec
 from msgspec import Meta
@@ -26,3 +26,10 @@ class Params(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fields=Tr
     weight_decay: Annotated[float, Meta(ge=0, description="L2 coefficient")] = 0.005
     beta1: Annotated[float, Meta(ge=0, lt=1, description="Adam first-moment decay")] = 0.9
     beta2: Annotated[float, Meta(ge=0, lt=1, description="Adam second-moment decay")] = 0.999
+    shaping: Annotated[
+        Literal["ranks", "none"],
+        Meta(description="ranks: centered ranks; none: raw losses, the smoothed-loss gradient"),
+    ] = "ranks"
+    update: Annotated[
+        Literal["adam", "sgd"], Meta(description="Step rule applied to the gradient estimate")
+    ] = "adam"

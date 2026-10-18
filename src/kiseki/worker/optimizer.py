@@ -30,6 +30,7 @@ class Problem:
     net: Network
     scorer: Scorer
     batch_size: int
+    start: Array | None = None  # flat weights to start from (RunSpec.start_from), else fresh
 
 
 @dataclass(frozen=True)
@@ -50,5 +51,13 @@ def centered_ranks(values: Array) -> Array:
     return ranks / max(count - 1, 1) - 0.5
 
 
-def init_population(net: Network, key: Array, size: int) -> Array:
+def initial(problem: Problem, key: Array) -> Array:
+    """The network a single-network optimizer starts from: `problem.start` or a fresh one."""
+    return problem.net.init(key) if problem.start is None else problem.start
+
+
+def init_population(net: Network, key: Array, size: int, start: Array | None = None) -> Array:
+    """`size` fresh networks, or `size` copies of `start`."""
+    if start is not None:
+        return jnp.broadcast_to(start, (size, start.shape[0]))
     return jax.vmap(net.init)(jax.random.split(key, size))

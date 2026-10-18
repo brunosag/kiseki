@@ -49,6 +49,13 @@ class RunSpec(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fields=T
     chunk_size: (
         Annotated[int, Meta(ge=1, description="Networks scored at once; null picks one")] | None
     ) = None
+    start_from: Annotated[
+        str,
+        Meta(
+            description="Empty starts from a fresh initialisation; else a saved network "
+            "RUN:best|final|step-N of a run with this dataset, model and split"
+        ),
+    ] = ""
     label: str = ""
 
 

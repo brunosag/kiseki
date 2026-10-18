@@ -165,6 +165,15 @@ def queue(specs: list[RunSpec], machine_name: str = "local") -> list[Run]:
     """Queue runs on a machine; remote runs are mirrored here right away."""
     machine = machines.get(machine_name)
     profile = profile_for(machine)
+    if any(spec.start_from for spec in specs):
+        if not machine.is_local:
+            raise ValueError("start_from works only for runs on this machine")
+        specs = [
+            msgspec.structs.replace(spec, start_from=resolve_model(spec.start_from, offline=True))
+            if spec.start_from
+            else spec
+            for spec in specs
+        ]
     if machine.is_local:
         home = paths.home()
         runner.write_profile(home, profile)

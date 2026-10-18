@@ -83,3 +83,25 @@ def test_a_run_stopped_before_validating_keeps_its_final_network_as_best(home, m
         for name in ("best", "final")
     )
     assert np.array_equal(best, final)
+
+
+def test_a_run_can_start_from_another_runs_network(home, mnist):
+    source = make("sgd")
+    assert train.main(source) == 0
+    start = f"{source.id}:final"
+    run = make("openai_es", population_size=16, learning_rate=1e-12, start_from=start)
+    assert train.main(run) == 0
+
+    def final(run):
+        return checkpoint.load_network(run.models_dir / "final.safetensors")
+
+    assert np.allclose(final(run), final(source), atol=1e-6)
+
+
+def test_a_run_cannot_start_from_a_network_trained_on_another_split(home, mnist):
+    source = make("sgd")
+    assert train.main(source) == 0
+    run = make("sgd", validation_size=5000, start_from=f"{source.id}:final")
+    train.main(run)
+    assert run.status().state == "failed"
+    assert "validation_size" in (run.status().error or "")

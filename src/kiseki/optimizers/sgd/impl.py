@@ -4,7 +4,7 @@ import jax
 import jax.numpy as jnp
 
 from kiseki.optimizers.sgd import Params
-from kiseki.worker.optimizer import Optimizer, Problem
+from kiseki.worker.optimizer import Optimizer, Problem, initial
 from kiseki.worker.population import cross_entropy
 
 
@@ -18,7 +18,7 @@ def build(params: Params, problem: Problem) -> Optimizer:
     grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
 
     def init(key):
-        flat = net.init(key)
+        flat = initial(problem, key)
         return {"weights": flat, "velocity": jnp.zeros_like(flat)}
 
     def step(state, key, x, y):

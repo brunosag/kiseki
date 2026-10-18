@@ -16,7 +16,7 @@ from typing import Any
 
 import msgspec
 
-NAMES = ("sgd", "leea", "cosyne", "openai_es")
+NAMES = ("sgd", "adam", "leea", "cosyne", "openai_es")
 
 
 def _package(name: str):

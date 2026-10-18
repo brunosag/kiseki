@@ -27,7 +27,7 @@ def build(params: Params, problem: Problem) -> Optimizer:
     is_asexual = jnp.arange(size) < asexual
 
     def init(key):
-        population = init_population(problem.net, key, size)
+        population = init_population(problem.net, key, size, problem.start)
         return {
             "population": population,
             "fitness": jnp.zeros(size, jnp.float32),
