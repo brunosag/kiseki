@@ -32,6 +32,11 @@ def datasets_dir() -> Path:
     return cache_dir() / "datasets"
 
 
+def machine_lock_file() -> Path:
+    """Locked by whichever home's worker is running on this machine (`kiseki.runner`)."""
+    return cache_dir() / "machine.lock"
+
+
 def repo_root() -> Path:
     """The source checkout this package runs from (code shipped to remotes comes from here)."""
     return Path(__file__).resolve().parents[2]

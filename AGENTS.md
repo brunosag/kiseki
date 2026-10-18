@@ -24,7 +24,17 @@ in its package's `NAMES`; the CLI, server and UI pick it up from the catalogs.
 - `uv run kiseki run --preset smoke -o sgd,leea` checks that configurations train (seconds);
   `kiseki ls`, `show`, `compare`, `query`, `report RUN... ` read results; `kiseki --help`
   lists the rest. Every command takes `--json`.
-- Scratch experiments: `KISEKI_HOME=/tmp/<dir>` keeps them out of the real store.
+- Scratch experiments: `KISEKI_HOME=/tmp/<dir>` keeps them out of the real store. Its runs
+  still wait for the machine's running one: one run at a time per machine, across homes.
+
+## Machines
+
+- The laptop (RTX 3050, 4 GB) runs the app from `~/src/kiseki`; the vps (2 CPUs, no GPU)
+  has a checkout at `~/src/kiseki` for agents working there. Each lists the other in its
+  `~/.config/kiseki/machines.toml` (`--on vps`, `--on laptop`).
+- From the vps, train on the laptop's GPU with `--on laptop`. The laptop sleeps when
+  unattended: check `kiseki machines` first; SSH to a sleeping laptop times out after
+  about 20 s, and its runs freeze during sleep and continue on wake.
 
 ## Rules
 
@@ -35,8 +45,9 @@ in its package's `NAMES`; the CLI, server and UI pick it up from the catalogs.
   experimento para rodar, informando: nome, e-mail, e previsão do intervalo de uso do
   servidor (data de início e previsão de final)." The queue runner does this
   (`kiseki/notice.py`); never start work on lugia outside it.
-- lugia's `~/kiseki` is the old project's checkout. The rewrite deploys to
-  `~/.local/share/kiseki/`; leave `~/kiseki` alone.
+- lugia's `~/kiseki` is the old project's checkout; leave it alone. The rewrite deploys to
+  `~/.local/share/kiseki-remote/`; runs sent before 2026-10-18 (all failed) are in
+  `~/.local/share/kiseki/` there.
 - Don't delegate UI work to Sol (Codex GPT-6.1): "I shouldn't have let Sol do the UI work"
   (2026-10-18; its UI was rewritten).
 

@@ -59,10 +59,16 @@ A stretch of steps compiled and run on the device between two reads by the host.
 ## Machines
 
 **Machine**:
-Where runs execute: `local` (this laptop) or a remote reached over SSH (lugia, vps).
+Where runs execute: `local` (the machine kiseki runs on) or a remote reached over SSH
+(lugia, vps, laptop).
+
+**Home**:
+A directory of runs, reports and their queue (`KISEKI_HOME`). A machine has its own, one
+for runs sent from other machines, and any scratch homes.
 
 **Queue runner**:
-The per-machine process that starts that machine's queued runs one at a time.
+The process that starts a home's queued runs one at a time. A machine runs one run at a
+time across all its homes.
 
 **Notice**:
 The block in a shared server's message file (lugia's /etc/motd.tail) naming who is using

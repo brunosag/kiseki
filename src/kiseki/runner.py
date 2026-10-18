@@ -1,4 +1,4 @@
-"""A machine's run queue: one runner process starts queued runs one at a time.
+"""A home's run queue: one runner process starts queued runs one at a time.
 
 Submitting (`kiseki run`, locally or over SSH) creates the run directory in state
 "queued" and calls `ensure_runner`, which starts a detached runner
@@ -6,6 +6,11 @@ Submitting (`kiseki run`, locally or over SSH) creates the run directory in stat
 launches `python -m kiseki.worker train <run>` for the oldest queued run, waits for it and
 repeats, then exits when nothing is queued. Runs outlive the terminal, the app and the SSH
 session that started them.
+
+A machine runs one run at a time even with several homes on it (its own, the one remotes
+use, scratch homes): the runner takes the machine lock (`paths.machine_lock_file`) before
+starting a worker, and the worker inherits it, so it stays taken while the worker lives.
+A runner that finds it taken waits, its runs still queued.
 
 The runner reads the machine's settings from <home>/machine.json (written by the
 submitter), so a remote needs no config of its own: the environment for workers, and
@@ -20,12 +25,15 @@ import os
 import subprocess
 import sys
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import IO
 
 import msgspec
 
-from kiseki import notice
+from kiseki import notice, paths
 from kiseki.machines import Contact
 from kiseki.spec import RunSpec
 from kiseki.store import Run, RunStatus, write_atomic
@@ -133,6 +141,20 @@ def log(message: str) -> None:
     print(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {message}", flush=True)
 
 
+@contextmanager
+def machine_lock() -> Iterator[IO[str]]:
+    """This machine's run lock, waiting while another home's worker holds it."""
+    path = paths.machine_lock_file()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            log("waiting for another kiseki run on this machine")
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        yield lock
+
+
 class Runner:
     def __init__(self, home: Path):
         self.home = home
@@ -150,9 +172,11 @@ class Runner:
         while True:
             for run in reconcile(self.home):  # a worker left by an earlier runner
                 self.wait(run, None)
-            pending = queued(self.home)
-            if pending:
-                self.start(pending[0])
+            if queued(self.home):
+                with machine_lock() as held:
+                    pending = queued(self.home)  # a run may have been stopped while waiting
+                    if pending:
+                        self.start(pending[0], held)
                 continue
             self.refresh_notice(force=True)
             # Release, then look once more: a run queued while we were deciding to stop
@@ -166,7 +190,8 @@ class Runner:
             except BlockingIOError:
                 return 0
 
-    def start(self, run: Run) -> None:
+    def start(self, run: Run, lock: IO[str]) -> None:
+        """Start a worker for a queued run, passing it the machine `lock` to hold."""
         self.profile = read_profile(self.home)
         try:
             self.write_notice()  # the server's rule: announce before using it
@@ -183,6 +208,7 @@ class Runner:
                 stdout=out,
                 stderr=subprocess.STDOUT,
                 env=env,
+                pass_fds=(lock.fileno(),),
             )
         # Owned from here, while the worker still loads data: stop and pause become
         # requests it honours, and a later runner waits for it instead of starting another.

@@ -50,7 +50,7 @@ SQL over views of all runs (`kiseki/query.py`). Readers tolerate a torn last lin
 - **Rejected:** SQLite as the store (concurrent writers across processes and machines,
   harder to mirror).
 
-## One queue runner per machine; runs outlive their launcher
+## One queue runner per home, one run at a time per machine; runs outlive their launcher
 
 Submitting writes a queued run and starts a detached runner unless one holds
 `<home>/queue.lock`. It runs queued runs one at a time as `python -m kiseki.worker train`,
@@ -58,16 +58,23 @@ marking each running with the worker's pid as it launches, marks runs whose work
 as failed, and exits when the queue is empty. It touches only runs whose `machine` is its
 own; mirrors of other machines' runs are left alone.
 Stop/pause go through a `control` file the worker reads between blocks; pause saves a
-checkpoint, and resume requeues.
+checkpoint, and resume requeues. A machine can hold several homes (its own, the one
+remotes use, scratch homes), so a runner takes the machine lock (`<cache>/machine.lock`)
+before starting a worker and the worker inherits it: one run at a time per machine,
+whichever home queued it.
 
 - **Why:** the laptop can sleep or drop SSH without losing or duplicating runs; one run
-  at a time keeps the whole GPU for it.
+  at a time keeps the whole GPU for it, also when the vps sends runs to the laptop while
+  the user runs their own.
 - **Revisit if:** small runs leave the GPU idle enough that running two at once pays.
 
 ## Remotes are SSH hosts with their own home and queue
 
 `~/.config/kiseki/machines.toml` (untracked; holds contact details) names machines by
-their `~/.ssh/config` alias. `kiseki run --on lugia` rsyncs the package to
+their `~/.ssh/config` alias. A remote's home defaults to `~/.local/share/kiseki-remote`,
+apart from the home kiseki uses when it runs there itself: the laptop and the vps both
+run kiseki and are each other's remotes (agents on the vps send runs to the laptop's GPU
+while it is awake). `kiseki run --on lugia` rsyncs the package to
 `<remote home>/code`, runs `uv sync` only when dependencies changed, makes the dataset
 available (the remote downloads it from the source with pinned hashes, else this machine
 pushes its copy), writes `machine.json` and submits over one multiplexed SSH connection.
@@ -77,7 +84,11 @@ app refresh active remote runs, and pull a run's models once they see it finish.
 - **Why:** "An easy way to select remote machines" and lugia (PREFERENCES.md); a remote
   needs only SSH, uv and its own disk.
 - **Rejected:** running workers over a live SSH session (dies with the connection);
-  copying datasets from the laptop first (lugia receives ~150 KB/s from it).
+  copying datasets from the laptop first (lugia receives ~150 KB/s from it); the
+  machine's own home as a remote's (until 2026-10-18: on a machine that also runs kiseki,
+  the submitter's `machine.json` renamed it, so its own runs never started); a home per
+  controller on a remote (notice blocks are per Unix user, so two would remove each
+  other's).
 
 ## Shared servers get a notice while runs are active
 

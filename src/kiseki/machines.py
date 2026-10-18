@@ -14,9 +14,10 @@ contact details). `local` always exists. Example:
     extras = []                # no GPU: plain JAX
     env = { KISEKI_PLATFORM = "cpu" }
 
-A remote keeps its own kiseki home (`home`, default ~/.local/share/kiseki) with code/,
-runs/ and its queue; it downloads datasets from their source, or this machine sends its
-copy when that fails.
+A remote keeps a kiseki home for runs sent to it (`home`, default
+~/.local/share/kiseki-remote) with code/, runs/ and its queue, apart from the home kiseki
+uses when it runs there itself; it downloads datasets from their source, or this machine
+sends its copy when that fails.
 """
 
 import subprocess
@@ -62,7 +63,7 @@ class Contact(msgspec.Struct, frozen=True):
 class Machine(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fields=True):
     name: str = "local"
     ssh: str | None = None
-    home: str = "~/.local/share/kiseki"
+    home: str = "~/.local/share/kiseki-remote"  # where it keeps runs sent from elsewhere
     notice: str | None = None
     env: dict[str, str] = {}
     extras: tuple[str, ...] = ("cuda",)  # pyproject extras installed there
