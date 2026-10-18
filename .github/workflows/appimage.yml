@@ -1,0 +1,51 @@
+# The AppImage: built on each version tag and attached to its GitHub Release; pull requests
+# that touch it and manual runs build it as a workflow artifact instead. The tag must match
+# ui/package.json and pyproject.toml.
+name: AppImage
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths: ["ui/**", "src/**", "pyproject.toml", "uv.lock", ".python-version", ".github/workflows/appimage.yml"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  appimage:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: ui/pnpm-lock.yaml
+      - name: Versions agree
+        run: |
+          ui=$(node -p 'require("./ui/package.json").version')
+          py=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
+          [[ "$ui" == "$py" ]] || { echo "ui/package.json $ui, pyproject.toml $py"; exit 1; }
+          if [[ "$GITHUB_REF_TYPE" == tag && "$GITHUB_REF_NAME" != "v$ui" ]]; then
+            echo "tag $GITHUB_REF_NAME, version $ui"; exit 1
+          fi
+      - run: pnpm install --frozen-lockfile
+        working-directory: ui
+      - run: pnpm test
+        working-directory: ui
+      - run: scripts/appimage.sh
+        working-directory: ui
+      - name: Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" ui/release/*.AppImage --title "kiseki ${GITHUB_REF_NAME#v}" \
+            --notes "Download the AppImage, make it executable (Properties → Executable as Program, or chmod +x) and open it. The setup page installs the rest."
+      - if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@v4
+        with:
+          name: kiseki-appimage
+          path: ui/release/*.AppImage

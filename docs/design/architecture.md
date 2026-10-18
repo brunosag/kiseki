@@ -138,10 +138,11 @@ its own.
   report's figure shows the same embedding) and the browsable LRP gallery (the figure
   shows its first 12 images).
 
-## The app lives in the tray and launches from the checkout
+## The app lives in the tray; on NixOS it launches from the checkout
 
 kiseki has a tray icon (StatusNotifierItem, shown by GNOME's AppIndicator extension).
-Closing the window hides it and keeps the server; the tray menu opens the window, starts a
+Once the app is open, closing the window hides it and keeps the server (on the setup page,
+before there is a tray, closing quits); the tray menu opens the window, starts a
 new run, lists what trains and builds now and the latest settled runs, and quits, which
 stops the server. The page writes the menu's live part from its store (`ui/src/lib/tray.ts`)
 and sends it over the preload bridge, so the shell holds no second event stream. One app
@@ -153,10 +154,52 @@ updates the app without a NixOS rebuild.
 - **Why:** "Could we also make it like my T3 Code, where it gets its own tray icon and
   menu, and closing the window keeps the server running?" (PREFERENCES.md). The menu's
   contents and the launcher are the agent's design, reviewed by no critic.
-- **Rejected:** an AppImage (it could hold Electron and the UI but not Python, JAX and
-  CUDA, so it would still need the checkout); the shell watching the event stream itself
-  (a second copy of the page's store).
-- **Revisit if:** the app must run on another machine (then package it).
+- **Rejected:** the shell watching the event stream itself (a second copy of the page's
+  store). An AppImage for this machine (2026-10-18): a pull updates the checkout without
+  one; other machines get one (next section).
+
+## Other machines run an AppImage whose setup page installs the rest
+
+`ui/scripts/appimage.sh` builds an AppImage (electron-builder, Electron 41.9.1 as in
+nixpkgs, the static AppImage runtime so no libfuse2) holding the shell, a pinned uv, and a
+payload: the files `Remote.deploy` ships plus `ui/dist`, under a BUILD id (version and
+content hash). CI builds it on a version tag and attaches it to the GitHub Release. On
+first start the shell finds no environment for its BUILD and shows the setup page
+(`setup.html`, served over `kiseki://app` because no server exists yet). Each row there is
+a requirement with its state and one action (`ui/electron/requirements.cjs`): the Python
+environment (required: copies the payload to `~/.local/share/kiseki-app/<BUILD>/` and runs
+`uv sync`, with the CUDA extra when the GPU can use it), the NVIDIA GPU (driver ≥ 580 and
+compute capability ≥ 7.5 for CUDA 13; opens Ubuntu's Additional Drivers), SSH and rsync
+(installs through pkexec and apt), remote machines (`machines.toml` and the `[contact]` a
+notice needs; opens its folder) and the app menu entry (rewritten on each start, since the
+AppImage moves with updates). Once the environment is ready, Open kiseki starts the server
+from it; the same rows stay at `/setup` in the app. Reinstalling the environment from
+there stops the server first. Children get the environment without the AppImage's
+variables, whose mount vanishes on quit. Where AppArmor blocks unprivileged user
+namespaces (Ubuntu 23.10+), electron-builder's AppRun starts Electron with `--no-sandbox`;
+the window only shows kiseki's own pages.
+
+- **Why:** "I actually do need that AppImage now. I need to run the app on an Ubuntu
+  laptop. Can we have some place that lists the requirements, shows their status, and lets
+  one install them by clicking a button? Similar to what T3 does with the providers."
+  (PREFERENCES.md); the Ubuntu laptop trains on its own GPU and sends runs to the others,
+  and gets the AppImage from GitHub Releases (the user, 2026-10-18). A directory per BUILD
+  means a new version never changes code under a running server, queue runner or worker.
+  The rest is the agent's design, attacked by a fresh Claude critic (Codex and Gemini were
+  unavailable), which brought the per-BUILD directory, the bundled uv, the GPU capability
+  check, the Additional Drivers hand-off and the environment scrubbing.
+- **Rejected:** bundling Python, JAX and CUDA in the AppImage (several GB per version, and
+  the CUDA wheels depend on the driver found at install); installing uv with its curl
+  script (unpinned, edits shell profiles); `pkexec ubuntu-drivers install` (it can stop at
+  a Secure Boot prompt nobody sees); one shared code directory updated in place.
+- **Revisit if:** remotes start getting runs from clients on different versions: each
+  remote still has a single code directory that the last client to submit overwrites, and
+  an older queue runner on a machine runs whatever the newer app queued.
+- **Bet:** a new Ubuntu 24.04 user goes from the downloaded AppImage to a trained run with
+  no terminal (remote machines still need SSH keys set up by hand). Test:
+  `ui/scripts/appimage-check.mjs` on the vps (Ubuntu 24.04, AppArmor restriction on, no
+  libfuse2, no GPU) with a fresh HOME. Stop at the first pass; then watch the first real
+  install on the Ubuntu laptop.
 
 ## GPU memory is allocated on demand
 

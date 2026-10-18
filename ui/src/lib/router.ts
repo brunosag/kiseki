@@ -8,7 +8,8 @@ export type Route =
   | { name: "compare"; ids: string[] }
   | { name: "reports" }
   | { name: "report"; id: string }
-  | { name: "machines" };
+  | { name: "machines" }
+  | { name: "setup" };
 
 export function parseRoute(path: string, search = ""): Route {
   const [first, second] = path.split("/").filter(Boolean).map(decodeURIComponent);
@@ -19,6 +20,7 @@ export function parseRoute(path: string, search = ""): Route {
   }
   if (first === "reports") return second ? { name: "report", id: second } : { name: "reports" };
   if (first === "machines") return { name: "machines" };
+  if (first === "setup") return { name: "setup" };
   return { name: "runs" };
 }
 

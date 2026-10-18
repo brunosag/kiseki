@@ -26,6 +26,17 @@ The app sits in the tray: closing the window hides it and keeps the server, laun
 again shows it, and the tray's Quit stops the server (design:
 `../docs/design/architecture.md`).
 
+## The AppImage
+
+Other Linux machines (an Ubuntu laptop) run the AppImage from the GitHub Release that a
+`v<version>` tag builds (`.github/workflows/appimage.yml`; the tag must match
+`ui/package.json` and `pyproject.toml`). On first start it shows the setup page, which
+installs the Python environment with a click; the same list is at Setup in the app.
+`scripts/appimage.sh` builds one into `release/` (on the vps: it needs no Nix, and
+saves the laptop's memory). `node scripts/appimage-check.mjs APPIMAGE [OUT_DIR]` walks it
+as a new user would, under Xvfb with a fresh HOME: setup, install, Open kiseki, a smoke run
+(about 1 GB of downloads, 10 minutes on the vps). Design: `../docs/design/architecture.md`.
+
 ## Views
 
 - **Runs:** every run grouped by state (or dataset, optimizer), live over SSE, with a

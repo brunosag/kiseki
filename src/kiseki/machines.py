@@ -105,6 +105,26 @@ def get(name: str) -> Machine:
     return machines[name]
 
 
+def config_summary() -> dict:
+    """What the app's setup page shows about remotes (`kiseki machines --config`), without
+    probing them: the file, the remotes it lists, those posting a notice, and whether a
+    contact for those notices is known."""
+    path = config_path()
+    try:
+        contact()
+        known = True
+    except RuntimeError:
+        known = False
+    remotes = [machine for machine in all_machines().values() if not machine.is_local]
+    return {
+        "path": str(path),
+        "exists": path.exists(),
+        "machines": [machine.name for machine in remotes],
+        "notice": [machine.name for machine in remotes if machine.notice],
+        "contact": known,
+    }
+
+
 def contact() -> Contact:
     configured = load_config().contact
     if configured:

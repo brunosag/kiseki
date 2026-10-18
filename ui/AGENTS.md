@@ -10,8 +10,15 @@ UI). Running and checks: `README.md`.
   menu, hides the window on close and stops the server on quit; `electron/preload.cjs`
   gives the page `window.kisekiWindow` (typed in `src/lib/shell.ts`): GNOME's button
   layout, window state and buttons for the title bar it draws, and the tray menu.
-  `electron/icon.svg` is the app icon, `tray.svg` the panel icon's source (render
-  `tray.png` and `tray@2x.png` from it with `rsvg-convert -w 16` and `-w 32`).
+  `electron/requirements.cjs` checks and installs what the machine needs (the setup
+  view's rows), and gives packaged builds their per-version code directory.
+  `electron/icon.svg` is the app icon (`icon.png`, 512 px, rendered from it, is the
+  AppImage's), `tray.svg` the panel icon's source (render `tray.png` and `tray@2x.png`
+  from it with `rsvg-convert -w 16` and `-w 32`).
+- The AppImage: `electron-builder.config.cjs`, `scripts/appimage.sh` (payload, BUILD id,
+  pinned uv), `scripts/appimage-check.mjs` (end to end on a fresh HOME).
+- `setup.html` + `src/setup.tsx` show `src/views/setup.tsx` alone, before a server exists;
+  `src/lib/setup.ts` is its store.
 - `src/app.tsx` is the frame (title bar, sidebar, the view in an inset panel), the
   dialogs and the global keys. `src/views/` holds one file per route and dialog;
   `src/components/` the app's own pieces (`chart.tsx` wraps uPlot, `pick.tsx` is the
@@ -46,7 +53,14 @@ UI). Running and checks: `README.md`.
   both have `step`, only validation rows `elapsed`.
 - Electron shutdown: destroy the windows before waiting for the Python child. Open SSE
   connections otherwise hold uvicorn's graceful shutdown until the kill timer.
-- Closing the window only hides it: quit a scripted app with SIGTERM (or the tray's Quit),
+- The setup page is served by the shell over `kiseki://app`, the app by the server; the
+  shell accepts setup calls from both origins only (`allowed` in `main.cjs`). Views it
+  shares with the app must not touch `live.ts` or `api.ts`, which need a server.
+- Packaged, `app.isPackaged` is true and the Python side runs from
+  `~/.local/share/kiseki-app/<BUILD>/`, never from the AppImage's mount; a checkout runs
+  its own `.venv`.
+- Once the app is open, closing the window only hides it (on the setup page, before the
+  tray exists, it quits): quit a scripted app with SIGTERM (or the tray's Quit),
   and a second `kiseki-app` on the same store just shows the first one's window and exits.
   Scratch stores get their own app, lock and tray icon.
 - The Wayland app id comes from `app.setDesktopName("kiseki.desktop")`; without it

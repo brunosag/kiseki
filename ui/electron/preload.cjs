@@ -1,5 +1,6 @@
-// What the page may ask of the window: its title bar buttons and state, and the tray
-// menu's live part (src/lib/shell.ts). Nothing else of Electron or Node reaches the page.
+// What the page may ask of the window: its title bar buttons and state, the tray menu's
+// live part, and the setup page's requirements (src/lib/shell.ts). Nothing else of
+// Electron or Node reaches the page.
 const { contextBridge, ipcRenderer } = require("electron");
 
 contextBridge.exposeInMainWorld("kisekiWindow", {
@@ -18,5 +19,13 @@ contextBridge.exposeInMainWorld("kisekiWindow", {
     const handler = (_event, action) => listener(action);
     ipcRenderer.on("tray:action", handler);
     return () => ipcRenderer.removeListener("tray:action", handler);
+  },
+  checkSetup: (fresh) => ipcRenderer.invoke("setup:check", fresh),
+  runSetup: (id) => ipcRenderer.invoke("setup:act", id),
+  openApp: () => ipcRenderer.invoke("setup:open"),
+  onSetupJob: (listener) => {
+    const handler = (_event, job) => listener(job);
+    ipcRenderer.on("setup:job", handler);
+    return () => ipcRenderer.removeListener("setup:job", handler);
   },
 });
