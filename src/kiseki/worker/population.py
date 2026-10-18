@@ -17,10 +17,16 @@ Array = jax.Array
 
 
 def cross_entropy(logits: Array, labels: Array) -> tuple[Array, Array]:
-    """Mean cross-entropy and correct-prediction count for one network's logits."""
-    log_z = jax.nn.logsumexp(logits, axis=-1)
-    picked = jnp.take_along_axis(logits, labels[:, None], axis=-1)[:, 0]
-    loss = jnp.mean(log_z - picked)
+    """Mean cross-entropy and correct-prediction count for one network's logits.
+
+    Each example's loss is softplus(logsumexp over the other classes of z_j - z_y), which
+    equals logsumexp(z) - z_y but keeps its precision near zero, where the subtraction
+    rounds a confident example's loss (say 1e-7) to exactly 0 in float32. Selection and
+    ranking on a fitted training set depend on those small losses.
+    """
+    picked = jnp.take_along_axis(logits, labels[:, None], axis=-1)
+    others = jnp.where(jnp.arange(logits.shape[-1]) == labels[:, None], -jnp.inf, logits - picked)
+    loss = jnp.mean(jax.nn.softplus(jax.nn.logsumexp(others, axis=-1)))
     correct = jnp.sum(jnp.argmax(logits, axis=-1) == labels)
     return loss, correct
 
