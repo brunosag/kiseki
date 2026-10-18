@@ -11,7 +11,7 @@ CNNs, and reports that compare the trained networks. Preferences: `PREFERENCES.m
 | `src/kiseki/` (core) | CLI, run store, queue runner, remotes, app server, catalogs. Never imports JAX | `docs/design/architecture.md` | `uv run kiseki ...` |
 | `src/kiseki/worker/` | JAX processes: training (`train.py`) and reports (`report.py`) | `docs/design/training.md` | the queue runner, `kiseki report` |
 | `src/kiseki/{datasets,models,optimizers,analyses}/` | Plugins: one module or package each; light `__init__` + JAX `impl.py` | each package's docstring | the worker |
-| `ui/` | React app in an Electron shell, talking to `kiseki serve` | `docs/design/architecture.md` | `ui/kiseki-app` |
+| `ui/` | React app in an Electron shell, talking to `kiseki serve`; packaged as an AppImage for other machines | `docs/design/architecture.md` | `ui/kiseki-app`, `ui/scripts/appimage.sh` |
 | `tests/` | pytest, JAX on CPU | | `uv run pytest` |
 
 Add a dataset, model, optimizer or analysis by copying the nearest sibling and listing it
@@ -24,6 +24,9 @@ in its package's `NAMES`; the CLI, server and UI pick it up from the catalogs.
 - `uv run kiseki run --preset smoke -o sgd,leea` checks that configurations train (seconds);
   `kiseki ls`, `show`, `compare`, `query`, `report RUN... ` read results; `kiseki --help`
   lists the rest. Every command takes `--json`.
+- A `v<version>` tag publishes the AppImage as a GitHub Release (bump `ui/package.json`,
+  `pyproject.toml` and kiseki's entry in `uv.lock` together). Build or test one on the vps
+  (`ui/README.md`, The AppImage), not the laptop.
 - Scratch experiments: `KISEKI_HOME=/tmp/<dir>` keeps them out of the real store. Its runs
   still wait for the machine's running one: one run at a time per machine, across homes.
 

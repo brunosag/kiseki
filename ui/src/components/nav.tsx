@@ -1,5 +1,5 @@
-// The sidebar: the one primary action, and the three places there are.
-import { FileChartColumnIcon, FlaskConicalIcon, PlusIcon, ServerIcon } from "lucide-react";
+// The sidebar: the one primary action, and the places there are.
+import { FileChartColumnIcon, FlaskConicalIcon, PlusIcon, ServerIcon, WrenchIcon } from "lucide-react";
 import { Kbd } from "@/components/ui/kbd";
 import {
   Sidebar,
@@ -15,13 +15,17 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import { isActive } from "@/lib/format";
 import { useLive } from "@/lib/live";
+import { cn } from "@/lib/utils";
 import type { Route } from "@/lib/router";
+import { setupHealth, useSetup } from "@/lib/setup";
+import { shell } from "@/lib/shell";
 
 export function Nav({ route, onNewRun }: { route: Route; onNewRun: () => void }) {
   const live = useLive();
   const activeRuns = live.runs?.filter((run) => isActive(run.status.state)).length ?? 0;
   const building = live.reports?.filter((report) => isActive(report.status.state)).length ?? 0;
   const unreachable = live.machines?.filter((machine) => machine.error || machine.gpu_error).length ?? 0;
+  const setup = setupHealth(useSetup().rows);
   const items = [
     {
       href: "/runs",
@@ -44,6 +48,22 @@ export function Nav({ route, onNewRun }: { route: Route; onNewRun: () => void })
       on: route.name === "machines",
       badge: unreachable ? <span className="size-1.5 rounded-full bg-red-500" aria-label="A machine has a problem" /> : null,
     },
+    ...(shell
+      ? [
+          {
+            href: "/setup",
+            label: "Setup",
+            icon: WrenchIcon,
+            on: route.name === "setup",
+            badge: setup ? (
+              <span
+                className={cn("size-1.5 rounded-full", setup === "missing" ? "bg-red-500" : "bg-amber-500")}
+                aria-label="Setup needs attention"
+              />
+            ) : null,
+          },
+        ]
+      : []),
   ];
   return (
     <Sidebar collapsible="none" className="w-60 bg-transparent">

@@ -61,7 +61,8 @@ function WindowButtons({ buttons, maximized }: { buttons: WindowButton[]; maximi
   );
 }
 
-export function TitleBar({ onSearch }: { onSearch: () => void }) {
+/** The setup page has no history or search: without `onSearch` the bar shows neither. */
+export function TitleBar({ onSearch }: { onSearch?: () => void }) {
   const { layout, state } = useWindow();
   const history = useHistory();
   return (
@@ -75,7 +76,7 @@ export function TitleBar({ onSearch }: { onSearch: () => void }) {
       <div data-dim className="flex w-60 shrink-0 items-center gap-2 ps-4">
         <Logo />
         <span className="font-medium text-[13px] tracking-tight">kiseki</span>
-        <div className="no-drag ms-auto me-2 flex items-center">
+        <div className={cn("no-drag ms-auto me-2 flex items-center", !onSearch && "hidden")}>
           <Button
             variant="ghost"
             size="icon-xs"
@@ -96,7 +97,7 @@ export function TitleBar({ onSearch }: { onSearch: () => void }) {
           </Button>
         </div>
       </div>
-      <div className="pointer-events-none absolute inset-x-0 flex justify-center">
+      <div className={cn("pointer-events-none absolute inset-x-0 flex justify-center", !onSearch && "hidden")}>
         <button
           type="button"
           data-dim

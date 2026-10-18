@@ -17,7 +17,7 @@ if [[ -z "$owner" ]] || ! kill -0 "${owner##*-}" 2>/dev/null; then
       touch node_modules/.modules.yaml # pnpm leaves it alone when nothing changed
     fi
     if [[ ! -f dist/index.html ||
-      -n "$(find src index.html vite.config.ts tsconfig.json package.json pnpm-lock.yaml -newer dist/index.html -print -quit)" ]]; then
+      -n "$(find src index.html setup.html vite.config.ts tsconfig.json package.json pnpm-lock.yaml -newer dist/index.html -print -quit)" ]]; then
       pnpm build
     fi
   ) > >(tee "$log") 2>&1; then

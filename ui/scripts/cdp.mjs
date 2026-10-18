@@ -1,7 +1,10 @@
 // A minimal Chrome DevTools Protocol client for the app's window (KISEKI_DEBUG_PORT).
 export async function connect(port = process.env.KISEKI_DEBUG_PORT ?? "9327") {
   const targets = await (await fetch(`http://127.0.0.1:${port}/json`)).json();
-  const page = targets.find((target) => target.type === "page" && target.url.startsWith("http://127.0.0.1"));
+  // The app's page, or the setup page before a server exists.
+  const page = targets.find(
+    (target) => target.type === "page" && (target.url.startsWith("http://127.0.0.1") || target.url.startsWith("kiseki://")),
+  );
   if (!page) throw new Error(`no app page on port ${port}`);
   const socket = new WebSocket(page.webSocketDebuggerUrl);
   await new Promise((resolve, reject) => {

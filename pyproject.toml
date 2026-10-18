@@ -1,6 +1,6 @@
 [project]
 name = "kiseki"
-version = "0.2.0"
+version = "0.3.0"
 description = "Gradient-based vs evolutionary optimization of neural networks: worker, CLI and app server"
 requires-python = ">=3.14"
 dependencies = [

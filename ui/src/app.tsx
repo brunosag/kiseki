@@ -20,6 +20,7 @@ import { ReportView } from "@/views/report";
 import { ReportsView } from "@/views/reports";
 import { RunView } from "@/views/run";
 import { RunsView } from "@/views/runs";
+import { SetupView } from "@/views/setup";
 
 /** Values a new run starts from: another run's spec, or nothing for the defaults. */
 export type RunDraft = Record<string, Json> | null;
@@ -113,6 +114,8 @@ function View({
       return <ReportView key={route.id} id={route.id} />;
     case "machines":
       return <MachinesView />;
+    case "setup":
+      return <SetupView />;
     default:
       return <RunsView onNewRun={() => onNewRun()} onNewReport={onNewReport} />;
   }

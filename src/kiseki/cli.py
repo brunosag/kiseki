@@ -427,6 +427,10 @@ def cmd_reports(args: argparse.Namespace) -> int:
 
 
 def cmd_machines(args: argparse.Namespace) -> int:
+    if args.config:
+        summary = machines.config_summary()
+        emit(args, summary, f"{summary['path']}: {', '.join(summary['machines']) or 'no remotes'}")
+        return 0
     records = actions.machine_records()
     rows = []
     for record in records:
@@ -613,9 +617,11 @@ def parser() -> argparse.ArgumentParser:
     )
     serve.set_defaults(handler=cmd_serve)
 
-    sub.add_parser("machines", parents=[common], help="machines and their GPUs").set_defaults(
-        handler=cmd_machines
+    probe = sub.add_parser("machines", parents=[common], help="machines and their GPUs")
+    probe.add_argument(
+        "--config", action="store_true", help="what machines.toml lists, without probing"
     )
+    probe.set_defaults(handler=cmd_machines)
     sub.add_parser("options", parents=[common], help="what can be run").set_defaults(
         handler=cmd_options
     )

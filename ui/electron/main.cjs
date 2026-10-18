@@ -3,12 +3,24 @@
 // window hides it and keeps the server; Quit in the tray menu stops the server. One app
 // per store: launching again shows the window. Training runs belong to the queue runner
 // and outlive the app.
-const { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, nativeTheme, session } = require("electron");
+//
+// Until the Python environment exists (a fresh AppImage), the window shows the setup page
+// instead, from the bundled UI over kiseki://app; it lists what this machine needs
+// (requirements.cjs), installs it, and then opens the app.
+const { app, BrowserWindow, Menu, Tray, dialog, ipcMain, nativeImage, nativeTheme, net, protocol, session, shell } =
+  require("electron");
 const { execFile, spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { pathToFileURL } = require("node:url");
+const requirements = require("./requirements.cjs");
 
-const repo = path.resolve(__dirname, "../..");
+const ctx = requirements.context({
+  packaged: app.isPackaged,
+  resources: process.resourcesPath,
+  repo: path.resolve(__dirname, "../.."),
+});
+const SETUP = "kiseki://app";
 const LOCAL = ["127.0.0.1", "localhost", "[::1]"];
 const CSP =
   "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; " +
@@ -16,6 +28,7 @@ const CSP =
   "frame-ancestors 'none'";
 
 let server;
+let serverURL;
 let window;
 let tray;
 let trayItems = [];
@@ -30,7 +43,9 @@ if (process.env.KISEKI_HOME) app.setPath("userData", path.join(path.resolve(proc
 // The lock lives in userData, so a scratch store runs beside the real app.
 const primary = app.requestSingleInstanceLock();
 if (!primary) app.quit();
-app.commandLine.appendSwitch("ozone-platform", "wayland");
+// Wayland where the session has it (GNOME on NixOS), else X11 (Ubuntu on Xorg, Xvfb).
+if (process.env.WAYLAND_DISPLAY) app.commandLine.appendSwitch("ozone-platform", "wayland");
+protocol.registerSchemesAsPrivileged([{ scheme: "kiseki", privileges: { standard: true, secure: true, supportFetchAPI: true } }]);
 if (process.env.KISEKI_DEBUG_PORT) {
   app.commandLine.appendSwitch("remote-debugging-address", "127.0.0.1");
   app.commandLine.appendSwitch("remote-debugging-port", process.env.KISEKI_DEBUG_PORT);
@@ -43,35 +58,53 @@ function localURL(text) {
   return url;
 }
 
+/** Origins the window may show and that may call the shell: the setup page, the server. */
+function allowed(text) {
+  try {
+    const url = new URL(text);
+    const origin = `${url.protocol}//${url.host}`;
+    return origin === SETUP || (!!serverURL && origin === serverURL.origin);
+  } catch {
+    return false;
+  }
+}
+
 function startServer() {
   if (process.env.KISEKI_SERVER_URL) return Promise.resolve(localURL(process.env.KISEKI_SERVER_URL));
-  const python = path.join(repo, ".venv/bin/python");
-  if (!fs.existsSync(python))
-    return Promise.reject(new Error(`No Python environment at ${python}: run uv sync first.`));
+  const python = requirements.python(ctx);
+  if (!fs.existsSync(python)) return Promise.reject(new Error(`No Python environment at ${python}.`));
   return new Promise((resolve, reject) => {
     let output = "";
     let errors = "";
-    server = spawn(python, ["-m", "kiseki.cli", "serve"], {
-      cwd: repo,
-      env: { ...process.env, PYTHONUNBUFFERED: "1" },
+    const child = spawn(python, ["-m", "kiseki.cli", "serve"], {
+      cwd: ctx.code,
+      env: { ...requirements.childEnv(), PYTHONUNBUFFERED: "1" },
       stdio: ["ignore", "pipe", "pipe"],
     });
-    const timer = setTimeout(() => reject(new Error("The server did not start within 30 s.")), 30_000);
-    server.once("error", reject);
-    server.once("exit", (code) => {
+    server = child;
+    let started = false;
+    const timer = setTimeout(() => {
+      reject(new Error("The server did not start within 30 s."));
+      child.kill("SIGKILL");
+    }, 30_000);
+    child.once("error", reject);
+    child.once("exit", (code) => {
       clearTimeout(timer);
+      if (server === child) server = null;
       reject(new Error(`The server exited (${code}). ${errors}`));
-      if (window && !quitting) {
-        dialog.showErrorBox("kiseki stopped", `The server exited with code ${code}.`);
-        app.quit();
+      // Once it served, losing it sends the window back to Setup, where Open retries.
+      if (started && window && !quitting && !child.stoppedOnPurpose) {
+        dialog.showErrorBox("kiseki stopped", `The server exited with code ${code}. ${errors.slice(-500)}`);
+        openSetup().catch(() => app.quit());
       }
     });
-    server.stderr.on("data", (chunk) => (errors = (errors + chunk).slice(-4000)));
-    server.stdout.on("data", (chunk) => {
+    child.stderr.on("data", (chunk) => (errors = (errors + chunk).slice(-4000)));
+    child.stdout.on("data", (chunk) => {
       output = (output + chunk).slice(-8000);
       const match = /^kiseki: serving (http\S+)$/m.exec(output);
       if (!match) return;
       clearTimeout(timer);
+      started = true;
       try {
         resolve(localURL(match[1]));
       } catch (error) {
@@ -155,53 +188,180 @@ ipcMain.on("window:minimize", () => window?.minimize());
 ipcMain.on("window:maximize", () => (window?.isMaximized() ? window.unmaximize() : window?.maximize()));
 ipcMain.on("window:close", () => window?.close());
 
-app.whenReady().then(async () => {
-  if (!primary) return;
+/** Install jobs by requirement id: their state and last lines, which the page reattaches to. */
+const jobs = new Map();
+
+function sendJob(id) {
+  if (window && !window.isDestroyed()) window.webContents.send("setup:job", { id, ...jobs.get(id) });
+}
+
+function fromShell(event) {
+  return event.sender === window?.webContents && allowed(event.senderFrame?.url ?? "");
+}
+
+ipcMain.handle("setup:check", async (event, fresh) => {
+  if (!fromShell(event)) return [];
+  const rows = await requirements.check(ctx, { fresh: fresh === true });
+  return rows.map((row) => ({ ...row, job: jobs.get(row.id) ?? null }));
+});
+
+ipcMain.handle("setup:act", async (event, id) => {
+  if (!fromShell(event) || typeof id !== "string" || jobs.get(id)?.state === "running") return;
+  // The environment the server runs from is never changed under it: back to the setup page.
+  if (id === "env" && server) {
+    const { response } = await dialog.showMessageBox(window, {
+      type: "question",
+      buttons: ["Reinstall", "Cancel"],
+      defaultId: 1,
+      message: "Reinstall the Python environment?",
+      detail: "The app goes back to Setup while it installs. Runs training now keep going.",
+    });
+    if (response !== 0) return;
+    await stopServer();
+    await openSetup();
+  }
+  const job = { state: "running", lines: [], error: null };
+  jobs.set(id, job);
+  sendJob(id);
+  const log = (line) => {
+    job.lines = [...job.lines, line].slice(-200);
+    sendJob(id);
+  };
   try {
-    const url = await startServer();
-    session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
-    session.defaultSession.webRequest.onHeadersReceived((details, callback) =>
-      callback({ responseHeaders: { ...details.responseHeaders, "Content-Security-Policy": [CSP] } }),
-    );
-    window = new BrowserWindow({
-      width: 1440,
-      height: 900,
-      minWidth: 960,
-      minHeight: 640,
-      title: "kiseki",
-      frame: false,
-      backgroundColor: nativeTheme.shouldUseDarkColors ? "#101011" : "#fafafa",
-      show: false,
-      webPreferences: {
-        preload: path.join(__dirname, "preload.cjs"),
-        contextIsolation: true,
-        nodeIntegration: false,
-        sandbox: true,
-        spellcheck: false,
-      },
+    await requirements.act(id, ctx, { log, openPath: (target) => shell.openPath(target) });
+    job.state = "done";
+  } catch (error) {
+    job.state = "failed";
+    job.error = String(error.message ?? error);
+  }
+  sendJob(id);
+});
+
+ipcMain.handle("setup:open", async (event) => {
+  if (!fromShell(event) || server) return;
+  try {
+    await openApp();
+  } catch (error) {
+    dialog.showErrorBox("Could not start kiseki", String(error.message));
+    throw error;
+  }
+});
+
+function stopServer() {
+  if (!server || server.exitCode !== null || server.signalCode !== null) return Promise.resolve();
+  const stopping = server;
+  stopping.stoppedOnPurpose = true;
+  server = null;
+  return new Promise((resolve) => {
+    const force = setTimeout(() => stopping.kill("SIGKILL"), 3000);
+    stopping.once("exit", () => {
+      clearTimeout(force);
+      resolve();
     });
-    // Closing hides; the tray brings the window back, and Quit there really quits.
-    window.on("close", (event) => {
-      if (quitting) return;
-      event.preventDefault();
-      window.hide();
-    });
-    for (const event of ["maximize", "unmaximize", "focus", "blur", "enter-full-screen", "leave-full-screen"])
-      window.on(event, sendState);
-    window.webContents.on("will-navigate", (event, destination) => {
-      if (new URL(destination).origin !== url.origin) event.preventDefault();
-    });
-    // One window: everything, figures included, opens inside it.
-    window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
-    window.once("ready-to-show", () => {
-      window.maximize();
-      window.show();
-    });
+    // Open event streams hold uvicorn's graceful shutdown: leave the page first.
+    window?.webContents.loadURL("about:blank").finally(() => stopping.kill("SIGTERM"));
+  });
+}
+
+/** The bundled UI for the setup page, which needs no server. */
+function serveBundle() {
+  const dist = ctx.packaged ? path.join(ctx.bundle, "ui/dist") : path.join(ctx.code, "ui/dist");
+  protocol.handle("kiseki", async (request) => {
+    const file = path.normalize(path.join(dist, decodeURIComponent(new URL(request.url).pathname)));
+    if (!file.startsWith(dist + path.sep)) return new Response("not found", { status: 404 });
+    const response = await net.fetch(pathToFileURL(file).href);
+    const headers = new Headers(response.headers);
+    headers.set("Content-Security-Policy", CSP);
+    return new Response(response.body, { status: response.status, headers });
+  });
+}
+
+function createWindow() {
+  window = new BrowserWindow({
+    width: 1440,
+    height: 900,
+    minWidth: 960,
+    minHeight: 640,
+    title: "kiseki",
+    frame: false,
+    backgroundColor: nativeTheme.shouldUseDarkColors ? "#101011" : "#fafafa",
+    show: false,
+    webPreferences: {
+      preload: path.join(__dirname, "preload.cjs"),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: true,
+      spellcheck: false,
+    },
+  });
+  // Closing hides once the tray can bring the window back; before that (setup) it quits,
+  // after asking if that would cut an install short.
+  window.on("close", (event) => {
+    if (quitting) return;
+    if (!tray) {
+      const running = [...jobs.values()].some((job) => job.state === "running");
+      const stop = () =>
+        dialog.showMessageBoxSync(window, {
+          type: "warning",
+          buttons: ["Keep installing", "Quit"],
+          defaultId: 0,
+          message: "An install is still running",
+          detail: "Quitting stops it; it starts over next time.",
+        }) === 1;
+      if (running && !stop()) event.preventDefault();
+      return;
+    }
+    event.preventDefault();
+    window.hide();
+  });
+  for (const event of ["maximize", "unmaximize", "focus", "blur", "enter-full-screen", "leave-full-screen"])
+    window.on(event, sendState);
+  window.webContents.on("will-navigate", (event, destination) => {
+    if (!allowed(destination)) event.preventDefault();
+  });
+  // One window: everything, figures included, opens inside it.
+  window.webContents.setWindowOpenHandler(() => ({ action: "deny" }));
+  window.once("ready-to-show", () => {
+    window.maximize();
+    window.show();
+  });
+}
+
+async function openSetup() {
+  await window.loadURL(`${SETUP}/setup.html`);
+}
+
+async function openApp() {
+  serverURL = await startServer();
+  if (!tray) {
     tray = new Tray(nativeImage.createFromPath(path.join(__dirname, "tray.png")));
     tray.setToolTip("kiseki");
     tray.on("click", show);
     updateTray();
-    await window.loadURL(url.href);
+  }
+  await window.loadURL(serverURL.href);
+}
+
+app.whenReady().then(async () => {
+  if (!primary) return;
+  try {
+    session.defaultSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+    session.defaultSession.webRequest.onHeadersReceived((details, callback) =>
+      callback({ responseHeaders: { ...details.responseHeaders, "Content-Security-Policy": [CSP] } }),
+    );
+    serveBundle();
+    requirements.refreshDesktopEntry(ctx);
+    createWindow();
+    if (requirements.envReady(ctx) || process.env.KISEKI_SERVER_URL) {
+      // A server that won't start leaves the app at Setup, where a reinstall can fix it.
+      try {
+        await openApp();
+        return;
+      } catch (error) {
+        dialog.showErrorBox("Could not start kiseki", String(error.message));
+      }
+    }
+    await openSetup();
   } catch (error) {
     dialog.showErrorBox("Could not start kiseki", String(error.message));
     app.quit();
