@@ -1,8 +1,20 @@
+import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import App, { ErrorBoundary } from "./App";
-import "./styles.css";
+import "./index.css";
+import { App } from "./app";
+import { start } from "./lib/live";
+import { startRouter } from "./lib/router";
+
+// Light or dark as the system is (GNOME's appearance setting), switching live.
+const dark = matchMedia("(prefers-color-scheme: dark)");
+const theme = () => document.documentElement.classList.toggle("dark", dark.matches);
+theme();
+dark.addEventListener("change", theme);
+
+startRouter();
+start();
 createRoot(document.getElementById("root")!).render(
-  <ErrorBoundary>
+  <StrictMode>
     <App />
-  </ErrorBoundary>,
+  </StrictMode>,
 );

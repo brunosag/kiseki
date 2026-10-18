@@ -607,7 +607,9 @@ def parser() -> argparse.ArgumentParser:
     data.set_defaults(handler=cmd_datasets)
 
     serve = sub.add_parser("serve", parents=[common], help="the app's server (prints its URL)")
-    serve.add_argument("--port", type=int, default=0, help="0: any free port")
+    serve.add_argument(
+        "--port", type=int, default=None, help="0: any free port (default: 47630 if free)"
+    )
     serve.set_defaults(handler=cmd_serve)
 
     sub.add_parser("machines", parents=[common], help="machines and their GPUs").set_defaults(

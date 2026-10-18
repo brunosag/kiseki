@@ -8,6 +8,10 @@
 - "Consider the `lugia` remote machine as well. We can run experiments there." — 2026-10-17, remotes. session e676ea54
 - "New datasets, algorithms, and analysis methods will be added." — 2026-10-17, extensibility. session e676ea54
 
+## UI
+
+- "Build it from the coss ui component library and take Linear's UI design as a reference. Make it minimal. It should have its own title bar too, not the native one." — 2026-10-18, the UI. session e676ea54
+
 ## Code
 
 - "It should be optimized for agents to work in and navigate it, not humans." — 2026-10-17, the codebase. session e676ea54

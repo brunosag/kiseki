@@ -67,6 +67,7 @@ def catalog() -> dict[str, Any]:
         "models": list(models.NAMES),
         "optimizers": {
             n: {
+                "title": optimizers.title(n),
                 "summary": optimizers.summary(n),
                 "params": msgspec.json.schema(optimizers.params_type(n)),
             }

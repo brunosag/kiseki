@@ -5,6 +5,7 @@ from typing import Annotated
 import msgspec
 from msgspec import Meta
 
+TITLE = "SGD"
 SUMMARY = "Minibatch SGD on the cross-entropy loss (gradient baseline)."
 
 

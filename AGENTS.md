@@ -37,6 +37,8 @@ in its package's `NAMES`; the CLI, server and UI pick it up from the catalogs.
   (`kiseki/notice.py`); never start work on lugia outside it.
 - lugia's `~/kiseki` is the old project's checkout. The rewrite deploys to
   `~/.local/share/kiseki/`; leave `~/kiseki` alone.
+- Don't delegate UI work to Sol (Codex GPT-6.1): "I shouldn't have let Sol do the UI work"
+  (2026-10-18; its UI was rewritten).
 
 ## Gotchas
 

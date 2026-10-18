@@ -37,6 +37,36 @@ def test_rows_come_column_wise_from_an_offset(client):
     assert more["columns"] == {"step": [15], "val_accuracy": [0.8]}
 
 
+def test_options_name_each_optimizer(client):
+    optimizers = client.get("/api/options", headers=TOKEN).json()["optimizers"]
+    assert optimizers["openai_es"]["title"] == "OpenAI-ES"
+    assert optimizers["sgd"]["title"] == "SGD"
+
+
+def test_the_ui_page_is_revalidated_and_its_hashed_assets_are_not(tmp_path):
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "index.html").write_text("<!doctype html>")
+    (tmp_path / "assets" / "index-abc123.js").write_text("")
+    ui = TestClient(server.spa(tmp_path))
+    assert ui.get("/runs/some-run").headers["cache-control"] == "no-cache"
+    assert "immutable" in ui.get("/assets/index-abc123.js").headers["cache-control"]
+
+
+def test_the_server_keeps_its_port_and_moves_when_it_is_taken(monkeypatch):
+    probe = server.bind(0)  # a free port stands in for PORT, which a running app may hold
+    monkeypatch.setattr(server, "PORT", probe.getsockname()[1])
+    probe.close()
+    first = server.bind(None)
+    try:
+        assert first.getsockname()[1] == server.PORT
+        first.listen()
+        second = server.bind(None)
+        assert second.getsockname()[1] not in (0, server.PORT)
+        second.close()
+    finally:
+        first.close()
+
+
 def test_unknown_run_is_404(client):
     assert client.get("/api/runs/nope", headers=TOKEN).status_code == 404
 

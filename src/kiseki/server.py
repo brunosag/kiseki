@@ -33,6 +33,7 @@ Errors are {error}: 400 for a bad request, 404 for an unknown id, 502 when a rem
 import asyncio
 import contextlib
 import secrets
+import socket
 import subprocess
 import threading
 import time
@@ -385,7 +386,17 @@ def spa(directory: Path):
         path = directory / scope["path"].lstrip("/")
         if scope["path"] != "/" and not path.exists():
             scope = dict(scope, path="/")
-        await files(scope, receive, send)
+        # Built assets carry a content hash; index.html names the current ones, so a
+        # cached copy would load the UI of an earlier build.
+        hashed = scope["path"].startswith("/assets/")
+        policy = b"public, max-age=31536000, immutable" if hashed else b"no-cache"
+
+        async def send_cached(message):
+            if message["type"] == "http.response.start":
+                message["headers"] = [*message.get("headers", []), (b"cache-control", policy)]
+            await send(message)
+
+        await files(scope, receive, send_cached)
 
     return app
 
@@ -434,16 +445,32 @@ def create_app(token: str):
     return guard(app, token)
 
 
-def serve(port: int = 0, token: str | None = None) -> None:
-    """Serve until interrupted; prints `kiseki: serving <url>` once listening."""
-    import socket
+PORT = 47630
+"""The app's usual port. The page's saved view settings belong to its origin, port
+included, so a port that changed each launch would forget them."""
 
+
+def bind(port: int | None) -> socket.socket:
+    """A listening-ready socket on 127.0.0.1: `port`, or PORT when free, else any port."""
+    for candidate in [port] if port is not None else [PORT, 0]:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind(("127.0.0.1", candidate))
+            return sock
+        except OSError:
+            sock.close()
+            if port is not None:
+                raise
+    raise AssertionError("port 0 always binds")
+
+
+def serve(port: int | None = None, token: str | None = None) -> None:
+    """Serve until interrupted; prints `kiseki: serving <url>` once listening."""
     import uvicorn
 
     token = token or secrets.token_urlsafe(24)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    sock.bind(("127.0.0.1", port))
+    sock = bind(port)
     url = f"http://127.0.0.1:{sock.getsockname()[1]}/?token={token}"
     config = uvicorn.Config(create_app(token), log_level="warning", access_log=False)
     server = uvicorn.Server(config)

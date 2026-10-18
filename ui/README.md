@@ -1,8 +1,8 @@
 # kiseki app
 
-React + TypeScript (Vite, Tailwind), uPlot curves and a WebGL scatter for embeddings, in
-an Electron window. Runtime dependencies: React, React DOM, uPlot. Electron comes from
-nixpkgs, not npm.
+React + TypeScript (Vite, Tailwind 4) on coss ui and Base UI, with uPlot for curves, in a
+frameless Electron window that draws its own title bar. Electron comes from nixpkgs, not
+npm.
 
 ```sh
 cd ui
@@ -20,23 +20,26 @@ scripts below.
 
 ## Views
 
-- **Runs:** live table (status events over SSE), search, filters, selection. A run shows
-  validation accuracy and loss against step or elapsed time, its frozen spec, events,
-  saved models (download) and worker log, with stop, pause and resume.
-- **New run:** forms from the catalog's JSON Schemas, comma-separated values as a grid,
-  presets, and the machine to run on (remotes deploy first).
-- **Compare:** selected runs overlaid, and the first step and time each reaches an
-  accuracy threshold.
-- **Reports:** create from saved models, every section's prose, tables and figures, an
-  interactive t-SNE/PCA scatter (by class or prediction) and the LRP gallery.
-- **Machines:** this laptop's GPU power state (memory and load while awake) and each
-  remote's GPUs and queue, refreshed in the background.
+- **Runs:** every run grouped by state (or dataset, optimizer), live over SSE, with a
+  filter, a search and a selection that compares, reports, stops, pauses or resumes.
+  j/k or arrows move, x selects, Esc clears.
+- **Run:** headline numbers, validation and training curves (accuracy or loss, by step or
+  time), activity, saved models and the worker log, and the full setup in a side panel.
+- **Compare:** validation curves overlaid, and a table keyed by color with each run's
+  numbers and when it first reaches an accuracy you choose.
+- **Reports:** each report as a document: its models, then every analysis's text, tables
+  and figures, with an outline. While building, the analyses tick off.
+- **Machines:** each machine's GPU and queue, probed in the background or on Refresh.
+- **New run** (`c`): optimizer, dataset, model, machine and preset as chips, then the
+  optimizer's parameters and training settings. Commas try several values, one run each.
+- **New report:** finished runs' best models, the split, the analyses.
+- **Ctrl+K:** every action, place, run and report.
 
 ## Checks
 
-`pnpm test` (contract helpers in `src/core.ts`), `pnpm check`, `pnpm build`. To look at
-the app as the user does, launch it with `KISEKI_DEBUG_PORT=9327`, then from the repo
-root `node ui/scripts/verify.mjs` screenshots every view into `ui/out/` (it needs a
-completed report in the store), `node ui/scripts/verify-actions.mjs` queues two smoke
-runs and a report through the forms (scratch stores only), and
-`node ui/scripts/verify-lifecycle.mjs` checks that quitting stops the server.
+`pnpm test` (the pure helpers in `src/lib`), `pnpm check`, `pnpm build`. To see the app
+as the user does, `node scripts/verify.mjs [OUT_DIR]` launches it on a fresh scratch
+store, queues two smoke runs through the form, compares them, builds a report, walks every
+view (the run, compare and runs views in light too), opens a figure, uses the command menu,
+closes the window and checks the server stopped; screenshots land in OUT_DIR. `node scripts/shots.mjs OUT name=/path ...`
+screenshots an app already running with `KISEKI_DEBUG_PORT=9327`.
