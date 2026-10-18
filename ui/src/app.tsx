@@ -1,13 +1,16 @@
 // The window: title bar across the top, the sidebar, and the current view in an inset
 // panel. Dialogs (new run, new report) and the command menu open from anywhere.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { CommandMenu } from "@/components/command-menu";
 import { Nav } from "@/components/nav";
 import { TitleBar } from "@/components/title-bar";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import { ToastProvider } from "@/components/ui/toast";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { type Route, useRoute } from "@/lib/router";
+import { useLive } from "@/lib/live";
+import { navigate, type Route, useRoute } from "@/lib/router";
+import { shell } from "@/lib/shell";
+import { trayItems } from "@/lib/tray";
 import type { Json } from "@/lib/types";
 import { CompareView } from "@/views/compare";
 import { MachinesView } from "@/views/machines";
@@ -63,9 +66,31 @@ export function App() {
         <NewRunDialog draft={runDraft} onClose={() => setRunDraft(undefined)} />
         <NewReportDialog models={reportModels} onClose={() => setReportModels(undefined)} />
         <CommandMenu open={palette} onOpenChange={setPalette} onNewRun={() => newRun()} onNewReport={() => newReport()} />
+        {shell && <Tray onNewRun={() => newRun()} />}
       </TooltipProvider>
     </ToastProvider>
   );
+}
+
+/** Keeps the shell's tray menu current and acts on its items. Its own component, so live
+ * updates re-render only it. */
+function Tray({ onNewRun }: { onNewRun: () => void }) {
+  const { runs, reports, options } = useLive();
+  const sent = useRef("");
+  const newRun = useRef(onNewRun);
+  newRun.current = onNewRun;
+  useEffect(() => {
+    const items = trayItems(runs, reports, options);
+    const text = JSON.stringify(items);
+    if (text === sent.current) return;
+    sent.current = text;
+    shell?.setTray(items);
+  }, [runs, reports, options]);
+  useEffect(
+    () => shell?.onTray((action) => ("open" in action ? navigate(action.open) : newRun.current())),
+    [],
+  );
+  return null;
 }
 
 function View({

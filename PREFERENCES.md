@@ -10,6 +10,7 @@
 
 ## UI
 
+- "Could we also make it like my T3 Code, where it gets its own tray icon and menu, and closing the window keeps the server running? If we could add other elements to that menu, that'd be great" — 2026-10-18, the tray. session 325d0be6
 - "Build it from the coss ui component library and take Linear's UI design as a reference. Make it minimal. It should have its own title bar too, not the native one." — 2026-10-18, the UI. session e676ea54
 
 ## Code

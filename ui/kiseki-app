@@ -1,8 +1,32 @@
 #!/usr/bin/env bash
 set -euo pipefail
 KISEKI_UI_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-if [[ ! -f "$KISEKI_UI_DIR/dist/index.html" ]]; then
-  (cd "$KISEKI_UI_DIR" && pnpm build)
+# Electron's single-instance lock (main.cjs) lives in its userData: while it names a live
+# process, this launch only shows that app's window, so nothing is rebuilt under it.
+data="${XDG_CONFIG_HOME:-$HOME/.config}/kiseki"
+[[ -n "${KISEKI_HOME:-}" ]] && data="$(realpath -m "$KISEKI_HOME")/app"
+owner="$(readlink "$data/SingletonLock" 2>/dev/null || true)"
+if [[ -z "$owner" ]] || ! kill -0 "${owner##*-}" 2>/dev/null; then
+  # The desktop entry runs this checkout after a pull: install and rebuild what is stale.
+  log="${XDG_STATE_HOME:-$HOME/.local/state}/kiseki-app.log"
+  mkdir -p "$(dirname -- "$log")"
+  if ! (
+    cd "$KISEKI_UI_DIR"
+    if [[ ! -f node_modules/.modules.yaml || pnpm-lock.yaml -nt node_modules/.modules.yaml ]]; then
+      pnpm install --frozen-lockfile
+      touch node_modules/.modules.yaml # pnpm leaves it alone when nothing changed
+    fi
+    if [[ ! -f dist/index.html ||
+      -n "$(find src index.html vite.config.ts tsconfig.json package.json pnpm-lock.yaml -newer dist/index.html -print -quit)" ]]; then
+      pnpm build
+    fi
+  ) > >(tee "$log") 2>&1; then
+    # Launched from GNOME nobody sees the output, so say so on the desktop too.
+    gdbus call --session --dest org.freedesktop.Notifications --object-path /org/freedesktop/Notifications \
+      --method org.freedesktop.Notifications.Notify kiseki 0 dialog-error "kiseki could not build its UI" \
+      "See $log" '[]' '{}' 10000 >/dev/null 2>&1 || true
+    exit 1
+  fi
 fi
 unset ELECTRON_RUN_AS_NODE
 export ELECTRON_OZONE_PLATFORM_HINT=wayland

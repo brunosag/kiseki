@@ -32,6 +32,8 @@ in its package's `NAMES`; the CLI, server and UI pick it up from the catalogs.
 - The laptop (RTX 3050, 4 GB) and the vps (2 CPUs, no GPU) each have a checkout at
   `~/src/kiseki`, the vps's for agents working there. Each lists the other in its
   `~/.config/kiseki/machines.toml` (`--on vps`, `--on laptop`).
+- The laptop's app (GNOME menu, tray) runs from `~/src/kiseki`, which nothing pulls on its
+  own: a landed change reaches the app once that checkout is pulled and the app restarted.
 - From the vps, train on the laptop's GPU with `--on laptop`. The laptop sleeps when
   unattended: check `kiseki machines` first; SSH to a sleeping laptop times out after
   about 20 s. While a run trains, its queue runner holds a sleep inhibitor ("yes, you can

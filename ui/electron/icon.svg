@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- The title bar's logo (src/components/title-bar.tsx) at app-icon size. -->
+  <rect x="8" y="8" width="112" height="112" rx="28" fill="#18181b"/>
+  <path d="M30 90c18 0 25-46 64-50" fill="none" stroke="#fafafa" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="94" cy="40" r="10" fill="#fafafa"/>
+</svg>

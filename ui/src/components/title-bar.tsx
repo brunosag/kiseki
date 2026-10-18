@@ -5,28 +5,8 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Kbd, KbdGroup } from "@/components/ui/kbd";
 import { useHistory } from "@/lib/router";
+import { shell, type WindowButton, type WindowState } from "@/lib/shell";
 import { cn } from "@/lib/utils";
-
-type WindowButton = "minimize" | "maximize" | "close";
-interface WindowState {
-  maximized: boolean;
-  focused: boolean;
-}
-interface KisekiWindow {
-  layout(): Promise<{ left: WindowButton[]; right: WindowButton[] }>;
-  state(): Promise<WindowState>;
-  onState(listener: (state: WindowState) => void): () => void;
-  minimize(): void;
-  maximize(): void;
-  close(): void;
-}
-declare global {
-  interface Window {
-    kisekiWindow?: KisekiWindow;
-  }
-}
-
-const shell = window.kisekiWindow;
 
 function useWindow() {
   const [layout, setLayout] = useState<{ left: WindowButton[]; right: WindowButton[] }>({ left: [], right: [] });
@@ -71,7 +51,7 @@ function WindowButtons({ buttons, maximized }: { buttons: WindowButton[]; maximi
           key={button}
           type="button"
           aria-label={label[button]}
-          onClick={() => shell[button]()}
+          onClick={() => shell?.[button]()}
           className="flex size-6 items-center justify-center rounded-full bg-accent text-foreground/80 transition-colors hover:bg-foreground/12 hover:text-foreground"
         >
           {icon[button]}

@@ -6,9 +6,12 @@ UI). Running and checks: `README.md`.
 
 ## Map
 
-- `electron/main.cjs` starts `kiseki serve`, opens the window and stops the server on
-  quit; `electron/preload.cjs` gives the page `window.kisekiWindow` (GNOME's button
-  layout, window state, minimize/maximize/close) for the title bar it draws.
+- `electron/main.cjs` starts `kiseki serve`, opens the window, keeps the tray icon and
+  menu, hides the window on close and stops the server on quit; `electron/preload.cjs`
+  gives the page `window.kisekiWindow` (typed in `src/lib/shell.ts`): GNOME's button
+  layout, window state and buttons for the title bar it draws, and the tray menu.
+  `electron/icon.svg` is the app icon, `tray.svg` the panel icon's source (render
+  `tray.png` and `tray@2x.png` from it with `rsvg-convert -w 16` and `-w 32`).
 - `src/app.tsx` is the frame (title bar, sidebar, the view in an inset panel), the
   dialogs and the global keys. `src/views/` holds one file per route and dialog;
   `src/components/` the app's own pieces (`chart.tsx` wraps uPlot, `pick.tsx` is the
@@ -20,8 +23,9 @@ UI). Running and checks: `README.md`.
 - `src/lib/`: `live.ts` is the store every view reads (catalog, runs, reports, machines,
   kept current by SSE); `api.ts` the token and fetching; `rows.ts` curve rows by byte
   offset; `schema.ts` the run form's fields and grids; `format.ts`, `reports.ts`,
-  `markdown.ts`, `curves.ts` are pure helpers with tests beside them; `types.ts` mirrors
-  the server's JSON (endpoints: the docstring of `src/kiseki/server.py`).
+  `markdown.ts`, `curves.ts`, `tray.ts` (the tray menu's live part) are pure helpers with
+  tests beside them; `types.ts` mirrors the server's JSON (endpoints: the docstring of
+  `src/kiseki/server.py`).
 
 ## Rules
 
@@ -42,6 +46,15 @@ UI). Running and checks: `README.md`.
   both have `step`, only validation rows `elapsed`.
 - Electron shutdown: destroy the windows before waiting for the Python child. Open SSE
   connections otherwise hold uvicorn's graceful shutdown until the kill timer.
+- Closing the window only hides it: quit a scripted app with SIGTERM (or the tray's Quit),
+  and a second `kiseki-app` on the same store just shows the first one's window and exits.
+  Scratch stores get their own app, lock and tray icon.
+- The Wayland app id comes from `app.setDesktopName("kiseki.desktop")`; without it
+  Electron reports `electron` and GNOME can't match the window to the desktop entry.
+- Read the tray menu without clicking the panel: its D-Bus menu, e.g. `gdbus call
+  --session --dest <item> --object-path /com/canonical/dbusmenu --method
+  com.canonical.dbusmenu.GetLayout -- 0 -1 '["label"]'` (items: `RegisteredStatusNotifierItems`
+  on `org.kde.StatusNotifierWatcher`); `...dbusmenu.Event -- <id> clicked '<0>' 0` clicks one.
 - `-webkit-app-region: drag` (the `drag` utility) swallows clicks: every control inside
   the title bar sits in a `no-drag` container. Dragging and double-click (GNOME's
   titlebar action) are Chromium's own; the page never sees the double-click.

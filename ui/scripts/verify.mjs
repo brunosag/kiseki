@@ -1,7 +1,8 @@
 // The desktop app, end to end, on a scratch store: launches it, queues two smoke runs
 // through the New run form, compares them, builds a report from them, walks every view
 // (the run, compare and runs views in light too), opens a figure, uses the command menu,
-// then closes the window and checks that the server went with it. Screenshots land in
+// then closes the window (it hides, the server stays), launches the app again (the window
+// comes back), quits it and checks that the server went with it. Screenshots land in
 // OUT_DIR.
 //   node scripts/verify.mjs [OUT_DIR]        (default /tmp/kiseki-verify; trains for seconds)
 import { spawn } from "node:child_process";
@@ -21,10 +22,12 @@ const check = (name, ok, detail = "") => {
   console.log(`${ok ? "ok  " : "FAIL"} ${name}${detail ? ` (${detail})` : ""}`);
 };
 
-const app = spawn(new URL("../kiseki-app", import.meta.url).pathname, [], {
-  env: { ...process.env, KISEKI_HOME: home, KISEKI_DEBUG_PORT: port },
-  stdio: "ignore",
-});
+const launch = () =>
+  spawn(new URL("../kiseki-app", import.meta.url).pathname, [], {
+    env: { ...process.env, KISEKI_HOME: home, KISEKI_DEBUG_PORT: port },
+    stdio: "ignore",
+  });
+const app = launch();
 let page;
 for (let i = 0; i < 120 && !page; i++) {
   await sleep(500);
@@ -49,6 +52,9 @@ async function until(name, expression, seconds = 20) {
   }
   check(name, false, "timed out");
   return false;
+}
+async function expect(name, expression) {
+  if (await until(name, expression, 5)) check(name, true);
 }
 async function shot(name) {
   await sleep(600);
@@ -164,12 +170,29 @@ try {
   check("the walk finished", false, error.message);
   await shot("failure").catch(() => {});
 } finally {
-  // Closing the window quits the app, and the app stops its server.
+  // Closing the window hides it in the tray; launching again brings it back; quitting
+  // stops the server.
   await js("window.kisekiWindow.close(), true").catch(() => {});
+  await expect("closing the window hides it", "document.visibilityState === 'hidden'");
+  check("the server outlives the window", servers().length === 1, servers().join(" "));
+  const again = launch();
+  const second = await Promise.race([new Promise((resolve) => again.once("exit", (code) => resolve(code === 0))), sleep(30000).then(() => false)]);
+  check("a second launch exits", second);
+  await expect("and shows the window", "document.visibilityState === 'visible'");
   page.close();
+  again.kill("SIGTERM"); // gone already, unless the first app died and it took over
+  app.kill("SIGTERM");
   const exited = await Promise.race([new Promise((resolve) => app.once("exit", () => resolve(true))), sleep(15000).then(() => false)]);
   await sleep(4000);
-  const left = readdirSync("/proc").filter((pid) => {
+  const left = servers();
+  check("quitting exits the app", exited);
+  check("the server stops with it", !left.length, left.join(" "));
+}
+console.log(`screenshots: ${out}`);
+process.exit(checks.every((item) => item.ok) ? 0 : 1);
+
+function servers() {
+  return readdirSync("/proc").filter((pid) => {
     try {
       // The queue runner outlives the app by design (it exits once the queue is empty).
       return (
@@ -181,8 +204,4 @@ try {
       return false;
     }
   });
-  check("closing the window quits the app", exited);
-  check("the server stops with it", !left.length, left.join(" "));
 }
-console.log(`screenshots: ${out}`);
-process.exit(checks.every((item) => item.ok) ? 0 : 1);

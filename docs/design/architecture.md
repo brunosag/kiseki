@@ -138,6 +138,26 @@ its own.
   report's figure shows the same embedding) and the browsable LRP gallery (the figure
   shows its first 12 images).
 
+## The app lives in the tray and launches from the checkout
+
+kiseki has a tray icon (StatusNotifierItem, shown by GNOME's AppIndicator extension).
+Closing the window hides it and keeps the server; the tray menu opens the window, starts a
+new run, lists what trains and builds now and the latest settled runs, and quits, which
+stops the server. The page writes the menu's live part from its store (`ui/src/lib/tray.ts`)
+and sends it over the preload bridge, so the shell holds no second event stream. One app
+runs per store: launching again shows its window. GNOME launches it from a desktop entry in
+the user's NixOS config (`~/config/home.nix`) that runs `~/src/kiseki/ui/kiseki-app` with
+a pinned Electron; the launcher installs and rebuilds the UI when they are stale, so a pull
+updates the app without a NixOS rebuild.
+
+- **Why:** "Could we also make it like my T3 Code, where it gets its own tray icon and
+  menu, and closing the window keeps the server running?" (PREFERENCES.md). The menu's
+  contents and the launcher are the agent's design, reviewed by no critic.
+- **Rejected:** an AppImage (it could hold Electron and the UI but not Python, JAX and
+  CUDA, so it would still need the checkout); the shell watching the event stream itself
+  (a second copy of the page's store).
+- **Revisit if:** the app must run on another machine (then package it).
+
 ## GPU memory is allocated on demand
 
 Workers set `XLA_PYTHON_CLIENT_PREALLOCATE=false` unless `KISEKI_GPU_MEMORY_FRACTION` is

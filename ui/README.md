@@ -11,12 +11,20 @@ pnpm build
 ./kiseki-app            # or: KISEKI_HOME=/tmp/kiseki-smoke ./kiseki-app
 ```
 
-`kiseki-app` uses `$ELECTRON_BIN`, else `electron` on PATH, else
-`nix shell nixpkgs#electron`. It starts `.venv/bin/python -m kiseki.cli serve`, reads the
-URL and token it prints, and stops it on quit; training runs belong to the queue runner
-and outlive the app. `KISEKI_SERVER_URL='http://127.0.0.1:PORT/?token=TOKEN'` attaches to
-a running server instead. `KISEKI_DEBUG_PORT` opens a loopback DevTools port for the
-scripts below.
+On the laptop, GNOME's app menu has kiseki: a desktop entry in `~/config/home.nix` runs
+this checkout's `kiseki-app` (`~/src/kiseki`) with a pinned Electron. Unless the app is
+already running, `kiseki-app` installs packages and rebuilds `dist/` when they are older
+than the lockfile or sources (errors go to `~/.local/state/kiseki-app.log` and a desktop
+notification). It then uses `$ELECTRON_BIN`, else `electron` on PATH, else
+`nix shell nixpkgs#electron`. The app starts `.venv/bin/python -m kiseki.cli serve`, reads
+the URL and token it prints, and stops it on quit; training runs belong to the queue
+runner and outlive the app. `KISEKI_SERVER_URL='http://127.0.0.1:PORT/?token=TOKEN'`
+attaches to a running server instead. `KISEKI_DEBUG_PORT` opens a loopback DevTools port
+for the scripts below.
+
+The app sits in the tray: closing the window hides it and keeps the server, launching
+again shows it, and the tray's Quit stops the server (design:
+`../docs/design/architecture.md`).
 
 ## Views
 
@@ -41,5 +49,6 @@ scripts below.
 as the user does, `node scripts/verify.mjs [OUT_DIR]` launches it on a fresh scratch
 store, queues two smoke runs through the form, compares them, builds a report, walks every
 view (the run, compare and runs views in light too), opens a figure, uses the command menu,
-closes the window and checks the server stopped; screenshots land in OUT_DIR. `node scripts/shots.mjs OUT name=/path ...`
+closes the window and checks it hid with the server alive, launches again and checks the
+window came back, quits and checks the server stopped; screenshots land in OUT_DIR. `node scripts/shots.mjs OUT name=/path ...`
 screenshots an app already running with `KISEKI_DEBUG_PORT=9327`.
