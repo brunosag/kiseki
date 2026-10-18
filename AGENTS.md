@@ -54,7 +54,8 @@ in its package's `NAMES`; the CLI, server and UI pick it up from the catalogs.
 ## Gotchas
 
 - `uv add`, `uv remove` and `uv lock` re-sync without extras and uninstall the CUDA
-  libraries; run `uv sync --extra cuda` after them, or JAX silently runs on the CPU.
+  libraries, and `uv run` in a checkout without `.venv` creates one without them; run
+  `uv sync --extra cuda` after them, or JAX silently runs on the CPU (on the laptop).
 - lugia (RTX 5070 Ti, driver 580 = CUDA 13.0) lost its GPU on 2026-10-17 during the first
   run with the CUDA 13.4 user-space libraries (`CUDA_ERROR_LAUNCH_FAILED` in autotuning,
   then "No devices were found"; needs an admin reset). `pyproject.toml` pins them to 13.0.

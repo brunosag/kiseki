@@ -430,7 +430,7 @@ def cmd_machines(args: argparse.Namespace) -> int:
     rows = []
     for record in records:
         if record["ssh"] is None:
-            gpu = "awake" if record["gpu_awake"] else "asleep"
+            gpu = {True: "awake", False: "asleep", None: "none"}[record["gpu_awake"]]
         elif "error" in record:
             gpu = f"unreachable: {record['error'][:60]}"
         else:
