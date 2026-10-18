@@ -31,7 +31,7 @@ import numpy as np
 from jax import lax
 
 from kiseki import datasets, models, optimizers
-from kiseki.spec import ModelRef, RunSpec, encode
+from kiseki.spec import ModelRef, RunSpec, encode, start_mismatch
 from kiseki.store import Run, now, read_ndjson, write_atomic
 from kiseki.worker import checkpoint, runtime
 from kiseki.worker import data as device_data
@@ -194,13 +194,8 @@ def starting_network(spec: RunSpec, net) -> jax.Array | None:
     if not spec.start_from:
         return None
     ref = ModelRef.parse(spec.start_from)
-    source = Run.find(ref.run_id).spec()
-    for field in ("dataset", "model", "split_seed", "validation_size"):
-        if getattr(source, field) != getattr(spec, field):
-            raise ValueError(
-                f"start_from {ref}: its {field} is {getattr(source, field)!r}, "
-                f"this run's is {getattr(spec, field)!r}"
-            )
+    if problem := start_mismatch(Run.find(ref.run_id).spec(), spec):
+        raise ValueError(f"start_from {ref}: {problem}")
     weights = checkpoint.load_network(Run.find(ref.run_id).models_dir / f"{ref.name}.safetensors")
     if weights.shape != (net.size,):
         raise ValueError(f"start_from {ref}: {weights.shape[0]} weights, the model has {net.size}")
@@ -316,7 +311,7 @@ def train(run: Run) -> int:
     )
     run.event("started" if not manifest else "resumed", step=resumed_from, device=device)
 
-    start = starting_network(spec, net)
+    start = None if manifest else starting_network(spec, net)  # a resume loads its state
     limit = device_limit()
     chunk = first_chunk(net, spec, population, limit)
     while True:  # compile, then run one step; halve the chunk until it fits

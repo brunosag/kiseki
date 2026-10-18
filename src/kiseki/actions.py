@@ -17,7 +17,7 @@ from kiseki import analyses, datasets, machines, models, optimizers, paths, runn
 from kiseki.machines import GPU_QUERY
 from kiseki.report import Report, ReportSpec
 from kiseki.report import normalize as normalize_report
-from kiseki.spec import ModelRef, RunSpec, from_overrides, new_run_id
+from kiseki.spec import ModelRef, RunSpec, from_overrides, new_run_id, start_mismatch
 from kiseki.store import ACTIVE, Run
 
 PRESETS: dict[str, dict[str, Any]] = {
@@ -168,12 +168,7 @@ def queue(specs: list[RunSpec], machine_name: str = "local") -> list[Run]:
     if any(spec.start_from for spec in specs):
         if not machine.is_local:
             raise ValueError("start_from works only for runs on this machine")
-        specs = [
-            msgspec.structs.replace(spec, start_from=resolve_model(spec.start_from, offline=True))
-            if spec.start_from
-            else spec
-            for spec in specs
-        ]
+        specs = [resolve_start(spec) if spec.start_from else spec for spec in specs]
     if machine.is_local:
         home = paths.home()
         runner.write_profile(home, profile)
@@ -267,6 +262,19 @@ def resolve_model(text: str, offline: bool = False) -> str:
     ):
         remote_for(machine).pull([run.id], models=True)
     return str(ModelRef(run.id, ref.name))
+
+
+def resolve_start(spec: RunSpec) -> RunSpec:
+    """`spec` with start_from as a full ref to a saved network here (pulled from the source's
+    machine when missing), checked against this run's dataset, model and split."""
+    ref = ModelRef.parse(resolve_model(spec.start_from))
+    source = Run.find(ref.run_id)
+    if not (source.models_dir / f"{ref.name}.safetensors").exists():
+        saved = ", ".join(source.model_names()) or "none"
+        raise ValueError(f"start_from {ref}: no saved network {ref.name!r} (saved: {saved})")
+    if problem := start_mismatch(source.spec(), spec):
+        raise ValueError(f"start_from {ref}: {problem}")
+    return msgspec.structs.replace(spec, start_from=str(ref))
 
 
 def create_report(spec: ReportSpec, offline: bool = False) -> Report:

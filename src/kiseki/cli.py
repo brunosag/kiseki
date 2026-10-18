@@ -192,7 +192,8 @@ def cmd_show(args: argparse.Namespace) -> int:
     lines = [
         f"{run.id}  {status.state} on {status.machine}  step {status.step}/{spec.iterations}",
         f"  {spec.dataset}/{spec.model}/{spec.optimizer}  seed {spec.seed}  batch {spec.batch_size}"
-        f"  params {json.dumps(spec.params, separators=(',', ':'))}",
+        f"  params {json.dumps(spec.params, separators=(',', ':'))}"
+        + (f"  from {spec.start_from}" if spec.start_from else ""),
         f"  best val {percent(status.best_accuracy)}% at step {status.best_step}"
         f"  test {percent(status.test_accuracy)}%  last val {percent(status.last_accuracy)}%",
         f"  {status.steps_per_second or 0:.2f} steps/s  elapsed {duration(status.elapsed_seconds)}"

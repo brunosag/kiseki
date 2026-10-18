@@ -8,8 +8,9 @@ For centre θ and n = N/2 noise vectors εᵢ ~ N(0, I):
    Σᵢ (u⁺ᵢ - u⁻ᵢ) εᵢ / (σN) for raw losses, an unbiased estimate of -∇E[L(θ + σε)];
 4. Adam step (update "adam") or plain step θ -= η·(...) (update "sgd") on
    -g + weight_decay·θ.
-The `ties` metric is the share of scores equal to another score, which ranks break by
-position.
+A pair with a non-finite score gets weight 0 under raw losses (ranks put it last). The
+`ties` metric is the share of adjacent equal scores after sorting, (N − distinct)/(N − 1);
+ranks break ties by position.
 εᵢ is regenerated from fold_in(key, i) in both passes rather than stored, so memory stays
 O(chunk·D) for any population size. The validated network is θ.
 """
@@ -54,9 +55,12 @@ def build(params: Params, problem: Problem) -> Optimizer:
         ties = jnp.mean(ordered[1:] == ordered[:-1])
         if params.shaping == "ranks":
             utility, scale = centered_ranks(-scores), 1.0
+            weight = utility[:pairs] - utility[pairs:]
         else:
-            utility, scale = -scores, 1.0 / params.sigma
-        weight = utility[:pairs] - utility[pairs:]
+            finite = jnp.isfinite(scores)
+            utility, scale = jnp.where(finite, -scores, 0.0), 1.0 / params.sigma
+            weight = utility[:pairs] - utility[pairs:]
+            weight = jnp.where(finite[:pairs] & finite[pairs:], weight, 0.0)
 
         padding = rounds * chunk - pairs  # padded pairs weigh 0
         indices = jnp.pad(jnp.arange(pairs), (0, padding)).reshape(rounds, chunk)

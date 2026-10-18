@@ -29,3 +29,9 @@ def test_cross_entropy_matches_the_reference_on_ordinary_logits():
     loss, correct = cross_entropy(jnp.asarray(logits), jnp.asarray(labels))
     assert np.isclose(float(loss), reference(logits, labels), rtol=1e-5)
     assert int(correct) == int((logits.argmax(1) == labels).sum())
+
+
+def test_an_example_with_an_overflowing_logit_is_unusable_not_perfect():
+    logits = jnp.asarray([[jnp.inf, 1.0, 2.0], [3.0, 1.0, 2.0]])
+    loss, _ = cross_entropy(logits, jnp.asarray([0, 0]))
+    assert np.isnan(float(loss))

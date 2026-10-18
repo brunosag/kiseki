@@ -21,12 +21,14 @@ def cross_entropy(logits: Array, labels: Array) -> tuple[Array, Array]:
 
     Each example's loss is softplus(logsumexp over the other classes of z_j - z_y), which
     equals logsumexp(z) - z_y but keeps its precision near zero, where the subtraction
-    rounds a confident example's loss (say 1e-7) to exactly 0 in float32. Selection and
-    ranking on a fitted training set depend on those small losses.
+    rounds a confident example's loss (say 1e-7) to exactly 0 in float32, so selection
+    between well-fitted networks still sees their differences. An example with a
+    non-finite logit has loss NaN, as logsumexp(z) - z_y gives.
     """
     picked = jnp.take_along_axis(logits, labels[:, None], axis=-1)
     others = jnp.where(jnp.arange(logits.shape[-1]) == labels[:, None], -jnp.inf, logits - picked)
-    loss = jnp.mean(jax.nn.softplus(jax.nn.logsumexp(others, axis=-1)))
+    each = jax.nn.softplus(jax.nn.logsumexp(others, axis=-1))
+    loss = jnp.mean(jnp.where(jnp.all(jnp.isfinite(logits), axis=-1), each, jnp.nan))
     correct = jnp.sum(jnp.argmax(logits, axis=-1) == labels)
     return loss, correct
 

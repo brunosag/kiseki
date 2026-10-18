@@ -454,6 +454,11 @@ function Properties({ run, options, events }: { run: Run; options: Options | nul
           <span className="font-mono text-xs">{spec.model || options?.datasets[spec.dataset]?.default_model}</span>
         </Property>
         <Property label="Optimizer">{optimizerTitle(options, spec.optimizer)}</Property>
+        {spec.start_from ? (
+          <Property label="Started from">
+            <span className="font-mono text-xs">{String(spec.start_from)}</span>
+          </Property>
+        ) : null}
         <Property label="Steps">{count(spec.iterations)}</Property>
         <Property label="Seed">{spec.seed}</Property>
         <Property label="Batch size">{number(spec.batch_size)}</Property>

@@ -105,3 +105,20 @@ def test_a_run_cannot_start_from_a_network_trained_on_another_split(home, mnist)
     train.main(run)
     assert run.status().state == "failed"
     assert "validation_size" in (run.status().error or "")
+
+
+def test_start_from_is_checked_when_queued(home, mnist):
+    from kiseki import actions
+
+    source = make("sgd")
+    assert train.main(source) == 0
+    spec = source.spec()
+    with pytest.raises(ValueError, match="no saved network 'step-7'"):
+        actions.resolve_start(msgspec.structs.replace(spec, start_from=f"{source.id}:step-7"))
+    with pytest.raises(ValueError, match="validation_size"):
+        actions.resolve_start(
+            msgspec.structs.replace(spec, validation_size=5000, start_from=f"{source.id}:final")
+        )
+    short = source.id.split("-")[-1]  # a prefix resolves to the full id
+    resolved = actions.resolve_start(msgspec.structs.replace(spec, start_from=f"{short}:final"))
+    assert resolved.start_from == f"{source.id}:final"

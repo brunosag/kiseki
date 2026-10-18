@@ -64,6 +64,14 @@ and OpenAI-ES (Salimans et al. 2017), each a package with `Params` and a pure `b
   and CoSyNE is open.
 - **Pace** on the laptop GPU (MNIST, defaults, performance profile, 2026-10-17):
   SGD 298 steps/s, LEEA 3.05, OpenAI-ES 2.88, CoSyNE 1.59.
+- **Adam** (decoupled `weight_decay`, i.e. AdamW, or coupled `l2`) is the gradient
+  counterpart of OpenAI-ES's own Adam step, beside SGD. OpenAI-ES's `shaping` (centred
+  ranks or raw losses) and `update` (Adam or a plain step) switch off its rank shaping
+  and its Adam step one at a time. Agent's choice.
+- **`start_from`** starts any optimizer from a saved network (`RUN:best|final|step-N`;
+  populations start as copies) of a run with the same dataset, model and split. It is
+  checked when queued, and again by the worker, which ignores it on resume. Local runs
+  only. Agent's choice.
 
 ## Precision: fp32 by default, bf16 per run
 

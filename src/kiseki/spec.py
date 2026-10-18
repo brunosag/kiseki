@@ -59,6 +59,21 @@ class RunSpec(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fields=T
     label: str = ""
 
 
+START_FIELDS = ("dataset", "model", "split_seed", "validation_size")
+
+
+def start_mismatch(source: RunSpec, spec: RunSpec) -> str | None:
+    """Why `spec` cannot start from a network of the run `source` describes, or None: they
+    must share the dataset, model and train/validation split (else its held-out images
+    could be training ones here)."""
+    for field in START_FIELDS:
+        if getattr(source, field) != getattr(spec, field):
+            return (
+                f"its {field} is {getattr(source, field)!r}, this run's is {getattr(spec, field)!r}"
+            )
+    return None
+
+
 def normalize(spec: RunSpec) -> RunSpec:
     info = datasets.info(spec.dataset)
     model = spec.model or info.default_model

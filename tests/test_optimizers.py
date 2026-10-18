@@ -85,6 +85,15 @@ def test_es_on_raw_losses_estimates_the_smoothed_gradient():
     assert 0 <= metrics["ties"] < 0.1  # float32 losses of 20k close networks can coincide
 
 
+def test_es_on_raw_losses_gives_unusable_scores_no_weight():
+    opt = build("openai_es", population_size=16, weight_decay=0.0, shaping="none", update="sgd")
+    x, y = toy_batch(jax.random.key(0))
+    state = opt.init(jax.random.key(1))
+    state = state | {"theta": state["theta"] * 1e30}  # logits overflow: every score is unusable
+    new, _ = opt.step(state, jax.random.key(2), x, y)
+    assert jnp.array_equal(new["theta"], state["theta"])
+
+
 def test_adam_with_l2_matches_its_first_step_by_hand():
     opt = build("adam", learning_rate=0.1, l2=0.5)
     x, y = toy_batch(jax.random.key(0))
