@@ -34,9 +34,17 @@ in its package's `NAMES`; the CLI, server and UI pick it up from the catalogs.
   `~/.config/kiseki/machines.toml` (`--on vps`, `--on laptop`).
 - From the vps, train on the laptop's GPU with `--on laptop`. The laptop sleeps when
   unattended: check `kiseki machines` first; SSH to a sleeping laptop times out after
-  about 20 s, and its runs freeze during sleep and continue on wake.
+  about 20 s. While a run trains, its queue runner holds a sleep inhibitor ("yes, you can
+  inhibit sleep if you need to", the user, 2026-10-18); T3 holds one only during an agent
+  turn. A suspend mid-run (lid, manual) can leave the worker hung with the GPU idle on
+  wake (2026-10-18); the runner then kills it after 15 min and resumes it from its
+  checkpoint.
 
 ## Rules
+
+- Research that uses kiseki lives in the private repo `brunosag/kiseki-research`
+  (`~/src/kiseki-research`). Its findings, unpublished results and idea-revealing code
+  stay there until the user publishes; only general tool improvements land here.
 
 - The GitHub repo is public. No email addresses or other contact details in tracked files:
   they live in `~/.config/kiseki/machines.toml` (untracked).

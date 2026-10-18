@@ -1,5 +1,6 @@
 """The queue runner: which runs it owns, the notice before a run, and starting a run once."""
 
+import contextlib
 import fcntl
 import os
 import threading
@@ -125,3 +126,58 @@ def test_one_run_at_a_time_per_machine_across_homes(home, tmp_path, monkeypatch)
     assert not serving.is_alive()
     # The worker gets the machine lock, still taken, to hold for as long as it lives.
     assert passed == [(True, True)]
+
+
+class HungWorker:
+    pid = 4242
+
+    def __init__(self):
+        self.killed = False
+
+    def wait(self, timeout: float = 0.0):
+        if self.killed:
+            return -9
+        raise runner.subprocess.TimeoutExpired("worker", timeout)
+
+
+def stall_quickly(monkeypatch, worker):
+    monkeypatch.setattr(runner, "STALL_SECONDS", 0.0)
+    monkeypatch.setattr(runner, "POLL_SECONDS", 0.01)
+    monkeypatch.setattr(runner, "inhibit_sleep", lambda why: contextlib.nullcontext())
+    monkeypatch.setattr(runner.os, "kill", lambda pid, sig: setattr(worker, "killed", True))
+
+
+def test_a_stalled_worker_is_killed_and_its_run_requeued(home, monkeypatch):
+    run = Run.create("20261017-100000-mnist-sgd-aaaa", RunSpec(), machine="local")
+    run.update_status(state="running", pid=HungWorker.pid, step=1500)
+    worker = HungWorker()
+    stall_quickly(monkeypatch, worker)
+
+    runner.Runner(home).wait(run, worker)  # type: ignore[arg-type]
+
+    assert worker.killed
+    assert (run.status().state, run.status().pid) == ("queued", None)
+    assert [row["kind"] for row in run.iter_rows("events")][-1] == "stalled"
+
+
+def test_a_run_that_keeps_stalling_fails(home, monkeypatch):
+    run = Run.create("20261017-100000-mnist-sgd-aaaa", RunSpec(), machine="local")
+    for _ in range(runner.MAX_STALLS - 1):
+        run.event("stalled", step=0, action="requeued")
+    run.update_status(state="running", pid=HungWorker.pid)
+    worker = HungWorker()
+    stall_quickly(monkeypatch, worker)
+
+    runner.Runner(home).wait(run, worker)  # type: ignore[arg-type]
+
+    assert run.status().state == "failed"
+    assert "stalled" in (run.status().error or "")
+
+
+def test_a_machine_that_slept_is_not_a_stall(tmp_path, monkeypatch):
+    path = tmp_path / "status.json"
+    path.write_text("{}")
+    clock = iter([100.0, 101.0])  # monotonic time does not advance during suspend
+    monkeypatch.setattr(runner.time, "monotonic", lambda: next(clock))
+
+    assert runner.StallWatch(path).idle() == 1.0

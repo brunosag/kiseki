@@ -18,15 +18,23 @@ where to keep the shared-server notice (`kiseki.notice`) while runs are active. 
 is written before each run starts, and a run fails instead of starting when it can't be.
 A started run is marked running with its worker's pid at once, so the queue never starts
 it twice.
+
+While a worker runs, the runner keeps the machine awake (systemd-inhibit, where the system
+has it): a laptop that sleeps mid-run can lose its CUDA context and leave the worker hung
+on wake. A worker whose status file stops changing for STALL_SECONDS of awake time is
+killed and its run requeued, to resume from its last checkpoint (failed after
+MAX_STALLS).
 """
 
 import fcntl
 import os
+import shutil
+import signal
 import subprocess
 import sys
 import time
 from collections.abc import Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import IO
@@ -40,6 +48,8 @@ from kiseki.store import Run, RunStatus, write_atomic
 
 NOTICE_SECONDS = 600  # how often the runner refreshes the notice during a run
 POLL_SECONDS = 5
+STALL_SECONDS = 900.0  # awake time a live worker may leave status.json unchanged
+MAX_STALLS = 3  # stalls after which a run fails instead of being requeued
 
 
 class NoticeError(Exception):
@@ -155,6 +165,56 @@ def machine_lock() -> Iterator[IO[str]]:
         yield lock
 
 
+@contextmanager
+def inhibit_sleep(why: str) -> Iterator[None]:
+    """Keep the machine from sleeping or idling into suspend, where systemd-inhibit exists.
+    The inhibitor follows the runner's pid, so it ends with the runner even if killed."""
+    tool = shutil.which("systemd-inhibit")
+    process = None
+    if tool:
+        command = [tool, "--what=sleep:idle", "--who=kiseki", f"--why={why}", "--mode=block"]
+        command += ["tail", f"--pid={os.getpid()}", "-f", "/dev/null"]
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+        except OSError as error:
+            log(f"could not inhibit sleep: {error}")
+    try:
+        yield
+    finally:
+        if process is not None:
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGTERM)
+            process.wait()
+
+
+class StallWatch:
+    """Awake seconds since a file last changed. Monotonic time stops during suspend, so a
+    machine that slept is not taken for a stalled worker."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.mtime = self.read()
+        self.changed = time.monotonic()
+
+    def read(self) -> int:
+        try:
+            return self.path.stat().st_mtime_ns
+        except OSError:
+            return 0
+
+    def idle(self) -> float:
+        mtime = self.read()
+        if mtime != self.mtime:
+            self.mtime, self.changed = mtime, time.monotonic()
+        return time.monotonic() - self.changed
+
+
 class Runner:
     def __init__(self, home: Path):
         self.home = home
@@ -217,22 +277,47 @@ class Runner:
 
     def wait(self, run: Run, process: subprocess.Popen | None) -> None:
         self.refresh_notice(force=True)
-        while True:
-            if process is not None:
-                try:
-                    code = process.wait(timeout=POLL_SECONDS)
-                    break
-                except subprocess.TimeoutExpired:
-                    pass
-            else:
-                time.sleep(POLL_SECONDS)
-                if not worker_alive(run.status().pid):
-                    code = None
-                    break
-            self.refresh_notice()
+        watch = StallWatch(run.path / "status.json")
+        code = None
+        with inhibit_sleep(f"kiseki run {run.id}"):
+            while True:
+                if process is not None:
+                    try:
+                        code = process.wait(timeout=POLL_SECONDS)
+                        break
+                    except subprocess.TimeoutExpired:
+                        pass
+                else:
+                    time.sleep(POLL_SECONDS)
+                    if not worker_alive(run.status().pid):
+                        break
+                if watch.idle() > STALL_SECONDS:
+                    self.stalled(run, process)
+                    return
+                self.refresh_notice()
         if run.status().state in {"running", "queued"}:
             run.fail(f"worker exited with code {code} without recording an outcome; see worker.log")
         log(f"{run.id} {run.status().state}")
+
+    def stalled(self, run: Run, process: subprocess.Popen | None) -> None:
+        """Kill a hung worker; requeue its run to resume from its checkpoint."""
+        status = run.status()
+        if status.pid:
+            with suppress(ProcessLookupError):
+                os.kill(status.pid, signal.SIGKILL)
+        if process is not None:
+            process.wait()
+        else:
+            while worker_alive(status.pid):
+                time.sleep(0.1)
+        stalls = 1 + sum(1 for row in run.iter_rows("events") if row.get("kind") == "stalled")
+        message = f"worker stalled {STALL_SECONDS:.0f} s at step {status.step}"
+        if stalls >= MAX_STALLS:
+            run.fail(f"{message}, {stalls} times")
+        else:
+            run.update_status(state="queued", pid=None)
+            run.event("stalled", step=status.step, action="requeued")
+        log(f"{run.id} {message}; {run.status().state}")
 
     def refresh_notice(self, force: bool = False) -> None:
         """Keep the notice current. A failed refresh is only logged: the notice written

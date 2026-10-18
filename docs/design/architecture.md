@@ -63,9 +63,17 @@ remotes use, scratch homes), so a runner takes the machine lock (`<cache>/machin
 before starting a worker and the worker inherits it: one run at a time per machine,
 whichever home queued it.
 
+While a worker runs, its runner holds a `systemd-inhibit` sleep lock (tied to the
+runner's pid, so it ends with the runner) and watches the run's status file: a worker
+that leaves it unchanged for 15 minutes of awake time is killed and its run requeued to
+resume from its checkpoint, three times at most before the run fails.
+
 - **Why:** the laptop can sleep or drop SSH without losing or duplicating runs; one run
   at a time keeps the whole GPU for it, also when the vps sends runs to the laptop while
-  the user runs their own.
+  the user runs their own. The inhibitor and watchdog came after a run on 2026-10-18:
+  the laptop slept while no agent turn held T3's inhibitor, and on wake the worker spun
+  with the GPU idle (its CUDA context lost) until killed. Monotonic time stops during
+  suspend, so a long sleep alone does not count as a stall.
 - **Revisit if:** small runs leave the GPU idle enough that running two at once pays.
 
 ## Remotes are SSH hosts with their own home and queue
