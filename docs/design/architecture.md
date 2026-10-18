@@ -99,6 +99,26 @@ same functions as the CLI (`kiseki/actions.py`).
   mtimes costs microseconds and needs no inotify edge cases.
 - **Rejected:** FastAPI (the old stack; pydantic adds startup time and nothing needed).
 
+## The UI: coss ui, laid out after Linear, in a frameless window
+
+`ui/` is React built from coss ui components (copied into `ui/src/components/ui/`, on
+Base UI). Linear's layout: the title bar and navigation on the sidebar colour, each view
+in an inset panel, dense rows with a property panel, a floating bar for selected runs and
+a command menu (Ctrl+K). The Electron window has no native frame: the page draws the title
+bar with the window buttons GNOME's layout asks for, and Chromium's drag regions move and
+maximize it; nothing opens a second window. Reports show the figures the worker draws
+(full size in a dialog); curves are uPlot canvases. The server keeps port 47630 when it is
+free, so settings stored per origin survive restarts; a scratch store (`KISEKI_HOME`) gets
+its own.
+
+- **Why:** "Build it from the coss ui component library and take Linear's UI design as a
+  reference. Make it minimal. It should have its own title bar too, not the native one."
+  (PREFERENCES.md). Layout details are the agent's.
+- **Rejected:** the first UI, built by a Codex agent (GPT-6.1 Sol), which the user had
+  rewritten on 2026-10-18; with it went the interactive WebGL embedding scatter (the
+  report's figure shows the same embedding) and the browsable LRP gallery (the figure
+  shows its first 12 images).
+
 ## GPU memory is allocated on demand
 
 Workers set `XLA_PYTHON_CLIENT_PREALLOCATE=false` unless `KISEKI_GPU_MEMORY_FRACTION` is

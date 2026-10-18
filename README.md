@@ -63,7 +63,7 @@ ui/kiseki-app
 ```
 
 It starts `kiseki serve` and opens the app: live runs and curves, new runs, comparisons,
-reports with interactive embeddings and LRP galleries, and machines.
+reports and machines, with everything one search away (Ctrl+K).
 
 ## Checks
 
