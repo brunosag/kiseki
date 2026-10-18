@@ -10,6 +10,7 @@ from typing import Annotated
 import msgspec
 from msgspec import Meta
 
+TITLE = "OpenAI-ES"
 SUMMARY = (
     "Evolution strategy: a gradient estimate from mirrored Gaussian perturbations, "
     "Adam step (Salimans et al. 2017)."

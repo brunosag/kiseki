@@ -2,7 +2,8 @@
 
 Each package has two modules:
 - `__init__.py` (light, no JAX): `Params` (a msgspec Struct whose fields carry defaults,
-  bounds and descriptions; the CLI, app forms and run validation read it) and `SUMMARY`.
+  bounds and descriptions; the CLI, app forms and run validation read it), `TITLE` (its
+  display name) and `SUMMARY`.
 - `impl.py` (JAX): `build(params, problem) -> Optimizer`, see `kiseki.worker.optimizer`.
 
 A `population_size` field marks an evolutionary optimizer: training sizes the scoring
@@ -26,6 +27,10 @@ def _package(name: str):
 
 def params_type(name: str) -> type[msgspec.Struct]:
     return _package(name).Params
+
+
+def title(name: str) -> str:
+    return _package(name).TITLE
 
 
 def summary(name: str) -> str:

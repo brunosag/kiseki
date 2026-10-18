@@ -29,7 +29,7 @@ from jax import lax
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
-from kiseki import analyses, datasets, models
+from kiseki import analyses, datasets, models, optimizers
 from kiseki.models.layers import Network
 from kiseki.report import Report, ReportSpec, ReportStatus
 from kiseki.spec import ModelRef, RunSpec
@@ -241,7 +241,7 @@ def load_subjects(spec: ReportSpec) -> tuple[list[Subject], RunSpec]:
             spec.labels[index]
             if spec.labels
             else (
-                f"{run_spec.label or run_spec.optimizer} {run.id[-4:]}"
+                f"{run_spec.label or optimizers.title(run_spec.optimizer)} {run.id[-4:]}"
                 + (f" {ref.name}" if ref.name != "best" else "")
             )
         )

@@ -9,6 +9,7 @@ from typing import Annotated
 import msgspec
 from msgspec import Meta
 
+TITLE = "LEEA"
 SUMMARY = "Genetic algorithm with minibatch fitness and fitness inheritance (Morse & Stanley 2016)."
 
 

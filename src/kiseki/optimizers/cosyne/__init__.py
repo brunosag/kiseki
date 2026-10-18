@@ -9,6 +9,7 @@ from typing import Annotated
 import msgspec
 from msgspec import Meta
 
+TITLE = "CoSyNE"
 SUMMARY = "Neuroevolution by crossover, mutation and per-weight permutation (Gomez et al. 2008)."
 
 
