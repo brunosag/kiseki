@@ -29,8 +29,8 @@ in its package's `NAMES`; the CLI, server and UI pick it up from the catalogs.
 
 ## Machines
 
-- The laptop (RTX 3050, 4 GB) runs the app from `~/src/kiseki`; the vps (2 CPUs, no GPU)
-  has a checkout at `~/src/kiseki` for agents working there. Each lists the other in its
+- The laptop (RTX 3050, 4 GB) and the vps (2 CPUs, no GPU) each have a checkout at
+  `~/src/kiseki`, the vps's for agents working there. Each lists the other in its
   `~/.config/kiseki/machines.toml` (`--on vps`, `--on laptop`).
 - From the vps, train on the laptop's GPU with `--on laptop`. The laptop sleeps when
   unattended: check `kiseki machines` first; SSH to a sleeping laptop times out after
