@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+set -euo pipefail
+KISEKI_UI_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+if [[ ! -f "$KISEKI_UI_DIR/dist/index.html" ]]; then
+  (cd "$KISEKI_UI_DIR" && pnpm build)
+fi
+unset ELECTRON_RUN_AS_NODE
+export ELECTRON_OZONE_PLATFORM_HINT=wayland
+if [[ -n "${ELECTRON_BIN:-}" ]]; then
+  exec "$ELECTRON_BIN" "$KISEKI_UI_DIR/electron/main.cjs" "$@"
+elif command -v electron >/dev/null 2>&1; then
+  exec electron "$KISEKI_UI_DIR/electron/main.cjs" "$@"
+else
+  exec nix shell nixpkgs#electron --command "$KISEKI_UI_DIR/kiseki-app" "$@"
+fi
