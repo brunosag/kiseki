@@ -6,7 +6,7 @@ Names are listed without importing JAX so the core can validate specs. The worke
 
 import importlib
 
-NAMES = ("small_cnn", "wide_cnn", "vgg_mini")
+NAMES = ("small_cnn", "wide_cnn", "vgg_mini", "mlp_bottleneck")
 
 
 def load(name: str, input_shape: tuple[int, int, int], classes: int):

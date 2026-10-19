@@ -12,7 +12,7 @@ agents, a desktop app, and runs on remote machines over SSH.
 ## What is included
 
 - **Datasets:** MNIST, Fashion-MNIST, KMNIST, CIFAR-10.
-- **Models:** small_cnn, wide_cnn, vgg_mini, declared as layer lists.
+- **Models:** small_cnn, wide_cnn, vgg_mini, mlp_bottleneck, declared as layer lists.
 - **Optimizers:** SGD, LEEA, CoSyNE, OpenAI-ES. Populations are scored in compiled,
   memory-sized chunks; many steps run per round trip to the GPU.
 - **Runs:** queue, stop, pause and resume (bit-exact), checkpoints, target accuracy, on

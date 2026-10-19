@@ -92,11 +92,15 @@ performance profile it gained nothing on MNIST (298.5 vs 299.0 ms per 1000 netwo
 
 MNIST, Fashion-MNIST, KMNIST and CIFAR-10, downloaded from their original hosts with
 pinned SHA-256 hashes and parsed without pickle or archive extraction to disk. Models
-small_cnn, wide_cnn and vgg_mini are layer lists (`kiseki/models/layers.py`) from which
-init, forward pass, activation taps and LRP all derive.
+small_cnn, wide_cnn, vgg_mini and mlp_bottleneck are layer lists
+(`kiseki/models/layers.py`) from which init, forward pass, activation taps and LRP all
+derive.
 
 - **KMNIST** is the dataset added to test the plugin path: same shape and cost as MNIST
   but much harder, so optimizers that tie near 99% on MNIST separate. Agent's choice.
+- **mlp_bottleneck** (Flatten → Dense(16) → Dense(128) → ReLU → Dense(classes), about
+  16k weights on 28x28 inputs) is the catalog's smallest model and its only one without
+  convolutions. The user's request.
 
 ## Sources
 
