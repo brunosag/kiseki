@@ -4,7 +4,7 @@ Each step scores every network on one minibatch; offspring inherit a decayed sha
 of their parents' fitness so selection integrates evidence across batches.
 """
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 import msgspec
 from msgspec import Meta
@@ -18,8 +18,15 @@ class Params(msgspec.Struct, frozen=True, kw_only=True, forbid_unknown_fields=Tr
     mutation_probability: Annotated[
         float, Meta(ge=0, le=1, description="Chance each weight of an asexual child mutates")
     ] = 0.04
+    mutation_distribution: Annotated[
+        Literal["uniform", "gaussian", "laplace"],
+        Meta(
+            description="Shape of a mutation: U(-η, η), or a Gaussian or Laplace with the "
+            "same variance η²/3"
+        ),
+    ] = "uniform"
     initial_mutation_step: Annotated[
-        float, Meta(ge=0, description="Initial half-width of uniform mutations η₀")
+        float, Meta(ge=0, description="Initial mutation step η₀ (a uniform mutation's half-width)")
     ] = 0.03
     mutation_decay: Annotated[
         float, Meta(gt=0, le=1, description="Factor γ applied to the step when validation stalls")

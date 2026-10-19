@@ -21,9 +21,9 @@ def toy_batch(key, count=256):
     return x, y
 
 
-def build(name, **params):
+def build(name, start=None, **params):
     params = msgspec.convert(params, optimizers.params_type(name))
-    return optimizers.load_impl(name).build(params, Problem(NET, Scorer(NET, 64), 256))
+    return optimizers.load_impl(name).build(params, Problem(NET, Scorer(NET, 64), 256, start))
 
 
 def test_centered_ranks():
@@ -103,6 +103,37 @@ def test_adam_with_l2_matches_its_first_step_by_hand():
     new, _ = opt.step(state, jax.random.key(2), x, y)
     # Adam's bias-corrected first step is -lr · g / (|g| + ε)
     assert jnp.allclose(new["weights"], w0 - 0.1 * g / (jnp.abs(g) + 1e-8), atol=1e-4)
+
+
+@pytest.mark.parametrize(
+    "distribution,p,kurtosis",
+    [
+        ("uniform", 1.0, 1.8),
+        ("gaussian", 1.0, 3.0),
+        ("laplace", 1.0, 6.0),
+        ("uniform", 0.25, 7.2),
+        ("gaussian", 0.25, 12.0),
+        ("laplace", 0.25, 24.0),
+    ],
+)
+def test_leea_mutation_distributions_match_in_variance_and_differ_in_shape(
+    distribution, p, kurtosis
+):
+    opt = build(
+        "leea",
+        start=jnp.zeros(NET.size),
+        population_size=8000,
+        crossover_fraction=0.0,
+        mutation_probability=p,
+        initial_mutation_step=0.1,
+        mutation_distribution=distribution,
+    )
+    x, y = toy_batch(jax.random.key(0))
+    state, _ = opt.step(opt.init(jax.random.key(1)), jax.random.key(2), x, y)
+    delta = state["population"].reshape(-1)  # every child mutated from the zero network
+    variance = jnp.mean(delta**2)
+    assert jnp.isclose(variance, p * 0.1**2 / 3, rtol=0.05)
+    assert jnp.isclose(jnp.mean(delta**4) / variance**2, kurtosis, rtol=0.1)
 
 
 @pytest.mark.parametrize(

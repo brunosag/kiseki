@@ -72,6 +72,10 @@ and OpenAI-ES (Salimans et al. 2017), each a package with `Params` and a pure `b
   populations start as copies) of a run with the same dataset, model and split. It is
   checked when queued, and again by the worker, which ignores it on resume. Local runs
   only. Agent's choice.
+- **LEEA's `mutation_distribution`** changes the shape of a mutation at a fixed scale:
+  `uniform` (the paper's, and the default), `gaussian` or `laplace`, each with the
+  uniform step's variance η²/3 per mutated weight. The uniform draws are unchanged, so
+  earlier runs resume bit-exact. The user's request.
 
 ## Precision: fp32 by default, bf16 per run
 

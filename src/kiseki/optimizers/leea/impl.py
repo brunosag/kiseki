@@ -6,7 +6,9 @@ Generation t, on minibatch B_t:
    parents' for crossover children);
 3. the top ρN by fitness form a roulette wheel weighted by fitness;
 4. the first N(1 - crossover_fraction) children copy one parent and mutate each weight with
-   probability p by U(-η, η); the rest take each weight from one of two distinct parents.
+   probability p by U(-η, η) (distribution "uniform"), or by N(0, η²/3) ("gaussian") or a
+   Laplace of the same variance ("laplace"), so a mutated weight moves with variance η²/3
+   whatever the distribution; the rest take each weight from one of two distinct parents.
 There is no elitism. The validated network is the generation's lowest-loss member. When
 validation accuracy fails to improve `validation_patience` times running, η *= γ.
 """
@@ -67,11 +69,19 @@ def build(params: Params, problem: Problem) -> Optimizer:
         parent_a, parent_b = wheel[parent_a], wheel[second]
 
         # One uniform draw per weight decides whether it mutates (u < p) and, rescaled,
-        # by how much: given u < p, 2u/p - 1 is uniform on (-1, 1).
+        # by how much: given u < p, 2u/p - 1 is uniform on (-1, 1). Gaussian and Laplace
+        # mutations draw their size separately (from a key the uniform ones never use),
+        # scaled to the uniform's variance 1/3 (a standard Laplace's is 2).
         step_size = state["mutation_step"]
         p = params.mutation_probability
         u = jax.random.uniform(k_mutate, (asexual, problem.net.size))
-        delta = jnp.where(u < p, (2.0 * u / max(p, 1e-12) - 1.0) * step_size, 0.0)
+        if params.mutation_distribution == "uniform":
+            unit = 2.0 * u / max(p, 1e-12) - 1.0
+        elif params.mutation_distribution == "gaussian":
+            unit = jax.random.normal(jax.random.fold_in(k_mutate, 1), u.shape) / jnp.sqrt(3.0)
+        else:
+            unit = jax.random.laplace(jax.random.fold_in(k_mutate, 1), u.shape) / jnp.sqrt(6.0)
+        delta = jnp.where(u < p, unit * step_size, 0.0)
         mutants = population[parent_a[:asexual]] + delta
         take_first = jax.random.bernoulli(k_cross, 0.5, (sexual, problem.net.size))
         crossed = jnp.where(
