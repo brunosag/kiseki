@@ -1,5 +1,7 @@
 # Preferences
 
+Only the user's own words, quoted with date and source; no inferred rules or one-task decisions (`~/.agents/skills/references/records.md`).
+
 ## Product
 
 - "I actually do need that AppImage now. I need to run the app on an Ubuntu laptop. Can we have some place that lists the requirements, shows their status, and lets one install them by clicking a button? Similar to what T3 does with the providers." — 2026-10-18, the AppImage. session 325d0be6
