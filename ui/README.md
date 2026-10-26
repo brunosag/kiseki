@@ -54,6 +54,38 @@ as a new user would, under Xvfb with a fresh HOME: setup, install, Open kiseki, 
 - **New report:** finished runs' best models, the split, the analyses.
 - **Ctrl+K:** every action, place, run and report.
 
+## Code
+
+- `electron/main.cjs` starts `kiseki serve`, opens the window, keeps the tray icon and
+  menu, hides the window on close and stops the server on quit; `electron/preload.cjs`
+  gives the page `window.kisekiWindow` (typed in `src/lib/shell.ts`): GNOME's button
+  layout, window state and buttons for the title bar it draws, and the tray menu.
+  `electron/requirements.cjs` checks and installs what the machine needs (the setup
+  view's rows), and gives packaged builds their per-version code directory.
+  `electron/icon.svg` is the app icon (`icon.png`, 512 px, rendered from it, is the
+  AppImage's), `tray.svg` the panel icon's source (render `tray.png` and `tray@2x.png`
+  from it with `rsvg-convert -w 16` and `-w 32`).
+- The AppImage: `electron-builder.config.cjs`, `scripts/appimage.sh` (payload, BUILD id,
+  pinned uv), `scripts/appimage-check.mjs` (end to end on a fresh HOME).
+- `setup.html` + `src/setup.tsx` show `src/views/setup.tsx` alone, before a server exists;
+  `src/lib/setup.ts` is its store.
+- `src/app.tsx` is the frame (title bar, sidebar, the view in an inset panel), the
+  dialogs and the global keys. `src/views/` holds one file per route and dialog;
+  `src/components/` the app's own pieces (`chart.tsx` wraps uPlot, `pick.tsx` is the
+  property chip, `status-icon.tsx` the state glyphs).
+- `src/components/ui/` is coss ui as its registry ships it (`npx shadcn@latest add
+  @coss/<name>`, registry in `components.json`).
+- `src/lib/`: `live.ts` is the store every view reads (catalog, runs, reports, machines,
+  kept current by SSE); `api.ts` the token and fetching; `rows.ts` curve rows by byte
+  offset; `schema.ts` the run form's fields and grids; `format.ts`, `reports.ts`,
+  `markdown.ts`, `curves.ts`, `tray.ts` (the tray menu's live part) are pure helpers with
+  tests beside them; `types.ts` mirrors the server's JSON (endpoints: the docstring of
+  `src/kiseki/server.py`).
+
+The look: 13px text, weight 500 at most, chrome in `bg-sidebar`, views in the inset
+`bg-background` panel, dense 40px rows. Series colors come from `SERIES` in
+`lib/theme.ts` in fixed order (validated for both modes); text never wears them.
+
 ## Checks
 
 `pnpm test` (the pure helpers in `src/lib`), `pnpm check`, `pnpm build`. To see the app

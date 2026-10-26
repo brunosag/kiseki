@@ -68,9 +68,21 @@ reports and machines, with everything one search away (Ctrl+K).
 ## Checks
 
 ```bash
-uv run pytest
+uv run pytest                                    # about 40 s
 uv run ruff format src tests && uv run ruff check src tests
 uv run basedpyright
 ```
 
-`AGENTS.md` maps the code for agents; the design and its reasons are in `docs/design/`.
+## Code
+
+- `src/kiseki/`: the core (CLI, run store, queue runner, remotes, app server, catalogs),
+  which never imports JAX (`tests/test_boundary.py`).
+- `src/kiseki/worker/`: the JAX processes, training (`train.py`) and reports (`report.py`).
+- `src/kiseki/{datasets,models,optimizers,analyses}/`: plugins, one module or package
+  each, with a light `__init__` and the JAX code in `impl.py`; each package's docstring
+  states its method. Add one by copying the nearest sibling and listing it in its
+  package's `NAMES`; the CLI, server and UI pick it up from the catalogs.
+- `ui/`: the app (`ui/README.md`).
+- `tests/`: pytest, JAX on the CPU.
+
+The design and its reasons are in `docs/design/`; the words kiseki uses in `docs/terms.md`.

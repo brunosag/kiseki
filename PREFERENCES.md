@@ -1,6 +1,6 @@
 # Preferences
 
-Only the user's own words, quoted with date and source; no inferred rules or one-task decisions (`~/.agents/skills/references/records.md`).
+Only the user's own words, quoted with date and source; never an agent's summary.
 
 ## Product
 
