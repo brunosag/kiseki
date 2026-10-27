@@ -6,7 +6,7 @@ and docs: `docs/terms.md`.
 
 ## Production
 
-- The laptop (RTX 3050, 4 GB) and the vps (2 CPUs, no GPU) each have a checkout at
+- The laptop (RTX 3050, 4 GB) and the vps (6 CPUs, no GPU) each have a checkout at
   `~/src/kiseki`, the vps's for agents working there. Each lists the other in its
   `~/.config/kiseki/machines.toml` (`--on vps`, `--on laptop`).
 - The laptop's app (GNOME menu, tray) runs from `~/src/kiseki`, which nothing pulls on its
