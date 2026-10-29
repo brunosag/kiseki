@@ -47,13 +47,9 @@ and docs: `docs/terms.md`.
 - `uv add`, `uv remove` and `uv lock` re-sync without extras and uninstall the CUDA
   libraries, and `uv run` in a checkout without `.venv` creates one without them; run
   `uv sync --extra cuda` after them, or JAX silently runs on the CPU (on the laptop).
-- lugia's GPU (RTX 5070 Ti) falls off the bus while XLA's autotuner profiles kernels
-  (`CUDA_ERROR_LAUNCH_FAILED`, then "No devices were found") and stays gone until its
-  admin reboots the machine: first in kiseki's first run there on 2026-10-17 (CUDA 13.4
-  user-space libraries; `pyproject.toml` now pins 13.0), then with 13.0, and again on
-  driver 615 (`ops/lugia-gpu/README.md` in kiseki-research). JAX jobs there run only when
-  the user asks, with `--xla_gpu_autotune_level=0`. kiseki's workers don't set it: lugia's
-  entry in `machines.toml` needs `env = { XLA_FLAGS = "--xla_gpu_autotune_level=0" }`.
+- lugia's GPU falls off the bus under XLA's autotuner (`~/.agents/skills/references/lugia.md`),
+  and kiseki's workers don't turn it off: lugia's entry in `machines.toml` needs
+  `env = { XLA_FLAGS = "--xla_gpu_autotune_level=0" }`.
 - On NixOS, libcuda is in `/run/opengl-driver/lib`; workers re-exec themselves with it on
   `LD_LIBRARY_PATH` (`worker/runtime.py`), so launchers need not set it.
 - Datasets download from their original hosts; lugia reaches some slowly (CIFAR-10 from
