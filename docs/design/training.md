@@ -14,7 +14,7 @@ growing by at most 8× per block, and end at checkpoint steps. The carry is dona
 
 - **Why:** the old loop waited on the GPU every step; here the host touches the device
   about every 2 s whatever the step rate ("Everything is" optimized for performance,
-  PREFERENCES.md). Agent's design.
+  the user). Agent's design.
 - **Rejected:** one compiled step per call (host sync per step); fixed-size blocks
   (recompile per size, or blocks too long for responsive pause and progress).
 

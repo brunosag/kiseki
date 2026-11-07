@@ -10,7 +10,7 @@ Training and analysis run in JAX; everything else is plain Python; the UI is Rea
 TypeScript in a thin Electron shell that talks to `kiseki serve`.
 
 - **Why:** the app should be "optimized for" this machine with "a great focus on
-  performance" (PREFERENCES.md). Scoring one step of 1000 networks on a 512-image MNIST
+  performance" (the user). Scoring one step of 1000 networks on a 512-image MNIST
   batch, 50 networks at a time, on the RTX 3050 in the performance power profile, on AC
   (2026-10-17, scratch benchmarks): 878 ms in the old PyTorch vmap code, 462 ms in
   hand-tuned PyTorch with torch.compile, 299 ms in plain JAX. In a real run of the rewrite
@@ -89,7 +89,7 @@ pushes its copy), writes `machine.json` and submits over one multiplexed SSH con
 `pull` mirrors small files of remote runs (models with `--models`); read commands and the
 app refresh active remote runs, and pull a run's models once they see it finish.
 
-- **Why:** "An easy way to select remote machines" and lugia (PREFERENCES.md); a remote
+- **Why:** "An easy way to select remote machines" and lugia (the user); a remote
   needs only SSH, uv and its own disk.
 - **Rejected:** running workers over a live SSH session (dies with the connection);
   copying datasets from the laptop first (lugia receives ~150 KB/s from it); the
@@ -132,7 +132,7 @@ its own.
 
 - **Why:** "Build it from the coss ui component library and take Linear's UI design as a
   reference. Make it minimal. It should have its own title bar too, not the native one."
-  (PREFERENCES.md). Layout details are the agent's.
+  (the user). Layout details are the agent's.
 - **Rejected:** the first UI, built by a Codex agent (GPT-6.1 Sol), which the user had
   rewritten on 2026-10-18; with it went the interactive WebGL embedding scatter (the
   report's figure shows the same embedding) and the browsable LRP gallery (the figure
@@ -152,7 +152,7 @@ a pinned Electron; the launcher installs and rebuilds the UI when they are stale
 updates the app without a NixOS rebuild.
 
 - **Why:** "Could we also make it like my T3 Code, where it gets its own tray icon and
-  menu, and closing the window keeps the server running?" (PREFERENCES.md). The menu's
+  menu, and closing the window keeps the server running?" (the user). The menu's
   contents and the launcher are the agent's design, reviewed by no critic.
 - **Rejected:** the shell watching the event stream itself (a second copy of the page's
   store). An AppImage for this machine (2026-10-18): a pull updates the checkout without
@@ -182,7 +182,7 @@ the window only shows kiseki's own pages.
 - **Why:** "I actually do need that AppImage now. I need to run the app on an Ubuntu
   laptop. Can we have some place that lists the requirements, shows their status, and lets
   one install them by clicking a button? Similar to what T3 does with the providers."
-  (PREFERENCES.md); the Ubuntu laptop trains on its own GPU and sends runs to the others,
+  (the user); the Ubuntu laptop trains on its own GPU and sends runs to the others,
   and gets the AppImage from GitHub Releases (the user, 2026-10-18). A directory per BUILD
   means a new version never changes code under a running server, queue runner or worker.
   The rest is the agent's design, attacked by a fresh Claude critic (Codex and Gemini were
@@ -228,4 +228,4 @@ set.
 ## Exclusions
 
 - Accounts, multiple users, and access from other machines: the app is for one person on
-  this laptop ("only needs to run on this machine for now", PREFERENCES.md).
+  this laptop ("only needs to run on this machine for now", the user).
