@@ -2,7 +2,7 @@
 
 Retired since 19 October 2026: new research code is written from scratch in kiseki-research, in CUDA C++ (its `docs/design/compute.md`). Keep kiseki working for the experiments that still run on it; build nothing new here.
 
-Experiments comparing SGD with evolutionary optimizers (LEEA, CoSyNE, OpenAI-ES) on small CNNs, and reports that compare the trained networks. The design and its reasons are in `docs/design/`; the words to use in code, the CLI, the UI and docs in `docs/terms.md`. Open work: `TODO.md`.
+Experiments comparing SGD with evolutionary optimizers (LEEA, CoSyNE, OpenAI-ES) on small CNNs, and reports that compare the trained networks. The design and its reasons are in `docs/design/`; the words to use in code, the CLI, the UI and docs in `docs/terms.md`.
 
 The code is written for agents to navigate, not humans, and everything, the app as much as the training and analysis runs, is optimized for performance on this laptop.
 
